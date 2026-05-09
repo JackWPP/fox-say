@@ -1,7 +1,6 @@
-"""Shared backend schema placeholders aligned with frontend/src/types/foxsay.ts."""
-
-from dataclasses import dataclass
 from typing import Literal
+
+from pydantic import BaseModel
 
 CourseStatus = Literal["empty", "processing", "ready", "failed"]
 MaterialKind = Literal["pdf", "ppt", "image", "text_note"]
@@ -9,8 +8,7 @@ Importance = Literal["high", "medium", "low"]
 ConfidenceStatus = Literal["grounded", "ambiguous", "out_of_scope"]
 
 
-@dataclass(frozen=True)
-class Course:
+class Course(BaseModel):
     id: str
     title: str
     status: CourseStatus
@@ -18,8 +16,7 @@ class Course:
     exam_date: str | None = None
 
 
-@dataclass(frozen=True)
-class Material:
+class Material(BaseModel):
     id: str
     course_id: str
     filename: str
@@ -27,61 +24,64 @@ class Material:
     status: CourseStatus
 
 
-@dataclass(frozen=True)
-class CourseSkeletonChapter:
+class CourseSkeletonChapter(BaseModel):
     id: str
     title: str
-    key_concepts: tuple[str, ...]
+    key_concepts: list[str]
     importance: Importance
     exam_weight: float
 
 
-@dataclass(frozen=True)
-class CourseSkeleton:
+class CourseSkeleton(BaseModel):
     course_id: str
-    chapters: tuple[CourseSkeletonChapter, ...]
-    core_concepts: tuple[str, ...]
-    difficulty_areas: tuple[str, ...]
-    prerequisite_chain: tuple[tuple[str, str], ...]
+    chapters: list[CourseSkeletonChapter]
+    core_concepts: list[str]
+    difficulty_areas: list[str]
+    prerequisite_chain: list[list[str]]
 
 
-@dataclass(frozen=True)
-class Citation:
+class Citation(BaseModel):
     file_name: str
     locator: str
 
 
-@dataclass(frozen=True)
-class CragAnswer:
+class CragAnswer(BaseModel):
     course_id: str
     answer: str
-    citations: tuple[Citation, ...]
+    citations: list[Citation]
     confidence_status: ConfidenceStatus
     relevance_score: float
     refusal_reason: str | None = None
 
 
-@dataclass(frozen=True)
-class ReviewPlanDay:
+class ReviewPlanDay(BaseModel):
     day_index: int
     focus: str
     suggested_minutes: int
     priority: Importance
 
 
-@dataclass(frozen=True)
-class ReviewPlan:
+class ReviewPlan(BaseModel):
     course_id: str
     remaining_days: int
-    daily_plan: tuple[ReviewPlanDay, ...]
-    likely_exam_points: tuple[str, ...]
-    weak_areas: tuple[str, ...]
+    daily_plan: list[ReviewPlanDay]
+    likely_exam_points: list[str]
+    weak_areas: list[str]
 
 
-@dataclass(frozen=True)
-class BtwInterjection:
+class BtwInterjection(BaseModel):
     course_id: str
     question: str
     answer: CragAnswer
     returns_to_review_step_id: str
 
+
+class ImportTimetableResponse(BaseModel):
+    imported: int
+    courses: list[Course]
+
+
+class CreateCourseRequest(BaseModel):
+    title: str
+    teacher: str | None = None
+    exam_date: str | None = None
