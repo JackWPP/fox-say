@@ -1,0 +1,33 @@
+[project]
+name = "foxsay-backend"
+version = "0.1.0"
+description = "Structural placeholder for the FoxSay FastAPI backend."
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+runtime = [
+  "fastapi",
+  "uvicorn[standard]",
+  "pydantic-settings",
+  "qdrant-client",
+  "networkx",
+  "openai"
+]
+dev = [
+  "pytest",
+  "ruff",
+  "mypy"
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
