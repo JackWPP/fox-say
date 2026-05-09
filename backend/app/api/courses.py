@@ -5,15 +5,21 @@ from fastapi import APIRouter, Depends, UploadFile
 from app.db.deps import get_store
 from app.db.sqlite_store import SqliteStore
 from app.schemas.foxsay import Course, CreateCourseRequest, ImportTimetableResponse
-from app.services.timetable import parse_csv
+from app.services.timetable import parse_csv, parse_excel
 
 router = APIRouter(prefix="/courses")
 
 
 @router.post("/import-timetable", response_model=ImportTimetableResponse)
 async def import_timetable(file: UploadFile, store: SqliteStore = Depends(get_store)):
-    content = (await file.read()).decode("utf-8")
-    rows = parse_csv(content)
+    filename = file.filename or ""
+    raw = await file.read()
+
+    if filename.lower().endswith((".xlsx", ".xls")):
+        rows = parse_excel(raw)
+    else:
+        content = raw.decode("utf-8")
+        rows = parse_csv(content)
     courses: list[Course] = []
     for row in rows:
         course = Course(

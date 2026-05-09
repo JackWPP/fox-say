@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 import networkx as nx
@@ -11,18 +12,40 @@ class KnowledgeGraph:
     def __init__(self, course_id: str) -> None:
         self.course_id = course_id
         self._graph = nx.DiGraph()
+        self._dirty = False
 
     @classmethod
-    def for_course(cls, course_id: str) -> "KnowledgeGraph":
+    def for_course(cls, course_id: str, store: Any = None) -> "KnowledgeGraph":
         if course_id not in cls._instances:
-            cls._instances[course_id] = cls(course_id)
+            instance = cls(course_id)
+            if store is not None:
+                instance._load_from_store(store)
+            cls._instances[course_id] = instance
         return cls._instances[course_id]
+
+    def _load_from_store(self, store: Any) -> None:
+        data_json = store.load_knowledge_graph(self.course_id)
+        if data_json:
+            data = json.loads(data_json)
+            for node in data.get("nodes", []):
+                self._graph.add_node(node["id"], **node.get("attrs", {}))
+            for edge in data.get("edges", []):
+                self._graph.add_edge(edge["from"], edge["to"], **edge.get("attrs", {}))
+
+    def save(self, store: Any) -> None:
+        nodes = [{"id": n, "attrs": dict(self._graph.nodes[n])} for n in self._graph.nodes]
+        edges = [{"from": u, "to": v, "attrs": dict(self._graph.edges[u, v])} for u, v in self._graph.edges]
+        data_json = json.dumps({"nodes": nodes, "edges": edges}, ensure_ascii=False)
+        store.save_knowledge_graph(self.course_id, data_json)
+        self._dirty = False
 
     def add_concept(self, concept_id: str, label: str, metadata: dict[str, Any] | None = None) -> None:
         self._graph.add_node(concept_id, label=label, **(metadata or {}))
+        self._dirty = True
 
     def add_dependency(self, from_concept: str, to_concept: str, relation_type: str = "prerequisite") -> None:
         self._graph.add_edge(from_concept, to_concept, relation_type=relation_type)
+        self._dirty = True
 
     def get_prerequisite_chain(self) -> list[tuple[str, str]]:
         return list(self._graph.edges())

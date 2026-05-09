@@ -4,6 +4,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 
+from app.core.config import settings
 from app.db.deps import get_store
 from app.db.sqlite_store import SqliteStore
 from app.schemas.foxsay import Material, MaterialKind
@@ -11,21 +12,15 @@ from app.services.pipeline import process_material
 
 router = APIRouter(prefix="/courses/{course_id}/materials")
 
-UPLOAD_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "uploads")
-
 _KIND_MAP: dict[str, MaterialKind] = {
     ".pdf": "pdf",
     ".ppt": "ppt",
     ".pptx": "ppt",
-    ".jpg": "image",
-    ".jpeg": "image",
-    ".png": "image",
-    ".gif": "image",
-    ".bmp": "image",
-    ".webp": "image",
+    ".txt": "text_note",
+    ".md": "text_note",
 }
 
-_VALID_KINDS = {"pdf", "ppt", "image", "text_note"}
+_VALID_KINDS = {"pdf", "ppt", "text_note"}
 
 
 def _infer_kind(filename: str) -> MaterialKind:
@@ -45,7 +40,7 @@ async def upload_material(
         raise HTTPException(status_code=404, detail="Course not found")
 
     material_id = str(uuid.uuid4())
-    upload_dir = os.path.join(UPLOAD_ROOT, course_id)
+    upload_dir = os.path.join(settings.upload_root, course_id)
     os.makedirs(upload_dir, exist_ok=True)
     file_path = os.path.join(upload_dir, f"{material_id}_{file.filename}")
     with open(file_path, "wb") as f:
@@ -53,6 +48,12 @@ async def upload_material(
         f.write(content)
 
     resolved_kind: MaterialKind = kind if kind in _VALID_KINDS else _infer_kind(file.filename or "")
+
+    if resolved_kind not in _VALID_KINDS:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported file type. Accepted: PDF, TXT, MD. Got kind: {resolved_kind}",
+        )
 
     material = Material(
         id=material_id,
@@ -80,6 +81,28 @@ async def get_material_status(course_id: str, material_id: str, store: SqliteSto
 @router.get("", response_model=list[Material])
 async def list_materials(course_id: str, store: SqliteStore = Depends(get_store)):
     return store.get_all_materials(course_id)
+
+
+@router.post("/{material_id}/retry", response_model=Material)
+async def retry_material(course_id: str, material_id: str, store: SqliteStore = Depends(get_store)):
+    material = store.get_material(course_id, material_id)
+    if material is None:
+        raise HTTPException(status_code=404, detail="Material not found")
+    if material.status != "failed":
+        raise HTTPException(status_code=400, detail="Only failed materials can be retried")
+
+    file_path = store.get_material_file_path(course_id, material_id)
+    if file_path is None:
+        raise HTTPException(status_code=400, detail="Original file not found, cannot retry")
+
+    store.delete_tasks_for_material(course_id, material_id)
+    store.update_material_status(course_id, material_id, "processing", degraded=False)
+
+    asyncio.create_task(
+        process_material(course_id, material_id, file_path, material.kind, material.filename, store)
+    )
+
+    return store.get_material(course_id, material_id)
 
 
 @router.get("/{material_id}/progress")

@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Any
 
 from openai import OpenAI
 
@@ -40,14 +41,18 @@ async def generate_skeleton(
     course_id: str,
     course_title: str,
     materials_text: str,
+    store: Any = None,
 ) -> CourseSkeleton:
-    kg = KnowledgeGraph.for_course(course_id)
+    kg = KnowledgeGraph.for_course(course_id, store=store)
 
     try:
         skeleton = await _llm_generate(course_id, course_title, materials_text, kg)
     except Exception:
         logger.exception("LLM skeleton generation failed for course %s, falling back to chunking", course_id)
         skeleton = _fallback_generate(course_id, course_title, materials_text, kg)
+
+    if store is not None and kg._dirty:
+        kg.save(store)
 
     return skeleton
 

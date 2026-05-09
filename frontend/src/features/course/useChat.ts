@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { api } from "../../shared/api";
 import type { CragAnswer, Citation, ConfidenceStatus } from "../../shared/types";
 export type { ConfidenceStatus } from "../../shared/types";
@@ -15,6 +15,38 @@ export interface ChatMessage {
 export function useChat(courseId: string) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .get<{
+        messages: Array<{
+          id: string;
+          role: string;
+          content: string;
+          citations?: Citation[];
+          confidence_status?: ConfidenceStatus;
+          refusal_reason?: string;
+        }>;
+      }>(`/courses/${courseId}/chat/history`)
+      .then((res) => {
+        if (cancelled) return;
+        setMessages(
+          res.messages.map((m) => ({
+            id: m.id,
+            role: m.role as "user" | "assistant",
+            content: m.content,
+            citations: m.citations,
+            confidenceStatus: m.confidence_status,
+            refusalReason: m.refusal_reason,
+          })),
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [courseId]);
 
   const sendQuestion = useCallback(
     async (question: string) => {
@@ -50,7 +82,7 @@ export function useChat(courseId: string) {
         setLoading(false);
       }
     },
-    [courseId]
+    [courseId],
   );
 
   return { messages, sendQuestion, loading };

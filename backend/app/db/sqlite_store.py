@@ -57,6 +57,25 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS knowledge_graphs (
+    course_id TEXT PRIMARY KEY,
+    data_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id) REFERENCES courses(id)
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id TEXT PRIMARY KEY,
+    course_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    citations_json TEXT,
+    confidence_status TEXT,
+    refusal_reason TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id) REFERENCES courses(id)
+);
 """
 
 
@@ -219,5 +238,52 @@ class SqliteStore:
         rows = self._conn.execute(
             "SELECT * FROM tasks WHERE course_id=? AND material_id=? ORDER BY created_at",
             (course_id, material_id),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_tasks_for_material(self, course_id: str, material_id: str) -> None:
+        self._conn.execute(
+            "DELETE FROM tasks WHERE course_id=? AND material_id=?",
+            (course_id, material_id),
+        )
+        self._conn.commit()
+
+    # --- Knowledge Graphs ---
+
+    def save_knowledge_graph(self, course_id: str, data_json: str) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO knowledge_graphs (course_id, data_json, updated_at) VALUES (?, ?, datetime('now'))",
+            (course_id, data_json),
+        )
+        self._conn.commit()
+
+    def load_knowledge_graph(self, course_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT data_json FROM knowledge_graphs WHERE course_id = ?", (course_id,)
+        ).fetchone()
+        return row["data_json"] if row else None
+
+    # --- Chat Messages ---
+
+    def save_chat_message(
+        self,
+        msg_id: str,
+        course_id: str,
+        role: str,
+        content: str,
+        citations_json: str | None = None,
+        confidence_status: str | None = None,
+        refusal_reason: str | None = None,
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO chat_messages (id, course_id, role, content, citations_json, confidence_status, refusal_reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (msg_id, course_id, role, content, citations_json, confidence_status, refusal_reason),
+        )
+        self._conn.commit()
+
+    def get_chat_messages(self, course_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM chat_messages WHERE course_id = ? ORDER BY created_at ASC LIMIT ?",
+            (course_id, limit),
         ).fetchall()
         return [dict(r) for r in rows]

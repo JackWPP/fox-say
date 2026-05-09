@@ -1,4 +1,5 @@
 import logging
+import re
 
 from openai import OpenAI
 
@@ -36,6 +37,24 @@ AMBIGUOUS_SYSTEM_PROMPT = (
     "4. 如果材料不足以回答，必须拒答。"
 )
 
+_CITATION_PATTERN = re.compile(r"来自\s*\[.+?\]\s*·\s*第.+?部分")
+
+
+def _ensure_citations(answer_text: str, citations: list[Citation]) -> str:
+    if not citations:
+        return answer_text
+    if _CITATION_PATTERN.search(answer_text):
+        return answer_text
+    source_lines = []
+    seen: set[str] = set()
+    for c in citations:
+        key = f"{c.file_name}|{c.locator}"
+        if key not in seen:
+            source_lines.append(f"来自 [{c.file_name}] · {c.locator}")
+            seen.add(key)
+    sources_block = "\n\n**来源：**\n" + "\n".join(f"- {s}" for s in source_lines)
+    return answer_text + sources_block
+
 
 async def ask(course_id: str, course_title: str, question: str) -> CragAnswer:
     retrieval_result = retrieve(course_id, question)
@@ -68,6 +87,8 @@ async def ask(course_id: str, course_title: str, question: str) -> CragAnswer:
         answer_text = await _llm_answer(question, context, SYSTEM_PROMPT)
     else:
         answer_text = await _llm_answer(question, context, AMBIGUOUS_SYSTEM_PROMPT)
+
+    answer_text = _ensure_citations(answer_text, citations)
 
     refusal_reason = None if confidence != "ambiguous" else "low_confidence"
 

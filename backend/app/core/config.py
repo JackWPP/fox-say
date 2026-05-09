@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     embedding_api_base: str = "https://api.siliconflow.cn/v1"
     embedding_model: str = "BAAI/bge-m3"
     qdrant_url: str = "http://localhost:6333"
+    upload_root: str = str(_PROJECT_ROOT / "uploads")
     sqlite_path: str = str(_PROJECT_ROOT / "data" / "foxsay.db")
     foxsay_env: str = "development"
 

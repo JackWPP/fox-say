@@ -46,6 +46,7 @@ frontend/dist/
 
 # Uploaded materials (user data)
 backend/uploads/
+uploads/
 
 # SQLite database (local dev data)
 data/

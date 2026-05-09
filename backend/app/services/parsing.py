@@ -16,9 +16,29 @@ def parse_text(file_path: str) -> str:
         return f.read()
 
 
+def parse_pptx(file_path: str) -> str:
+    from pptx import Presentation
+
+    prs = Presentation(file_path)
+    slides: list[str] = []
+    for slide in prs.slides:
+        texts: list[str] = []
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    t = para.text.strip()
+                    if t:
+                        texts.append(t)
+        if texts:
+            slides.append("[Slide] " + "\n".join(texts))
+    return "\n\n".join(slides)
+
+
 def parse_document(file_path: str, kind: str) -> str:
     if kind == "pdf":
         return parse_pdf(file_path)
     if kind == "text_note":
         return parse_text(file_path)
+    if kind == "ppt":
+        return parse_pptx(file_path)
     raise ValueError(f"Unsupported material kind: {kind}")

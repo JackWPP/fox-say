@@ -1,5 +1,7 @@
+import uuid
+
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
 
 from app.core.config import settings
 
@@ -47,8 +49,25 @@ class QdrantStore:
                 "index": chunk["index"],
                 **metadata,
             }
-            points.append(PointStruct(id=i, vector=embedding, payload=payload))
+            points.append(PointStruct(id=str(uuid.uuid4()), vector=embedding, payload=payload))
         client.upsert(collection_name=name, points=points)
+
+    def delete_by_material(self, course_id: str, material_id: str) -> None:
+        name = _collection_name(course_id)
+        client = _get_client()
+        if not client.collection_exists(name):
+            return
+        client.delete(
+            collection_name=name,
+            points_selector=Filter(
+                must=[
+                    FieldCondition(
+                        key="material_id",
+                        match=MatchValue(value=material_id),
+                    )
+                ]
+            ),
+        )
 
     def search(
         self,

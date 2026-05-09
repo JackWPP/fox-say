@@ -36,6 +36,13 @@ async def process_material(
         store.update_task(task_ids["parsing"], "running")
         text = await asyncio.to_thread(parse_document, file_path, kind)
         store.update_task(task_ids["parsing"], "done")
+    except ValueError as exc:
+        logger.warning("Unsupported material kind for %s: %s", material_id, exc)
+        store.update_task(task_ids["parsing"], "failed", detail=str(exc))
+        store.update_material_status(course_id, material_id, "failed")
+        for remaining_step in ["chunking", "embedding", "storing", "skeleton_generating"]:
+            store.update_task(task_ids[remaining_step], "skipped")
+        return
     except Exception as exc:
         logger.warning("Full parsing failed for %s, attempting degraded extraction: %s", material_id, exc)
         store.update_task(task_ids["parsing"], "done", detail="degraded")
@@ -75,6 +82,7 @@ async def process_material(
             "file_name": file_name,
         }
         store.update_task(task_ids["storing"], "running")
+        await asyncio.to_thread(_qdrant.delete_by_material, course_id, material_id)
         await asyncio.to_thread(_qdrant.upsert_chunks, course_id, chunks, embeddings, metadata)
         store.update_task(task_ids["storing"], "done")
 
@@ -119,8 +127,9 @@ def _update_course_if_ready(course_id: str, store: SqliteStore) -> bool:
     materials = store.get_all_materials(course_id)
     if not materials:
         return False
-    all_ready = all(m.status in ("ready", "failed") for m in materials)
-    if all_ready:
+    all_terminal = all(m.status in ("ready", "failed") for m in materials)
+    at_least_one_ready = any(m.status == "ready" for m in materials)
+    if all_terminal and at_least_one_ready:
         course = store.get_course(course_id)
         if course is not None and course.status != "ready":
             updated = course.model_copy(update={"status": "ready"})
@@ -136,7 +145,7 @@ async def _generate_and_store_skeleton(course_id: str, store: SqliteStore, task_
             return
         texts_dict = _material_texts.get(course_id, {})
         combined_text = "\n\n".join(texts_dict.values())
-        skeleton = await generate_skeleton(course_id, course.title, combined_text)
+        skeleton = await generate_skeleton(course_id, course.title, combined_text, store=store)
         store.create_skeleton(skeleton)
         if task_id:
             store.update_task(task_id, "done")
@@ -150,8 +159,4 @@ def _degraded_extract(file_path: str, kind: str) -> str:
     if kind == "pdf":
         from app.services.parsing import parse_pdf
         return parse_pdf(file_path)
-    try:
-        with open(file_path, encoding="utf-8", errors="ignore") as f:
-            return f.read()
-    except Exception:
-        return ""
+    return ""

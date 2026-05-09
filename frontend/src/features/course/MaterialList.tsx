@@ -1,6 +1,6 @@
-import { FileText, Loader2, CheckCircle, XCircle, Image, FileType, AlertTriangle } from "lucide-react";
+import { FileText, Loader2, CheckCircle, XCircle, Image, FileType, AlertTriangle, RotateCw } from "lucide-react";
 import type { Material, MaterialKind, CourseStatus } from "../../shared/types";
-import { useMaterialProgress } from "./useMaterials";
+import { useMaterialProgress, useRetryMaterial } from "./useMaterials";
 
 const kindIcons: Record<MaterialKind, typeof FileText> = {
   pdf: FileText,
@@ -59,7 +59,7 @@ function MaterialProgress({ courseId, material }: { courseId: string; material: 
   return <span className="text-foxAmber">{stepLabels[progress.current_step] || progress.current_step}</span>;
 }
 
-export default function MaterialList({ courseId, materials }: { courseId: string; materials: Material[] }) {
+export default function MaterialList({ courseId, materials, onRetry }: { courseId: string; materials: Material[]; onRetry?: (materialId: string) => void }) {
   if (materials.length === 0) {
     return (
       <div className="text-center py-12 text-gray-400">
@@ -96,6 +96,15 @@ export default function MaterialList({ courseId, materials }: { courseId: string
             <div className="flex items-center gap-1.5 text-xs text-gray-500 shrink-0">
               <StatusIcon status={m.status} />
               <MaterialProgress courseId={courseId} material={m} />
+              {m.status === "failed" && onRetry && (
+                <button
+                  onClick={() => onRetry(m.id)}
+                  className="ml-1 p-1 rounded hover:bg-red-50 text-red-400 hover:text-red-600 transition-colors"
+                  title="重试"
+                >
+                  <RotateCw className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
           </div>
         );

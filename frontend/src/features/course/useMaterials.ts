@@ -95,6 +95,19 @@ export function useUploadMaterial(courseId: string) {
   return { upload, uploading, progress, error };
 }
 
+export function useRetryMaterial(courseId: string) {
+  const retry = useCallback(
+    async (materialId: string) => {
+      const data = await api.post<Material>(
+        `/courses/${courseId}/materials/${materialId}/retry`
+      );
+      return data;
+    },
+    [courseId]
+  );
+  return { retry };
+}
+
 export function useMaterialProgress(courseId: string, materialId: string | null) {
   const [progress, setProgress] = useState<{
     material_id: string;

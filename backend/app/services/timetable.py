@@ -1,5 +1,6 @@
 import csv
 import io
+from typing import Any
 
 TITLE_ALIASES = {"课程名", "课程", "名称", "title", "course", "name"}
 TEACHER_ALIASES = {"教师", "老师", "teacher", "instructor"}
@@ -31,3 +32,51 @@ def parse_csv(content: str) -> list[dict]:
         exam_date = row[exam_date_col].strip() if exam_date_col and row.get(exam_date_col) else None
         rows.append({"title": title, "teacher": teacher, "exam_date": exam_date})
     return rows
+
+
+def parse_excel(content: bytes) -> list[dict[str, Any]]:
+    from openpyxl import load_workbook
+
+    wb = load_workbook(filename=io.BytesIO(content), read_only=True)
+    ws = wb.active
+    if ws is None:
+        raise ValueError("Excel 文件没有活动工作表")
+
+    rows_iter = ws.iter_rows(values_only=True)
+    headers = [str(h).strip() if h else "" for h in next(rows_iter)]
+    title_col = _find_column(headers, TITLE_ALIASES)
+    if title_col is None:
+        wb.close()
+        raise ValueError("Excel 缺少课程名列（课程名/课程/名称/title）")
+    title_idx = headers.index(title_col)
+
+    teacher_col = _find_column(headers, TEACHER_ALIASES)
+    teacher_idx = headers.index(teacher_col) if teacher_col else None
+
+    exam_date_col = _find_column(headers, EXAM_DATE_ALIASES)
+    exam_date_idx = headers.index(exam_date_col) if exam_date_col else None
+
+    results: list[dict[str, Any]] = []
+    for row in rows_iter:
+        if row is None:
+            continue
+        title = str(row[title_idx] or "").strip() if title_idx < len(row) else ""
+        if not title or title == "None":
+            continue
+        teacher = (
+            str(row[teacher_idx] or "").strip()
+            if teacher_idx is not None and teacher_idx < len(row)
+            else None
+        )
+        exam_date = (
+            str(row[exam_date_idx] or "").strip()
+            if exam_date_idx is not None and exam_date_idx < len(row)
+            else None
+        )
+        if teacher in ("None", "none", ""):
+            teacher = None
+        if exam_date in ("None", "none", ""):
+            exam_date = None
+        results.append({"title": title, "teacher": teacher, "exam_date": exam_date})
+    wb.close()
+    return results

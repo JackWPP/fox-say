@@ -1,7 +1,7 @@
 import { RefreshCw } from "lucide-react";
 import MaterialUpload from "./MaterialUpload";
 import MaterialList from "./MaterialList";
-import { useMaterials } from "./useMaterials";
+import { useMaterials, useRetryMaterial } from "./useMaterials";
 
 interface MaterialsTabProps {
   courseId: string;
@@ -9,6 +9,16 @@ interface MaterialsTabProps {
 
 export default function MaterialsTab({ courseId }: MaterialsTabProps) {
   const { materials, loading, error, refetch } = useMaterials(courseId);
+  const { retry } = useRetryMaterial(courseId);
+
+  const handleRetry = async (materialId: string) => {
+    try {
+      await retry(materialId);
+      refetch();
+    } catch {
+      // retry request failed, will show current state
+    }
+  };
 
   if (loading) {
     return (
@@ -36,7 +46,7 @@ export default function MaterialsTab({ courseId }: MaterialsTabProps) {
   return (
     <div>
       <MaterialUpload courseId={courseId} onUploaded={refetch} />
-      <MaterialList courseId={courseId} materials={materials} />
+      <MaterialList courseId={courseId} materials={materials} onRetry={handleRetry} />
     </div>
   );
 }

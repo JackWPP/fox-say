@@ -11,7 +11,9 @@ dependencies = [
   "qdrant-client",
   "networkx",
   "openai",
-  "pdfplumber"
+  "pdfplumber",
+  "openpyxl",
+  "python-pptx"
 ]
 
 [project.optional-dependencies]

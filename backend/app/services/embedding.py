@@ -14,12 +14,19 @@ def _get_client() -> OpenAI:
     return _client
 
 
+EMBEDDING_BATCH_SIZE = 64
+
+
 def embed_texts(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
     client = _get_client()
-    response = client.embeddings.create(
-        model=settings.embedding_model,
-        input=texts,
-    )
-    return [item.embedding for item in response.data]
+    all_embeddings: list[list[float]] = []
+    for i in range(0, len(texts), EMBEDDING_BATCH_SIZE):
+        batch = texts[i : i + EMBEDDING_BATCH_SIZE]
+        response = client.embeddings.create(
+            model=settings.embedding_model,
+            input=batch,
+        )
+        all_embeddings.extend(item.embedding for item in response.data)
+    return all_embeddings
