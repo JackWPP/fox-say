@@ -1,15 +1,12 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.api.courses import course_store
-from app.api.skeleton import skeleton_store
-from app.main import app
 from app.schemas.foxsay import Course, CourseSkeleton, CourseSkeletonChapter
 from app.services.knowledge_graph import KnowledgeGraph
 
 
 @pytest.fixture(autouse=True)
-def _clean_stores():
+def _clean_kg():
     KnowledgeGraph.clear()
     yield
     KnowledgeGraph.clear()
@@ -76,17 +73,17 @@ class TestKnowledgeGraph:
 
 
 @pytest.mark.asyncio
-async def test_get_skeleton_not_found():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        resp = await ac.get("/courses/nonexistent-course/skeleton")
-        assert resp.status_code == 404
+async def test_get_skeleton_not_found(client: AsyncClient):
+    resp = await client.get("/courses/nonexistent-course/skeleton")
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_get_skeleton_cached():
+async def test_get_skeleton_cached(client: AsyncClient):
+    store = client._transport.app.state.store
+
     course = Course(id="skeleton-test-1", title="测试课程", status="ready")
-    course_store.create(course.id, course)
+    store.create_course(course)
 
     skeleton = CourseSkeleton(
         course_id="skeleton-test-1",
@@ -97,16 +94,11 @@ async def test_get_skeleton_cached():
         difficulty_areas=[],
         prerequisite_chain=[],
     )
-    skeleton_store.create("skeleton-test-1", skeleton)
+    store.create_skeleton(skeleton)
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        resp = await ac.get("/courses/skeleton-test-1/skeleton")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["course_id"] == "skeleton-test-1"
-        assert len(data["chapters"]) == 1
-        assert data["chapters"][0]["title"] == "第一章"
-
-    course_store._data.pop("skeleton-test-1", None)
-    skeleton_store._data.pop("skeleton-test-1", None)
+    resp = await client.get("/courses/skeleton-test-1/skeleton")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["course_id"] == "skeleton-test-1"
+    assert len(data["chapters"]) == 1
+    assert data["chapters"][0]["title"] == "第一章"

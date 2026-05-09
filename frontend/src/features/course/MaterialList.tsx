@@ -1,5 +1,6 @@
-import { FileText, Loader2, CheckCircle, XCircle, Image, FileType } from "lucide-react";
+import { FileText, Loader2, CheckCircle, XCircle, Image, FileType, AlertTriangle } from "lucide-react";
 import type { Material, MaterialKind, CourseStatus } from "../../shared/types";
+import { useMaterialProgress } from "./useMaterials";
 
 const kindIcons: Record<MaterialKind, typeof FileText> = {
   pdf: FileText,
@@ -13,6 +14,16 @@ const kindLabels: Record<MaterialKind, string> = {
   ppt: "PPT",
   image: "图片",
   text_note: "文本",
+};
+
+const stepLabels: Record<string, string> = {
+  parsing: "正在解析",
+  chunking: "正在分块",
+  embedding: "正在嵌入",
+  storing: "正在存储",
+  skeleton_generating: "正在生成骨架",
+  completed: "已完成",
+  failed: "处理失败",
 };
 
 function StatusIcon({ status }: { status: CourseStatus }) {
@@ -35,7 +46,20 @@ const statusText: Record<CourseStatus, string> = {
   failed: "失败",
 };
 
-export default function MaterialList({ materials }: { materials: Material[] }) {
+function MaterialProgress({ courseId, material }: { courseId: string; material: Material }) {
+  const progress = useMaterialProgress(
+    material.status === "processing" ? courseId : "",
+    material.status === "processing" ? material.id : null
+  );
+
+  if (material.status !== "processing" || !progress?.current_step) {
+    return <span>{statusText[material.status]}</span>;
+  }
+
+  return <span className="text-foxAmber">{stepLabels[progress.current_step] || progress.current_step}</span>;
+}
+
+export default function MaterialList({ courseId, materials }: { courseId: string; materials: Material[] }) {
   if (materials.length === 0) {
     return (
       <div className="text-center py-12 text-gray-400">
@@ -59,11 +83,19 @@ export default function MaterialList({ materials }: { materials: Material[] }) {
               <p className="text-sm font-medium text-midnightCharcoal truncate">
                 {m.filename}
               </p>
-              <p className="text-xs text-gray-400">{kindLabels[m.kind]}</p>
+              <div className="flex items-center gap-2">
+                <p className="text-xs text-gray-400">{kindLabels[m.kind]}</p>
+                {m.degraded && (
+                  <span className="inline-flex items-center gap-1 text-xs text-amber-500">
+                    <AlertTriangle className="w-3 h-3" />
+                    降级处理
+                  </span>
+                )}
+              </div>
             </div>
             <div className="flex items-center gap-1.5 text-xs text-gray-500 shrink-0">
               <StatusIcon status={m.status} />
-              <span>{statusText[m.status]}</span>
+              <MaterialProgress courseId={courseId} material={m} />
             </div>
           </div>
         );

@@ -22,6 +22,7 @@ class Material(BaseModel):
     filename: str
     kind: MaterialKind
     status: CourseStatus
+    degraded: bool = False
 
 
 class CourseSkeletonChapter(BaseModel):

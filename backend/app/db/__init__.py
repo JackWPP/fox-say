@@ -1,3 +1,3 @@
-from app.db.store import CourseStore, MaterialStore, ReviewPlanStore, SkeletonStore
+from app.db.sqlite_store import SqliteStore
 
-__all__ = ["CourseStore", "MaterialStore", "ReviewPlanStore", "SkeletonStore"]
+__all__ = ["SqliteStore"]

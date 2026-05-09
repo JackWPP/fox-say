@@ -3,28 +3,19 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.api.courses import course_store
-from app.api.review import review_plan_store
-from app.api.skeleton import skeleton_store
-from app.main import app
-from app.schemas.foxsay import Course, CourseSkeleton, CourseSkeletonChapter, ReviewPlan
-
-
-@pytest.fixture(autouse=True)
-def _clean_stores():
-    yield
-    course_store._data.clear()
-    skeleton_store._data.clear()
-    review_plan_store._data.clear()
+from app.schemas.foxsay import CourseSkeleton, CourseSkeletonChapter, ReviewPlan
 
 
 def _setup_course_with_skeleton(
+    store,
     course_id: str = "review-test-1",
     title: str = "高等数学",
     exam_date: str = "2026-07-01",
 ) -> None:
+    from app.schemas.foxsay import Course
+
     course = Course(id=course_id, title=title, status="ready", exam_date=exam_date)
-    course_store.create(course.id, course)
+    store.create_course(course)
 
     skeleton = CourseSkeleton(
         course_id=course_id,
@@ -42,12 +33,13 @@ def _setup_course_with_skeleton(
         difficulty_areas=["多元微积分"],
         prerequisite_chain=[],
     )
-    skeleton_store.create(course_id, skeleton)
+    store.create_skeleton(skeleton)
 
 
 @pytest.mark.asyncio
-async def test_create_review_plan():
-    _setup_course_with_skeleton()
+async def test_create_review_plan(client: AsyncClient):
+    store = client._transport.app.state.store
+    _setup_course_with_skeleton(store)
 
     with patch("app.services.review._llm_generate", new_callable=AsyncMock) as mock_llm:
         mock_llm.return_value = ReviewPlan(
@@ -61,21 +53,20 @@ async def test_create_review_plan():
             weak_areas=["多元微积分"],
         )
 
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            resp = await ac.post("/courses/review-test-1/review-plan", json={})
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["course_id"] == "review-test-1"
-            assert len(data["daily_plan"]) == 2
-            assert data["daily_plan"][0]["focus"] == "微积分基础"
-            assert data["likely_exam_points"] == ["极限", "导数"]
-            assert data["weak_areas"] == ["多元微积分"]
+        resp = await client.post("/courses/review-test-1/review-plan", json={})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["course_id"] == "review-test-1"
+        assert len(data["daily_plan"]) == 2
+        assert data["daily_plan"][0]["focus"] == "微积分基础"
+        assert data["likely_exam_points"] == ["极限", "导数"]
+        assert data["weak_areas"] == ["多元微积分"]
 
 
 @pytest.mark.asyncio
-async def test_create_review_plan_with_override_exam_date():
-    _setup_course_with_skeleton()
+async def test_create_review_plan_with_override_exam_date(client: AsyncClient):
+    store = client._transport.app.state.store
+    _setup_course_with_skeleton(store)
 
     with patch("app.services.review._llm_generate", new_callable=AsyncMock) as mock_llm:
         mock_llm.return_value = ReviewPlan(
@@ -88,25 +79,24 @@ async def test_create_review_plan_with_override_exam_date():
             weak_areas=[],
         )
 
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            resp = await ac.post("/courses/review-test-1/review-plan", json={"exam_date": "2026-06-08"})
-            assert resp.status_code == 200
-            assert mock_llm.call_args[0][2] == "2026-06-08"
+        resp = await client.post("/courses/review-test-1/review-plan", json={"exam_date": "2026-06-08"})
+        assert resp.status_code == 200
+        assert mock_llm.call_args[0][2] == "2026-06-08"
 
 
 @pytest.mark.asyncio
-async def test_review_plan_course_not_found():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        resp = await ac.post("/courses/nonexistent/review-plan", json={})
-        assert resp.status_code == 404
+async def test_review_plan_course_not_found(client: AsyncClient):
+    resp = await client.post("/courses/nonexistent/review-plan", json={})
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_review_plan_no_exam_date():
+async def test_review_plan_no_exam_date(client: AsyncClient):
+    store = client._transport.app.state.store
+    from app.schemas.foxsay import Course
+
     course = Course(id="no-exam-1", title="无考试课程", status="ready")
-    course_store.create(course.id, course)
+    store.create_course(course)
 
     skeleton = CourseSkeleton(
         course_id="no-exam-1",
@@ -117,17 +107,16 @@ async def test_review_plan_no_exam_date():
         difficulty_areas=[],
         prerequisite_chain=[],
     )
-    skeleton_store.create("no-exam-1", skeleton)
+    store.create_skeleton(skeleton)
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        resp = await ac.post("/courses/no-exam-1/review-plan", json={})
-        assert resp.status_code == 400
+    resp = await client.post("/courses/no-exam-1/review-plan", json={})
+    assert resp.status_code == 400
 
 
 @pytest.mark.asyncio
-async def test_btw_interjection():
-    _setup_course_with_skeleton()
+async def test_btw_interjection(client: AsyncClient):
+    store = client._transport.app.state.store
+    _setup_course_with_skeleton(store)
 
     plan = ReviewPlan(
         course_id="review-test-1",
@@ -138,7 +127,7 @@ async def test_btw_interjection():
         likely_exam_points=[],
         weak_areas=[],
     )
-    review_plan_store.create("review-test-1", plan)
+    store.create_review_plan(plan)
 
     with patch("app.api.review.ask", new_callable=AsyncMock) as mock_ask:
         from app.schemas.foxsay import CragAnswer, Citation
@@ -151,20 +140,19 @@ async def test_btw_interjection():
             relevance_score=0.85,
         )
 
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            resp = await ac.post("/courses/review-test-1/btw", json={"question": "什么是极限"})
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["course_id"] == "review-test-1"
-            assert data["question"] == "什么是极限"
-            assert data["answer"]["confidence_status"] == "grounded"
-            assert data["returns_to_review_step_id"] == "day-1"
+        resp = await client.post("/courses/review-test-1/btw", json={"question": "什么是极限"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["course_id"] == "review-test-1"
+        assert data["question"] == "什么是极限"
+        assert data["answer"]["confidence_status"] == "grounded"
+        assert data["returns_to_review_step_id"] == "day-1"
 
 
 @pytest.mark.asyncio
-async def test_btw_with_current_step_id():
-    _setup_course_with_skeleton()
+async def test_btw_with_current_step_id(client: AsyncClient):
+    store = client._transport.app.state.store
+    _setup_course_with_skeleton(store)
 
     with patch("app.api.review.ask", new_callable=AsyncMock) as mock_ask:
         from app.schemas.foxsay import CragAnswer, Citation
@@ -177,20 +165,16 @@ async def test_btw_with_current_step_id():
             relevance_score=0.90,
         )
 
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            resp = await ac.post("/courses/review-test-1/btw", json={"question": "什么是导数", "current_step_id": "day-3"})
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["returns_to_review_step_id"] == "day-3"
+        resp = await client.post("/courses/review-test-1/btw", json={"question": "什么是导数", "current_step_id": "day-3"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["returns_to_review_step_id"] == "day-3"
 
 
 @pytest.mark.asyncio
-async def test_btw_course_not_found():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        resp = await ac.post("/courses/nonexistent/btw", json={"question": "test"})
-        assert resp.status_code == 404
+async def test_btw_course_not_found(client: AsyncClient):
+    resp = await client.post("/courses/nonexistent/btw", json={"question": "test"})
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio

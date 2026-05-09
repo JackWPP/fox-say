@@ -3,7 +3,7 @@ import logging
 
 from openai import OpenAI
 
-from app.core.config import Settings
+from app.core.config import settings
 from app.schemas.foxsay import CourseSkeleton
 from app.services.knowledge_graph import KnowledgeGraph
 
@@ -15,7 +15,6 @@ _client: OpenAI | None = None
 def _get_client() -> OpenAI:
     global _client
     if _client is None:
-        settings = Settings()
         api_key = settings.deepseek_api_key or "placeholder"
         _client = OpenAI(api_key=api_key, base_url=settings.deepseek_api_base)
     return _client
@@ -60,7 +59,6 @@ async def _llm_generate(
     kg: KnowledgeGraph,
 ) -> CourseSkeleton:
     client = _get_client()
-    settings = Settings()
 
     user_content = f"课程名：{course_title}\n\n课程材料文本：\n{materials_text[:8000]}"
 

@@ -17,6 +17,7 @@ export interface Material {
   filename: string;
   kind: MaterialKind;
   status: CourseStatus;
+  degraded?: boolean;
 }
 
 export interface CourseSkeletonChapter {

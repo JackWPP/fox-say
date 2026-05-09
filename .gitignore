@@ -47,6 +47,9 @@ frontend/dist/
 # Uploaded materials (user data)
 backend/uploads/
 
+# SQLite database (local dev data)
+data/
+
 # Qdrant vector store data
 infra/qdrant/data/
 

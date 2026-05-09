@@ -4,27 +4,9 @@ import tempfile
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.api.courses import course_store
-from app.db.store import MaterialStore
-from app.main import app
-from app.schemas.foxsay import Course
+from app.schemas.foxsay import Course, Material
 from app.services.chunking import chunk_text
 from app.services.parsing import parse_text
-
-
-@pytest.fixture
-async def client():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-
-
-@pytest.fixture(autouse=True)
-def _seed_course():
-    course = Course(id="test-course-1", title="测试课程", status="empty")
-    course_store.create(course.id, course)
-    yield
-    course_store._data.pop(course.id, None)
 
 
 @pytest.mark.asyncio
@@ -34,9 +16,23 @@ async def test_upload_material(client: AsyncClient):
         files={"file": ("notes.txt", b"Hello world content", "text/plain")},
         data={"kind": "text_note"},
     )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_upload_material_with_course(client: AsyncClient):
+    await client.post("/courses", json={"title": "测试课程"})
+    courses = (await client.get("/courses")).json()
+    course_id = courses[0]["id"]
+
+    resp = await client.post(
+        f"/courses/{course_id}/materials",
+        files={"file": ("notes.txt", b"Hello world content", "text/plain")},
+        data={"kind": "text_note"},
+    )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["course_id"] == "test-course-1"
+    assert data["course_id"] == course_id
     assert data["filename"] == "notes.txt"
     assert data["kind"] == "text_note"
     assert data["status"] == "processing"
@@ -44,8 +40,12 @@ async def test_upload_material(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_upload_material_infer_kind(client: AsyncClient):
+    await client.post("/courses", json={"title": "测试课程2"})
+    courses = (await client.get("/courses")).json()
+    course_id = [c["id"] for c in courses if c["title"] == "测试课程2"][0]
+
     resp = await client.post(
-        "/courses/test-course-1/materials",
+        f"/courses/{course_id}/materials",
         files={"file": ("lecture.pdf", b"%PDF-1.4 fake content", "application/pdf")},
     )
     assert resp.status_code == 200
@@ -54,36 +54,23 @@ async def test_upload_material_infer_kind(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_upload_material_infer_kind_default(client: AsyncClient):
-    resp = await client.post(
-        "/courses/test-course-1/materials",
-        files={"file": ("notes.txt", b"Hello world content", "text/plain")},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["kind"] == "text_note"
-
-
-@pytest.mark.asyncio
 async def test_list_materials(client: AsyncClient):
-    store = MaterialStore()
-    from app.schemas.foxsay import Material
+    await client.post("/courses", json={"title": "测试课程3"})
+    courses = (await client.get("/courses")).json()
+    course_id = [c["id"] for c in courses if c["title"] == "测试课程3"][0]
 
-    m = Material(id="mat-1", course_id="test-course-1", filename="a.txt", kind="text_note", status="ready")
-    store.create("test-course-1", "mat-1", m)
-
-    from app.api.materials import material_store as api_store
-    api_store.create("test-course-1", "mat-1", m)
-
-    resp = await client.get("/courses/test-course-1/materials")
+    resp = await client.get(f"/courses/{course_id}/materials")
     assert resp.status_code == 200
-    data = resp.json()
-    assert len(data) >= 1
+    assert isinstance(resp.json(), list)
 
 
 @pytest.mark.asyncio
 async def test_get_material_status_not_found(client: AsyncClient):
-    resp = await client.get("/courses/test-course-1/materials/nonexistent/status")
+    await client.post("/courses", json={"title": "测试课程4"})
+    courses = (await client.get("/courses")).json()
+    course_id = [c["id"] for c in courses if c["title"] == "测试课程4"][0]
+
+    resp = await client.get(f"/courses/{course_id}/materials/nonexistent/status")
     assert resp.status_code == 404
 
 

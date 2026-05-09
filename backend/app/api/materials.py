@@ -2,17 +2,16 @@ import asyncio
 import os
 import uuid
 
-from fastapi import APIRouter, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 
-from app.db.store import MaterialStore
+from app.db.deps import get_store
+from app.db.sqlite_store import SqliteStore
 from app.schemas.foxsay import Material, MaterialKind
 from app.services.pipeline import process_material
 
 router = APIRouter(prefix="/courses/{course_id}/materials")
 
-material_store = MaterialStore()
-
-UPLOAD_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+UPLOAD_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "uploads")
 
 _KIND_MAP: dict[str, MaterialKind] = {
     ".pdf": "pdf",
@@ -35,7 +34,16 @@ def _infer_kind(filename: str) -> MaterialKind:
 
 
 @router.post("", response_model=Material)
-async def upload_material(course_id: str, file: UploadFile, kind: str = Form(default="")):
+async def upload_material(
+    course_id: str,
+    file: UploadFile,
+    kind: str = Form(default=""),
+    store: SqliteStore = Depends(get_store),
+):
+    course = store.get_course(course_id)
+    if course is None:
+        raise HTTPException(status_code=404, detail="Course not found")
+
     material_id = str(uuid.uuid4())
     upload_dir = os.path.join(UPLOAD_ROOT, course_id)
     os.makedirs(upload_dir, exist_ok=True)
@@ -53,21 +61,41 @@ async def upload_material(course_id: str, file: UploadFile, kind: str = Form(def
         kind=resolved_kind,
         status="processing",
     )
-    material_store.create(course_id, material_id, material)
+    store.create_material(material, file_path=file_path)
 
-    asyncio.create_task(process_material(course_id, material_id, file_path, resolved_kind, material_store))
+    asyncio.create_task(process_material(course_id, material_id, file_path, resolved_kind, file.filename or "unknown", store))
 
     return material
 
 
 @router.get("/{material_id}/status", response_model=Material)
-async def get_material_status(course_id: str, material_id: str):
-    material = material_store.get(course_id, material_id)
+async def get_material_status(course_id: str, material_id: str, store: SqliteStore = Depends(get_store)):
+    material = store.get_material(course_id, material_id)
     if material is None:
         raise HTTPException(status_code=404, detail="Material not found")
-    return material
+    degraded = store.is_material_degraded(course_id, material_id)
+    return material.model_copy(update={"degraded": degraded})
 
 
 @router.get("", response_model=list[Material])
-async def list_materials(course_id: str):
-    return material_store.get_all(course_id)
+async def list_materials(course_id: str, store: SqliteStore = Depends(get_store)):
+    return store.get_all_materials(course_id)
+
+
+@router.get("/{material_id}/progress")
+async def get_material_progress(course_id: str, material_id: str, store: SqliteStore = Depends(get_store)):
+    tasks = store.get_tasks_for_material(course_id, material_id)
+    if not tasks:
+        raise HTTPException(status_code=404, detail="No progress data for this material")
+    current_step = None
+    for t in tasks:
+        if t["status"] in ("pending", "running"):
+            current_step = t["step"]
+            break
+    if current_step is None and tasks:
+        last = tasks[-1]
+        if last["status"] == "done":
+            current_step = "completed"
+        elif last["status"] == "failed":
+            current_step = "failed"
+    return {"material_id": material_id, "current_step": current_step, "steps": tasks}

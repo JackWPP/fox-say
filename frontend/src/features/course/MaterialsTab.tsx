@@ -36,7 +36,7 @@ export default function MaterialsTab({ courseId }: MaterialsTabProps) {
   return (
     <div>
       <MaterialUpload courseId={courseId} onUploaded={refetch} />
-      <MaterialList materials={materials} />
+      <MaterialList courseId={courseId} materials={materials} />
     </div>
   );
 }

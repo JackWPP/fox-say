@@ -156,10 +156,20 @@ class TestCragRefusal:
 @pytest.mark.asyncio
 async def test_chat_endpoint_course_not_found():
     from httpx import ASGITransport, AsyncClient
-
+    import tempfile
+    import os
+    from app.db.sqlite_store import SqliteStore
     from app.main import app
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+    store = SqliteStore(db_path=db_path)
+    app.state.store = store
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         resp = await ac.post("/courses/nonexistent/chat", json={"question": "test"})
         assert resp.status_code == 404
+
+    store.close()
+    os.unlink(db_path)

@@ -2,7 +2,7 @@ import logging
 
 from openai import OpenAI
 
-from app.core.config import Settings
+from app.core.config import settings
 from app.schemas.foxsay import CragAnswer, Citation
 from app.services.retrieval import retrieve
 
@@ -14,7 +14,6 @@ _client: OpenAI | None = None
 def _get_client() -> OpenAI:
     global _client
     if _client is None:
-        settings = Settings()
         api_key = settings.deepseek_api_key or "placeholder"
         _client = OpenAI(api_key=api_key, base_url=settings.deepseek_api_base)
     return _client
@@ -84,7 +83,6 @@ async def ask(course_id: str, course_title: str, question: str) -> CragAnswer:
 
 async def _llm_answer(question: str, context: str, system_prompt: str) -> str:
     client = _get_client()
-    settings = Settings()
 
     user_content = f"课程材料：\n{context}\n\n问题：{question}"
 

@@ -1,12 +1,19 @@
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
-from app.core.config import Settings
+from app.core.config import settings
 
-_settings = Settings()
-_client = QdrantClient(url=_settings.qdrant_url)
+_client: QdrantClient | None = None
 
-VECTOR_DIM = 1536
+
+def _get_client() -> QdrantClient:
+    global _client
+    if _client is None:
+        _client = QdrantClient(url=settings.qdrant_url)
+    return _client
+
+
+VECTOR_DIM = 1024
 
 
 def _collection_name(course_id: str) -> str:
@@ -16,8 +23,9 @@ def _collection_name(course_id: str) -> str:
 class QdrantStore:
     def create_course_collection(self, course_id: str) -> None:
         name = _collection_name(course_id)
-        if not _client.collection_exists(name):
-            _client.create_collection(
+        client = _get_client()
+        if not client.collection_exists(name):
+            client.create_collection(
                 collection_name=name,
                 vectors_config=VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
             )
@@ -30,6 +38,7 @@ class QdrantStore:
         metadata: dict,
     ) -> None:
         name = _collection_name(course_id)
+        client = _get_client()
         self.create_course_collection(course_id)
         points: list[PointStruct] = []
         for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
@@ -39,7 +48,7 @@ class QdrantStore:
                 **metadata,
             }
             points.append(PointStruct(id=i, vector=embedding, payload=payload))
-        _client.upsert(collection_name=name, points=points)
+        client.upsert(collection_name=name, points=points)
 
     def search(
         self,
@@ -48,17 +57,19 @@ class QdrantStore:
         limit: int = 5,
     ) -> list[dict]:
         name = _collection_name(course_id)
-        if not _client.collection_exists(name):
+        client = _get_client()
+        if not client.collection_exists(name):
             return []
-        results = _client.search(
+        response = client.query_points(
             collection_name=name,
-            query_vector=query_embedding,
+            query=query_embedding,
             limit=limit,
+            with_payload=True,
         )
         return [
             {
-                "score": hit.score,
-                "payload": hit.payload,
+                "score": point.score,
+                "payload": point.payload or {},
             }
-            for hit in results
+            for point in response.points
         ]

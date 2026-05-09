@@ -1,5 +1,3 @@
-"""Core settings and infrastructure boundaries."""
+from app.core.config import Settings, settings
 
-from app.core.config import Settings
-
-__all__ = ["Settings"]
+__all__ = ["Settings", "settings"]
