@@ -7,6 +7,21 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      - qdrant
+    env_file:
+      - ../.env
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+    volumes:
+      - uploads_data:/app/uploads
+
 volumes:
   qdrant_data:
-
+  uploads_data:
