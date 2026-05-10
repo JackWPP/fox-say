@@ -13,7 +13,8 @@ dependencies = [
   "openai",
   "pdfplumber",
   "openpyxl",
-  "python-pptx"
+  "python-pptx",
+  "docling",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,9 @@ dev = [
   "httpx",
   "ruff",
   "mypy"
+]
+marker = [
+  "marker-pdf",
 ]
 
 [tool.uv]

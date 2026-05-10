@@ -5,7 +5,7 @@ import { useImportTimetable } from "./useCourses";
 interface ImportTimetableModalProps {
   open: boolean;
   onClose: () => void;
-  onImported: () => void;
+  onImported: (courseIds: string[]) => void;
 }
 
 export default function ImportTimetableModal({ open, onClose, onImported }: ImportTimetableModalProps) {
@@ -31,8 +31,8 @@ export default function ImportTimetableModal({ open, onClose, onImported }: Impo
   const handleSubmit = async () => {
     if (!file) return;
     try {
-      await importTimetable(file);
-      onImported();
+      const data = await importTimetable(file);
+      if (data) onImported(data.courses.map((c) => c.id));
     } catch {}
   };
 

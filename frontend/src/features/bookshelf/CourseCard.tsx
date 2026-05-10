@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
-import { BookOpen, Clock, User } from "lucide-react";
+import { BookOpen, Clock, User, Zap } from "lucide-react";
 import type { Course, CourseStatus } from "../../shared/types";
+import { foxCopy } from "../../shared/fox-copy";
 
 const statusColors: Record<CourseStatus, string> = {
   empty: "bg-gray-300",
@@ -63,8 +64,14 @@ export default function CourseCard({ course }: { course: Course }) {
         </div>
       )}
 
-      <div className="mt-3 pt-3 border-t border-gray-100 text-xs text-gray-400">
-        {statusLabels[course.status]}
+      <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between">
+        <span className="text-xs text-gray-400">{statusLabels[course.status]}</span>
+        {countdown?.urgent && localStorage.getItem("foxsay_mode") !== "exam" && (
+          <span className="inline-flex items-center gap-1 text-xs text-red-500 font-medium">
+            <Zap className="w-3 h-3" />
+            {foxCopy.review.switchSuggestion}
+          </span>
+        )}
       </div>
     </button>
   );

@@ -1,13 +1,23 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Send } from "lucide-react";
+import { foxCopy } from "../../shared/fox-copy";
 
 interface ChatInputProps {
   onSend: (question: string) => void;
   loading: boolean;
+  prefill?: string;
+  onPrefillConsumed?: () => void;
 }
 
-export default function ChatInput({ onSend, loading }: ChatInputProps) {
+export default function ChatInput({ onSend, loading, prefill, onPrefillConsumed }: ChatInputProps) {
   const [value, setValue] = useState("");
+
+  useEffect(() => {
+    if (prefill) {
+      setValue(prefill);
+      onPrefillConsumed?.();
+    }
+  }, [prefill, onPrefillConsumed]);
 
   const handleSend = () => {
     const trimmed = value.trim();
@@ -30,7 +40,7 @@ export default function ChatInput({ onSend, loading }: ChatInputProps) {
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
         disabled={loading}
-        placeholder="问点关于课程的问题..."
+        placeholder={foxCopy.chat.placeholder}
         rows={1}
         className="flex-1 resize-none text-sm text-midnightCharcoal placeholder-gray-400 focus:outline-none bg-transparent disabled:opacity-50"
         style={{ minHeight: "1.5rem", maxHeight: "6rem" }}

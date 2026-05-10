@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     upload_root: str = str(_PROJECT_ROOT / "uploads")
     sqlite_path: str = str(_PROJECT_ROOT / "data" / "foxsay.db")
     foxsay_env: str = "development"
+    pdf_parser: str = "docling"
 
     model_config = {
         "env_prefix": "",

@@ -1,7 +1,25 @@
+import logging
+
 import pdfplumber
 
+logger = logging.getLogger(__name__)
 
-def parse_pdf(file_path: str) -> str:
+
+def parse_pdf(file_path: str, use_docling: bool | None = None) -> str:
+    if use_docling is None:
+        from app.core.config import settings
+        use_docling = settings.pdf_parser == "docling"
+
+    if use_docling:
+        try:
+            from app.services.parsing_docling import parse_pdf_docling, docling_to_flat_text
+
+            chunks = parse_pdf_docling(file_path)
+            if chunks:
+                return docling_to_flat_text(chunks)
+        except Exception:
+            logger.warning("Docling parse failed for %s, falling back to pdfplumber", file_path)
+
     pages: list[str] = []
     with pdfplumber.open(file_path) as pdf:
         for page in pdf.pages:

@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { api } from "../../shared/api";
-import type { CragAnswer, Citation, ConfidenceStatus } from "../../shared/types";
+import { foxCopy } from "../../shared/fox-copy";
+import type { Citation, ConfidenceStatus, ToolCallState, StreamEvent } from "../../shared/types";
 export type { ConfidenceStatus } from "../../shared/types";
 
 export interface ChatMessage {
@@ -10,80 +11,189 @@ export interface ChatMessage {
   citations?: Citation[];
   confidenceStatus?: ConfidenceStatus;
   refusalReason?: string;
+  toolCalls?: ToolCallState[];
+  isStreaming?: boolean;
 }
+
+export interface ChatSession {
+  id: string;
+  course_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function generateId() {
+  return crypto.randomUUID();
+}
+
+const API_BASE = "/api";
 
 export function useChat(courseId: string) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
+  const [streamingBuffer, setStreamingBuffer] = useState("");
+  const [activeToolCalls, setActiveToolCalls] = useState<ToolCallState[]>([]);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string>("");
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyOffset, setHistoryOffset] = useState(0);
+
+  const loadSessions = useCallback(async () => {
+    try {
+      const data = await api.get<{ sessions: ChatSession[] }>(`/courses/${courseId}/chat/sessions`);
+      setSessions(data.sessions);
+      if (!activeSessionId && data.sessions.length > 0) {
+        setActiveSessionId(data.sessions[0].id);
+      }
+    } catch { /* ignore */ }
+  }, [courseId, activeSessionId]);
+
+  useEffect(() => { loadSessions(); }, [loadSessions]);
+
+  const loadHistory = useCallback(async (sessionId: string) => {
+    try {
+      const data = await api.get<{
+        messages: Array<{ id: string; role: string; content: string; citations?: Citation[]; confidence_status?: ConfidenceStatus; refusal_reason?: string }>;
+        total: number;
+        offset: number;
+      }>(`/courses/${courseId}/chat/history?session_id=${sessionId}&limit=50&offset=0`);
+      setMessages(
+        data.messages.map((m) => ({
+          id: m.id,
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          citations: m.citations,
+          confidenceStatus: m.confidence_status,
+          refusalReason: m.refusal_reason,
+        })),
+      );
+      setHistoryTotal(data.total);
+      setHistoryOffset(data.offset);
+    } catch { /* ignore */ }
+  }, [courseId]);
 
   useEffect(() => {
-    let cancelled = false;
-    api
-      .get<{
-        messages: Array<{
-          id: string;
-          role: string;
-          content: string;
-          citations?: Citation[];
-          confidence_status?: ConfidenceStatus;
-          refusal_reason?: string;
-        }>;
-      }>(`/courses/${courseId}/chat/history`)
-      .then((res) => {
-        if (cancelled) return;
-        setMessages(
-          res.messages.map((m) => ({
-            id: m.id,
-            role: m.role as "user" | "assistant",
-            content: m.content,
-            citations: m.citations,
-            confidenceStatus: m.confidence_status,
-            refusalReason: m.refusal_reason,
-          })),
-        );
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [courseId]);
+    if (activeSessionId) {
+      loadHistory(activeSessionId);
+    }
+  }, [activeSessionId, loadHistory]);
+
+  const switchSession = useCallback((sessionId: string) => {
+    setActiveSessionId(sessionId);
+    setStreamingBuffer("");
+    setActiveToolCalls([]);
+  }, []);
+
+  const createSession = useCallback(async (title: string) => {
+    try {
+      const data = await api.post<{ session_id: string; title: string }>(
+        `/courses/${courseId}/chat/sessions`,
+        { title },
+      );
+      await loadSessions();
+      setActiveSessionId(data.session_id);
+      return data.session_id;
+    } catch { return null; }
+  }, [courseId, loadSessions]);
+
+  const deleteSession = useCallback(async (sessionId: string) => {
+    try {
+      await api.del(`/courses/${courseId}/chat/sessions/${sessionId}`);
+      await loadSessions();
+      if (activeSessionId === sessionId) {
+        const remaining = sessions.filter((s) => s.id !== sessionId);
+        if (remaining.length > 0) {
+          setActiveSessionId(remaining[0].id);
+        } else {
+          setActiveSessionId("");
+          setMessages([]);
+        }
+      }
+    } catch { /* ignore */ }
+  }, [courseId, activeSessionId, loadSessions, sessions]);
 
   const sendQuestion = useCallback(
     async (question: string) => {
+      if (!activeSessionId) {
+        const sid = await createSession("New Chat");
+        if (!sid) return;
+      }
+
       const userMsg: ChatMessage = {
-        id: crypto.randomUUID(),
+        id: generateId(),
         role: "user",
         content: question,
       };
       setMessages((prev) => [...prev, userMsg]);
       setLoading(true);
+      setStreamingBuffer("");
+      setActiveToolCalls([]);
 
       try {
-        const answer = await api.post<CragAnswer>(`/courses/${courseId}/chat`, {
-          question,
+        const res = await fetch(`${API_BASE}/courses/${courseId}/chat/stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question, session_id: activeSessionId }),
         });
-        const aiMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: answer.answer,
-          citations: answer.citations,
-          confidenceStatus: answer.confidence_status,
-          refusalReason: answer.refusal_reason,
-        };
+
+        if (!res.ok) throw new Error(`Stream error: ${res.status}`);
+
+        const reader = res.body?.getReader();
+        if (!reader) throw new Error("No stream body");
+
+        const decoder = new TextDecoder();
+        let buf = "";
+        let fullAnswer = "";
+        let allCitations: Citation[] = [];
+        const toolCallMap = new Map<string, ToolCallState>();
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() || "";
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            try {
+              const event: StreamEvent = JSON.parse(line.slice(6));
+              if (event.type === "tool_call") {
+                const tc: ToolCallState = { id: generateId(), tool: event.tool || "unknown", args: event.args || {}, status: "running" };
+                toolCallMap.set(tc.tool, tc);
+                setActiveToolCalls([...toolCallMap.values()]);
+              } else if (event.type === "token") {
+                fullAnswer += event.token || "";
+                setStreamingBuffer(fullAnswer);
+              } else if (event.type === "done") {
+                fullAnswer = event.answer || fullAnswer;
+                allCitations = event.citations || [];
+                // Mark all tool calls as done
+                for (const tc of toolCallMap.values()) { tc.status = "done"; }
+                setActiveToolCalls([]);
+              } else if (event.type === "error") {
+                fullAnswer = event.message || foxCopy.errors.generic;
+              }
+            } catch { /* skip malformed */ }
+          }
+        }
+
+        const aiMsg: ChatMessage = { id: generateId(), role: "assistant", content: fullAnswer || foxCopy.errors.generic, citations: allCitations, toolCalls: [...toolCallMap.values()], isStreaming: false };
         setMessages((prev) => [...prev, aiMsg]);
+        setStreamingBuffer("");
+        setActiveToolCalls([]);
+        loadSessions(); // refresh session list (updated_at)
       } catch {
-        const errMsg: ChatMessage = {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: "哎呀，出了点问题，再试一次吧 🦊",
-        };
+        const errMsg: ChatMessage = { id: generateId(), role: "assistant", content: foxCopy.errors.generic };
         setMessages((prev) => [...prev, errMsg]);
+        setStreamingBuffer("");
+        setActiveToolCalls([]);
       } finally {
         setLoading(false);
       }
     },
-    [courseId],
+    [courseId, activeSessionId, createSession, loadSessions],
   );
 
-  return { messages, sendQuestion, loading };
+  return { messages, sendQuestion, loading, streamingBuffer, activeToolCalls, sessions, activeSessionId, switchSession, createSession, deleteSession };
 }

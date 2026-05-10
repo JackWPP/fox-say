@@ -1,142 +1,176 @@
-import { useState } from "react";
-import { ChevronDown, ChevronRight, BookOpen, AlertTriangle } from "lucide-react";
-import type { CourseSkeletonChapter, Importance } from "../../shared/types";
-
-const importanceConfig: Record<Importance, { label: string; color: string }> = {
-  high: { label: "高", color: "bg-red-100 text-red-700" },
-  medium: { label: "中", color: "bg-foxAmber/20 text-foxAmber" },
-  low: { label: "低", color: "bg-gray-100 text-gray-600" },
-};
-
-interface ChapterCardProps {
-  chapter: CourseSkeletonChapter;
-}
-
-function ChapterCard({ chapter }: ChapterCardProps) {
-  const [expanded, setExpanded] = useState(true);
-  const imp = importanceConfig[chapter.importance];
-
-  return (
-    <div className="bg-white rounded-lg border border-gray-100 overflow-hidden hover:border-foxAmber/30 transition-colors">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left"
-      >
-        {expanded ? (
-          <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
-        ) : (
-          <ChevronRight className="w-4 h-4 text-gray-400 shrink-0" />
-        )}
-        <BookOpen className="w-4 h-4 text-foxAmber shrink-0" />
-        <span className="flex-1 text-sm font-medium text-midnightCharcoal">
-          {chapter.title}
-        </span>
-        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${imp.color}`}>
-          {imp.label}
-        </span>
-      </button>
-
-      {expanded && (
-        <div className="px-4 pb-4 space-y-3">
-          <div className="ml-7">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs text-gray-500">考试权重</span>
-              <div className="flex-1 bg-gray-100 rounded-full h-2 max-w-[120px]">
-                <div
-                  className="bg-foxAmber h-2 rounded-full transition-all"
-                  style={{ width: `${Math.min(chapter.exam_weight, 100)}%` }}
-                />
-              </div>
-              <span className="text-xs text-gray-500">{chapter.exam_weight}%</span>
-            </div>
-
-            {chapter.key_concepts.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {chapter.key_concepts.map((concept, i) => (
-                  <span
-                    key={i}
-                    className="text-xs bg-midnightCharcoal/5 text-midnightCharcoal px-2 py-1 rounded-md"
-                  >
-                    {concept}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+import { useEffect, useRef, useCallback } from "react";
+import * as d3 from "d3";
+import type { CourseSkeleton } from "../../shared/types";
 
 interface SkeletonTreeProps {
-  chapters: CourseSkeletonChapter[];
-  difficultyAreas: string[];
-  prerequisiteChain: Array<[string, string]>;
+  skeleton: CourseSkeleton;
+  onConceptClick?: (concept: string) => void;
 }
 
-export default function SkeletonTree({
-  chapters,
-  difficultyAreas,
-  prerequisiteChain,
-}: SkeletonTreeProps) {
+interface GraphNode extends d3.SimulationNodeDatum {
+  id: string;
+  label: string;
+  nodeType: "concept" | "chapter" | "difficulty";
+  importance: string;
+}
+
+interface GraphLink {
+  source: string | GraphNode;
+  target: string | GraphNode;
+  relation: string;
+}
+
+export default function SkeletonTree({ skeleton, onConceptClick }: SkeletonTreeProps) {
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  const ensureNode = (id: string, label: string, type: GraphNode["nodeType"], importance: string, nodes: GraphNode[], nodeIds: Set<string>) => {
+    if (!nodeIds.has(id)) {
+      nodeIds.add(id);
+      nodes.push({ id, label, nodeType: type, importance });
+    }
+  };
+
+  const buildGraph = useCallback((): { nodes: GraphNode[]; links: GraphLink[] } => {
+    const nodes: GraphNode[] = [];
+    const links: GraphLink[] = [];
+    const nodeIds = new Set<string>();
+
+    // Create concept nodes from chapter.key_concepts FIRST (before links)
+    for (const ch of skeleton.chapters) {
+      for (const concept of ch.key_concepts) {
+        const cid = `concept_${concept.replace(/\s+/g, "_").toLowerCase()}`;
+        ensureNode(cid, concept, "concept", ch.importance, nodes, nodeIds);
+      }
+    }
+
+    // Chapter nodes
+    for (const ch of skeleton.chapters) {
+      ensureNode(ch.id, ch.title, "chapter", ch.importance, nodes, nodeIds);
+      // Link chapter to its key concepts (nodes now guaranteed to exist)
+      for (const concept of ch.key_concepts) {
+        const cid = `concept_${concept.replace(/\s+/g, "_").toLowerCase()}`;
+        links.push({ source: ch.id, target: cid, relation: "contains" });
+      }
+    }
+
+    // Core concept nodes (may add to existing)
+    for (const concept of skeleton.core_concepts || []) {
+      const cid = `concept_${concept.replace(/\s+/g, "_").toLowerCase()}`;
+      ensureNode(cid, concept, "concept", "high", nodes, nodeIds);
+    }
+
+    // Difficulty area nodes
+    for (const area of skeleton.difficulty_areas || []) {
+      const label = area.length > 30 ? area.slice(0, 30) + "..." : area;
+      const did = `diff_${label.replace(/\s+/g, "_").toLowerCase()}`;
+      ensureNode(did, label, "difficulty", "high", nodes, nodeIds);
+    }
+
+    // Prerequisite chain links
+    for (const [from, to] of skeleton.prerequisite_chain || []) {
+      const fid = `concept_${from.replace(/\s+/g, "_").toLowerCase()}`;
+      const tid = `concept_${to.replace(/\s+/g, "_").toLowerCase()}`;
+      ensureNode(fid, from, "concept", "medium", nodes, nodeIds);
+      ensureNode(tid, to, "concept", "medium", nodes, nodeIds);
+      links.push({ source: fid, target: tid, relation: "prerequisite" });
+    }
+
+    return { nodes, links };
+  }, [skeleton]);
+
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const container = svg.parentElement;
+    const width = container?.clientWidth || 700;
+    const height = 500;
+
+    d3.select(svg).selectAll("*").remove();
+    const { nodes, links } = buildGraph();
+    if (nodes.length === 0) return;
+
+    const svgEl = d3.select(svg).attr("width", width).attr("height", height);
+    const g = svgEl.append("g");
+
+    const zoom = d3.zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.3, 3])
+      .on("zoom", (event) => { g.attr("transform", event.transform); });
+    svgEl.call(zoom);
+
+    const nodeColor = (d: GraphNode) => {
+      if (d.nodeType === "difficulty") return "#ef4444";
+      if (d.nodeType === "chapter") return "#111317";
+      return "#F59E0B";
+    };
+
+    const nodeRadius = (d: GraphNode) => {
+      if (d.nodeType === "chapter") return d.importance === "high" ? 22 : d.importance === "medium" ? 16 : 12;
+      if (d.nodeType === "difficulty") return 14;
+      return d.importance === "high" ? 18 : 12;
+    };
+
+    const simulation = d3.forceSimulation<GraphNode>(nodes)
+      .force("link", d3.forceLink<GraphNode, GraphLink>(links).id(d => d.id).distance(100))
+      .force("charge", d3.forceManyBody().strength(-300))
+      .force("center", d3.forceCenter(width / 2, height / 2))
+      .force("collision", d3.forceCollide<GraphNode>().radius(d => nodeRadius(d) + 10));
+
+    const link = g.append("g").selectAll<SVGLineElement, GraphLink>("line")
+      .data(links).join("line")
+      .attr("stroke", "#ccc").attr("stroke-width", 1.5)
+      .attr("stroke-dasharray", d => d.relation === "prerequisite" ? "5,3" : "none");
+
+    const node = g.append("g").selectAll<SVGGElement, GraphNode>("g")
+      .data(nodes).join("g")
+      .attr("cursor", d => d.nodeType === "concept" ? "pointer" : "default")
+      .call(d3.drag<SVGGElement, GraphNode>()
+        .on("start", (event, d) => {
+          if (!event.active) simulation.alphaTarget(0.3).restart();
+          d.fx = d.x; d.fy = d.y;
+        })
+        .on("drag", (event, d) => { d.fx = event.x; d.fy = event.y; })
+        .on("end", (event, d) => {
+          if (!event.active) simulation.alphaTarget(0);
+          d.fx = null; d.fy = null;
+        })
+      );
+
+    node.append("circle")
+      .attr("r", d => nodeRadius(d))
+      .attr("fill", d => nodeColor(d))
+      .attr("stroke", "#fff").attr("stroke-width", 2);
+
+    node.append("text")
+      .text(d => d.label.length > 15 ? d.label.slice(0, 15) + "..." : d.label)
+      .attr("text-anchor", "middle").attr("dy", d => nodeRadius(d) + 14)
+      .attr("font-size", "11px").attr("fill", "#374151");
+
+    node.on("click", (_event, d) => {
+      if (d.nodeType === "concept" && onConceptClick) {
+        onConceptClick(d.label);
+      }
+    });
+
+    node.append("title").text(d => `${d.label} [${d.nodeType}]`);
+
+    simulation.on("tick", () => {
+      link
+        .attr("x1", d => (d.source as GraphNode).x!)
+        .attr("y1", d => (d.source as GraphNode).y!)
+        .attr("x2", d => (d.target as GraphNode).x!)
+        .attr("y2", d => (d.target as GraphNode).y!);
+      node.attr("transform", d => `translate(${d.x},${d.y})`);
+    });
+
+    simulation.alpha(1).restart();
+    setTimeout(() => simulation.stop(), 8000);
+
+    return () => { simulation.stop(); };
+  }, [skeleton, buildGraph, onConceptClick]);
+
   return (
-    <div className="space-y-6">
-      <div>
-        <h3 className="text-sm font-semibold text-midnightCharcoal mb-3 flex items-center gap-2">
-          <BookOpen className="w-4 h-4 text-foxAmber" />
-          章节结构
-        </h3>
-        <div className="space-y-2">
-          {chapters.map((ch) => (
-            <ChapterCard key={ch.id} chapter={ch} />
-          ))}
-        </div>
-      </div>
-
-      {difficultyAreas.length > 0 && (
-        <div>
-          <h3 className="text-sm font-semibold text-midnightCharcoal mb-3 flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-foxAmber" />
-            难点区域
-          </h3>
-          <div className="flex flex-wrap gap-1.5">
-            {difficultyAreas.map((area, i) => (
-              <span
-                key={i}
-                className="text-xs bg-foxAmber/15 text-foxAmber px-2.5 py-1 rounded-full font-medium"
-              >
-                {area}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {prerequisiteChain.length > 0 && (
-        <div>
-          <h3 className="text-sm font-semibold text-midnightCharcoal mb-3 flex items-center gap-2">
-            <span className="text-foxAmber">→</span>
-            先修链路
-          </h3>
-          <div className="space-y-1.5">
-            {prerequisiteChain.map(([from, to], i) => (
-              <div
-                key={i}
-                className="flex items-center gap-2 text-sm text-gray-600"
-              >
-                <span className="bg-midnightCharcoal/5 px-2 py-0.5 rounded text-xs">
-                  {from}
-                </span>
-                <span className="text-foxAmber font-medium">→</span>
-                <span className="bg-midnightCharcoal/5 px-2 py-0.5 rounded text-xs">
-                  {to}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <svg ref={svgRef} className="w-full" style={{ minHeight: 500 }} />
     </div>
   );
 }

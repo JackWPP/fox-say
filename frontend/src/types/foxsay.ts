@@ -72,3 +72,23 @@ export interface BtwInterjection {
   returns_to_review_step_id: string;
 }
 
+// Agent streaming types
+export interface ToolCallState {
+  id: string;
+  tool: string;
+  args: Record<string, unknown>;
+  status: "running" | "done";
+}
+
+export interface StreamEvent {
+  type: "tool_call" | "token" | "done" | "error";
+  tool?: string;
+  args?: Record<string, unknown>;
+  token?: string;
+  answer?: string;
+  citations?: Citation[];
+  in_scope?: boolean;
+  guard_warning?: string | null;
+  message?: string;
+}
+

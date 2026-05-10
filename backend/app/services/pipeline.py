@@ -5,9 +5,12 @@ import uuid
 from app.db.sqlite_store import SqliteStore
 from app.services.chunking import chunk_text
 from app.services.embedding import embed_texts
+from app.services.knowledge_extraction import extract_triples_batch
+from app.services.knowledge_graph import KnowledgeGraph
 from app.services.parsing import parse_document
 from app.services.skeleton import generate_skeleton
 from app.services.vectorstore import QdrantStore
+from app.api.events import push_event
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +18,7 @@ _qdrant = QdrantStore()
 
 _material_texts: dict[str, dict[str, str]] = {}
 
-PIPELINE_STEPS = ["parsing", "chunking", "embedding", "storing", "skeleton_generating"]
+PIPELINE_STEPS = ["parsing", "chunking", "embedding", "storing", "knowledge_extraction", "skeleton_generating"]
 
 
 async def process_material(
@@ -40,7 +43,7 @@ async def process_material(
         logger.warning("Unsupported material kind for %s: %s", material_id, exc)
         store.update_task(task_ids["parsing"], "failed", detail=str(exc))
         store.update_material_status(course_id, material_id, "failed")
-        for remaining_step in ["chunking", "embedding", "storing", "skeleton_generating"]:
+        for remaining_step in ["chunking", "embedding", "storing", "knowledge_extraction", "skeleton_generating"]:
             store.update_task(task_ids[remaining_step], "skipped")
         return
     except Exception as exc:
@@ -53,16 +56,18 @@ async def process_material(
                 _update_course_if_ready(course_id, store)
                 _material_texts.setdefault(course_id, {})[material_id] = text
                 asyncio.create_task(_generate_and_store_skeleton(course_id, store))
+                for remaining_step in ["chunking", "embedding", "storing", "knowledge_extraction"]:
+                    store.update_task(task_ids[remaining_step], "skipped")
                 return
             else:
                 store.update_material_status(course_id, material_id, "failed")
-                for remaining_step in ["chunking", "embedding", "storing", "skeleton_generating"]:
+                for remaining_step in ["chunking", "embedding", "storing", "knowledge_extraction", "skeleton_generating"]:
                     store.update_task(task_ids[remaining_step], "skipped")
                 return
         except Exception as fallback_exc:
             logger.exception("Degraded extraction also failed for %s: %s", material_id, fallback_exc)
             store.update_material_status(course_id, material_id, "failed")
-            for remaining_step in ["chunking", "embedding", "storing", "skeleton_generating"]:
+            for remaining_step in ["chunking", "embedding", "storing", "knowledge_extraction", "skeleton_generating"]:
                 store.update_task(task_ids[remaining_step], "skipped")
             return
 
@@ -86,11 +91,25 @@ async def process_material(
         await asyncio.to_thread(_qdrant.upsert_chunks, course_id, chunks, embeddings, metadata)
         store.update_task(task_ids["storing"], "done")
 
+        # Knowledge extraction: extract triples from chunks and merge into graph
+        kg = KnowledgeGraph.for_course(course_id, store=store)
+        try:
+            store.update_task(task_ids["knowledge_extraction"], "running")
+            triples = await asyncio.to_thread(extract_triples_batch, chunks, material_id, file_name)
+            if triples:
+                kg.merge_triples(triples)
+                kg.save(store)
+            store.update_task(task_ids["knowledge_extraction"], "done")
+        except Exception:
+            logger.exception("Knowledge extraction failed for material %s, continuing", material_id)
+            store.update_task(task_ids["knowledge_extraction"], "failed", detail="extraction failed, graph unchanged")
+
         if course_id not in _material_texts:
             _material_texts[course_id] = {}
         _material_texts[course_id][material_id] = text
 
         store.update_material_status(course_id, material_id, "ready")
+        push_event(course_id, "material_processed", {"material_id": material_id})
 
         just_ready = _update_course_if_ready(course_id, store)
         if just_ready:
@@ -114,12 +133,10 @@ async def process_material(
             for step in PIPELINE_STEPS:
                 if step not in task_ids:
                     continue
-                task_data = store.get_tasks_for_material(course_id, material_id)
-                found = False
-                for t in task_data:
-                    if t["id"] == task_ids[step] and t["status"] == "pending":
+                t = store.get_tasks_for_material(course_id, material_id)
+                for task_row in t:
+                    if task_row["id"] == task_ids[step] and task_row["status"] == "pending":
                         store.update_task(task_ids[step], "skipped")
-                        found = True
                         break
 
 
@@ -147,6 +164,7 @@ async def _generate_and_store_skeleton(course_id: str, store: SqliteStore, task_
         combined_text = "\n\n".join(texts_dict.values())
         skeleton = await generate_skeleton(course_id, course.title, combined_text, store=store)
         store.create_skeleton(skeleton)
+        push_event(course_id, "skeleton_ready", {"course_id": course_id})
         if task_id:
             store.update_task(task_id, "done")
     except Exception:

@@ -1,5 +1,6 @@
 import logging
 import re
+from typing import Any
 
 from openai import OpenAI
 
@@ -56,8 +57,8 @@ def _ensure_citations(answer_text: str, citations: list[Citation]) -> str:
     return answer_text + sources_block
 
 
-async def ask(course_id: str, course_title: str, question: str) -> CragAnswer:
-    retrieval_result = retrieve(course_id, question)
+async def ask(course_id: str, course_title: str, question: str, store: Any = None) -> CragAnswer:
+    retrieval_result = retrieve(course_id, question, store=store)
     confidence = retrieval_result["confidence"]
     top_score = retrieval_result["top_score"]
     results = retrieval_result["results"]
@@ -65,7 +66,7 @@ async def ask(course_id: str, course_title: str, question: str) -> CragAnswer:
     if confidence == "out_of_scope":
         return CragAnswer(
             course_id=course_id,
-            answer=f"这个问题超出了{course_title}的范围，我不知道。",
+            answer=f"这个问题超出了{course_title}的范围，我不知道。别想骗我乱说。",
             citations=[],
             confidence_status="out_of_scope",
             relevance_score=top_score,
@@ -80,6 +81,10 @@ async def ask(course_id: str, course_title: str, question: str) -> CragAnswer:
             file_name=r["metadata"]["file_name"],
             locator=r["metadata"]["locator"],
         ))
+
+    graph_context = retrieval_result.get("graph_context", "")
+    if graph_context:
+        context_parts.append(f"[知识图谱关联概念]\n{graph_context}")
 
     context = "\n\n".join(context_parts)
 

@@ -5,7 +5,7 @@ import { useCreateCourse } from "./useCourses";
 interface CreateCourseModalProps {
   open: boolean;
   onClose: () => void;
-  onCreated: () => void;
+  onCreated: (courseId: string) => void;
 }
 
 export default function CreateCourseModal({ open, onClose, onCreated }: CreateCourseModalProps) {
@@ -19,7 +19,7 @@ export default function CreateCourseModal({ open, onClose, onCreated }: CreateCo
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     try {
-      await createCourse({
+      const course = await createCourse({
         title,
         teacher: teacher || undefined,
         exam_date: examDate || undefined,
@@ -27,7 +27,7 @@ export default function CreateCourseModal({ open, onClose, onCreated }: CreateCo
       setTitle("");
       setTeacher("");
       setExamDate("");
-      onCreated();
+      if (course) onCreated(course.id);
       onClose();
     } catch {}
   };

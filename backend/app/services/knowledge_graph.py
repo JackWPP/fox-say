@@ -1,3 +1,4 @@
+import difflib
 import json
 from typing import Any
 
@@ -47,6 +48,43 @@ class KnowledgeGraph:
         self._graph.add_edge(from_concept, to_concept, relation_type=relation_type)
         self._dirty = True
 
+    def merge_triples(self, triples: list[dict]) -> int:
+        added = 0
+        for t in triples:
+            subject_id = t["subject"].replace(" ", "_").lower()
+            object_id = t["object"].replace(" ", "_").lower()
+            relation = t.get("relation", "relates_to")
+
+            if subject_id not in self._graph.nodes:
+                self._graph.add_node(
+                    subject_id,
+                    label=t["subject"],
+                    material_id=t.get("material_id", ""),
+                    chunk_index=t.get("chunk_index", -1),
+                    source_text=t.get("source_text", ""),
+                    file_name=t.get("file_name", ""),
+                )
+                added += 1
+
+            if object_id not in self._graph.nodes:
+                self._graph.add_node(
+                    object_id,
+                    label=t["object"],
+                    material_id=t.get("material_id", ""),
+                    chunk_index=t.get("chunk_index", -1),
+                    source_text=t.get("source_text", ""),
+                    file_name=t.get("file_name", ""),
+                )
+                added += 1
+
+            if not self._graph.has_edge(subject_id, object_id):
+                self._graph.add_edge(subject_id, object_id, relation_type=relation)
+                added += 1
+
+        if added > 0:
+            self._dirty = True
+        return added
+
     def get_prerequisite_chain(self) -> list[tuple[str, str]]:
         return list(self._graph.edges())
 
@@ -54,6 +92,111 @@ class KnowledgeGraph:
         in_degrees = dict(self._graph.in_degree())
         sorted_nodes = sorted(in_degrees, key=lambda n: in_degrees[n], reverse=True)
         return [n for n in sorted_nodes if in_degrees[n] > 0]
+
+    def get_concept_count(self) -> int:
+        return self._graph.number_of_nodes()
+
+    def get_neighbors(self, concept_id: str, depth: int = 1) -> dict:
+        if concept_id not in self._graph.nodes:
+            return {"nodes": [], "edges": []}
+        sub = nx.ego_graph(self._graph, concept_id, radius=depth)
+        return {
+            "nodes": [{"id": n, "label": self._graph.nodes[n].get("label", n)} for n in sub.nodes],
+            "edges": [
+                {"from": u, "to": v, "relation": self._graph.edges[u, v].get("relation_type", "")}
+                for u, v in sub.edges
+            ],
+        }
+
+    def get_path(self, from_concept: str, to_concept: str) -> list[str] | None:
+        try:
+            return nx.shortest_path(self._graph, from_concept, to_concept)
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return None
+
+    def get_subgraph(self, concept_ids: list[str]) -> dict:
+        existing = [n for n in concept_ids if n in self._graph.nodes]
+        if not existing:
+            return {"nodes": [], "edges": []}
+        sub = self._graph.subgraph(existing)
+        return {
+            "nodes": [{"id": n, "label": self._graph.nodes[n].get("label", n)} for n in sub.nodes],
+            "edges": [
+                {"from": u, "to": v, "relation": self._graph.edges[u, v].get("relation_type", "")}
+                for u, v in sub.edges
+            ],
+        }
+
+    def search_concepts(self, query: str) -> list[str]:
+        q = query.lower()
+        results: list[str] = []
+        for node_id in self._graph.nodes:
+            label = str(self._graph.nodes[node_id].get("label", node_id)).lower()
+            if q in label:
+                results.append(node_id)
+        return results
+
+    def search_concepts_fuzzy(self, query: str, threshold: float = 0.6) -> list[dict]:
+        """Fuzzy search concepts by label. Falls back to difflib for inexact matches.
+        Returns list of {id, label, match_type: 'exact'|'fuzzy'}."""
+        q = query.lower()
+        results: list[dict] = []
+
+        # Exact/substring match first
+        matched_ids: set[str] = set()
+        for node_id in self._graph.nodes:
+            label = str(self._graph.nodes[node_id].get("label", node_id))
+            if q in label.lower():
+                results.append({"id": node_id, "label": label, "match_type": "exact"})
+                matched_ids.add(node_id)
+
+        # Fuzzy fallback for unmatched
+        if not results:
+            all_labels = {
+                node_id: str(self._graph.nodes[node_id].get("label", node_id))
+                for node_id in self._graph.nodes
+            }
+            candidates = list(all_labels.values())
+            close = difflib.get_close_matches(q, candidates, n=5, cutoff=threshold)
+            for label in close:
+                for node_id, lbl in all_labels.items():
+                    if lbl == label and node_id not in matched_ids:
+                        results.append({"id": node_id, "label": label, "match_type": "fuzzy"})
+                        matched_ids.add(node_id)
+
+        return results
+
+    def to_context(self, node_ids: list[str] | None = None) -> str:
+        if node_ids:
+            sub = self.get_subgraph(node_ids)
+            edges = sub["edges"]
+            nodes = sub["nodes"]
+        else:
+            edges = [
+                {"from": u, "to": v, "relation": self._graph.edges[u, v].get("relation_type", "")}
+                for u, v in self._graph.edges
+            ]
+            nodes = [
+                {"id": n, "label": self._graph.nodes[n].get("label", n)} for n in self._graph.nodes
+            ]
+
+        if not edges:
+            return ""
+
+        node_labels: dict[str, str] = {n["id"]: n["label"] for n in nodes}
+        lines: list[str] = []
+        for e in edges:
+            subj_label = node_labels.get(e["from"], e["from"])
+            obj_label = node_labels.get(e["to"], e["to"])
+            rel = e.get("relation", "relates_to")
+            # Collect source info from edge or node metadata
+            src = self._graph.edges.get((e["from"], e["to"]), {})
+            file_name = src.get("file_name", "") or self._graph.nodes.get(e["from"], {}).get("file_name", "")
+            chunk_idx = src.get("chunk_index", -1) or self._graph.nodes.get(e["from"], {}).get("chunk_index", -1)
+            source = f" (来源: {file_name}, chunk {chunk_idx})" if file_name and chunk_idx >= 0 else ""
+            lines.append(f"{subj_label} {rel} {obj_label}{source}")
+
+        return "\n".join(lines)
 
     def to_skeleton(self, course_id: str, chapters_data: list[dict[str, Any]]) -> CourseSkeleton:
         chapters: list[CourseSkeletonChapter] = []

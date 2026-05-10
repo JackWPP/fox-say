@@ -4,6 +4,7 @@ import CourseCard from "./CourseCard";
 import CreateCourseModal from "./CreateCourseModal";
 import ImportTimetableModal from "./ImportTimetableModal";
 import { useCourses } from "./useCourses";
+import { foxCopy } from "../../shared/fox-copy";
 
 export default function BookshelfPage() {
   const { courses, loading, error, refetch } = useCourses();
@@ -54,10 +55,8 @@ export default function BookshelfPage() {
       {!loading && !error && courses.length === 0 && (
         <div className="text-center py-20">
           <div className="text-6xl mb-4">🦊</div>
-          <p className="text-lg text-gray-500 mb-2">还没有课程？让小狐狸帮你建立书架 🦊</p>
-          <p className="text-sm text-gray-400">
-            点击「创建课程」或「导入课程表」，开始你的学习之旅吧~
-          </p>
+          <p className="text-lg text-gray-500 mb-2">{foxCopy.bookshelf.empty}</p>
+          <p className="text-sm text-gray-400">{foxCopy.bookshelf.emptyHint}</p>
         </div>
       )}
 
@@ -72,12 +71,12 @@ export default function BookshelfPage() {
       <CreateCourseModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        onCreated={refetch}
+        onCreated={() => refetch()}
       />
       <ImportTimetableModal
         open={importOpen}
         onClose={() => setImportOpen(false)}
-        onImported={refetch}
+        onImported={() => refetch()}
       />
     </div>
   );

@@ -1,11 +1,41 @@
-import { FileText, ShieldCheck, HelpCircle, ShieldX } from "lucide-react";
-import type { ChatMessage as ChatMessageType, ConfidenceStatus } from "./useChat";
+import { FileText } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import type { ChatMessage as ChatMessageType } from "./useChat";
+import ToolCallIndicator from "./ToolCallIndicator";
 
-const confidenceConfig: Record<ConfidenceStatus, { label: string; color: string; Icon: typeof ShieldCheck }> = {
-  grounded: { label: "有据可依", color: "bg-green-100 text-green-700", Icon: ShieldCheck },
-  ambiguous: { label: "不太确定", color: "bg-foxAmber/20 text-foxAmber", Icon: HelpCircle },
-  out_of_scope: { label: "超出范围", color: "bg-red-100 text-red-600", Icon: ShieldX },
-};
+function MarkdownRenderer({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      components={{
+        p: ({ children }) => <p className="whitespace-pre-wrap mb-1 last:mb-0">{children}</p>,
+        strong: ({ children }) => <strong className="font-bold text-warmWhite">{children}</strong>,
+        em: ({ children }) => <em className="italic">{children}</em>,
+        code: ({ children, className }) => {
+          const isInline = !className;
+          return isInline
+            ? <code className="bg-white/10 px-1 py-0.5 rounded text-xs">{children}</code>
+            : <code className="block bg-white/10 px-3 py-2 rounded-lg text-xs overflow-x-auto my-2">{children}</code>;
+        },
+        pre: ({ children }) => <pre className="my-2">{children}</pre>,
+        ul: ({ children }) => <ul className="list-disc list-inside space-y-1 my-2">{children}</ul>,
+        ol: ({ children }) => <ol className="list-decimal list-inside space-y-1 my-2">{children}</ol>,
+        li: ({ children }) => <li className="text-sm">{children}</li>,
+        a: ({ href, children }) => (
+          <a href={href} className="text-foxAmber underline hover:text-foxAmber/80" target="_blank" rel="noopener noreferrer">
+            {children}
+          </a>
+        ),
+        blockquote: ({ children }) => (
+          <blockquote className="border-l-2 border-foxAmber/30 pl-3 my-2 italic opacity-80">{children}</blockquote>
+        ),
+        h3: ({ children }) => <h3 className="text-base font-semibold mt-3 mb-1">{children}</h3>,
+        h4: ({ children }) => <h4 className="text-sm font-semibold mt-2 mb-1">{children}</h4>,
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+}
 
 export default function ChatMessage({ message }: { message: ChatMessageType }) {
   const isUser = message.role === "user";
@@ -15,7 +45,7 @@ export default function ChatMessage({ message }: { message: ChatMessageType }) {
     return (
       <div className="flex justify-end">
         <div className="max-w-[75%] bg-foxAmber text-midnightCharcoal rounded-2xl rounded-br-sm px-4 py-3 text-sm">
-          {message.content}
+          <p className="whitespace-pre-wrap">{message.content}</p>
         </div>
       </div>
     );
@@ -33,7 +63,15 @@ export default function ChatMessage({ message }: { message: ChatMessageType }) {
         {isRefusal && (
           <span className="inline-block mr-1.5">🦊</span>
         )}
-        <p className="whitespace-pre-wrap">{message.content}</p>
+        {isRefusal ? (
+          <p className="whitespace-pre-wrap">{message.content}</p>
+        ) : (
+          <MarkdownRenderer content={message.content} />
+        )}
+
+        {message.toolCalls && message.toolCalls.length > 0 && (
+          <ToolCallIndicator toolCalls={message.toolCalls} />
+        )}
 
         {message.citations && message.citations.length > 0 && (
           <div className="mt-3 pt-3 border-t border-white/10 space-y-1.5">
@@ -48,22 +86,6 @@ export default function ChatMessage({ message }: { message: ChatMessageType }) {
             ))}
           </div>
         )}
-
-        {message.confidenceStatus && (() => {
-          const status = message.confidenceStatus as ConfidenceStatus;
-          const cfg = confidenceConfig[status];
-          const ConfIcon = cfg.Icon;
-          return (
-            <div className="mt-2">
-              <span
-                className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium ${cfg.color}`}
-              >
-                <ConfIcon className="w-3 h-3" />
-                {cfg.label}
-              </span>
-            </div>
-          );
-        })()}
       </div>
     </div>
   );

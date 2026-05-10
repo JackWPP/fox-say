@@ -65,9 +65,19 @@ CREATE TABLE IF NOT EXISTS knowledge_graphs (
     FOREIGN KEY (course_id) REFERENCES courses(id)
 );
 
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id TEXT PRIMARY KEY,
+    course_id TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT 'New Chat',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id) REFERENCES courses(id)
+);
+
 CREATE TABLE IF NOT EXISTS chat_messages (
     id TEXT PRIMARY KEY,
     course_id TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT '',
     role TEXT NOT NULL,
     content TEXT NOT NULL,
     citations_json TEXT,
@@ -75,6 +85,24 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     refusal_reason TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (course_id) REFERENCES courses(id)
+);
+
+CREATE TABLE IF NOT EXISTS review_sessions (
+    id TEXT PRIMARY KEY,
+    course_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    current_day INTEGER NOT NULL DEFAULT 1,
+    current_step TEXT,
+    completed_steps TEXT NOT NULL DEFAULT '[]',
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id) REFERENCES courses(id)
+);
+
+CREATE TABLE IF NOT EXISTS user_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
 
@@ -88,6 +116,19 @@ class SqliteStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
+        self._conn.commit()
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns/tables that may be missing from older databases."""
+        migrations = [
+            "ALTER TABLE chat_messages ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+        ]
+        for sql in migrations:
+            try:
+                self._conn.execute(sql)
+            except sqlite3.OperationalError:
+                pass  # column already exists
         self._conn.commit()
 
     def close(self) -> None:
@@ -263,6 +304,41 @@ class SqliteStore:
         ).fetchone()
         return row["data_json"] if row else None
 
+    # --- Chat Sessions ---
+
+    def create_chat_session(self, session_id: str, course_id: str, title: str = "New Chat") -> None:
+        self._conn.execute(
+            "INSERT INTO chat_sessions (id, course_id, title) VALUES (?, ?, ?)",
+            (session_id, course_id, title),
+        )
+        self._conn.commit()
+
+    def get_chat_sessions(self, course_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM chat_sessions WHERE course_id = ? ORDER BY updated_at DESC",
+            (course_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_chat_session_title(self, session_id: str, title: str) -> None:
+        self._conn.execute(
+            "UPDATE chat_sessions SET title = ?, updated_at = datetime('now') WHERE id = ?",
+            (title, session_id),
+        )
+        self._conn.commit()
+
+    def touch_chat_session(self, session_id: str) -> None:
+        self._conn.execute(
+            "UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?",
+            (session_id,),
+        )
+        self._conn.commit()
+
+    def delete_chat_session(self, session_id: str) -> None:
+        self._conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+        self._conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
+        self._conn.commit()
+
     # --- Chat Messages ---
 
     def save_chat_message(
@@ -271,19 +347,108 @@ class SqliteStore:
         course_id: str,
         role: str,
         content: str,
+        session_id: str = "",
         citations_json: str | None = None,
         confidence_status: str | None = None,
         refusal_reason: str | None = None,
     ) -> None:
         self._conn.execute(
-            "INSERT INTO chat_messages (id, course_id, role, content, citations_json, confidence_status, refusal_reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (msg_id, course_id, role, content, citations_json, confidence_status, refusal_reason),
+            "INSERT INTO chat_messages (id, course_id, session_id, role, content, citations_json, confidence_status, refusal_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (msg_id, course_id, session_id, role, content, citations_json, confidence_status, refusal_reason),
         )
         self._conn.commit()
 
-    def get_chat_messages(self, course_id: str, limit: int = 100) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT * FROM chat_messages WHERE course_id = ? ORDER BY created_at ASC LIMIT ?",
-            (course_id, limit),
-        ).fetchall()
+    def get_chat_messages(self, course_id: str, session_id: str = "", limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        if session_id:
+            rows = self._conn.execute(
+                "SELECT * FROM chat_messages WHERE course_id = ? AND session_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?",
+                (course_id, session_id, limit, offset),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM chat_messages WHERE course_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?",
+                (course_id, limit, offset),
+            ).fetchall()
         return [dict(r) for r in rows]
+
+    def count_chat_messages(self, course_id: str, session_id: str = "") -> int:
+        if session_id:
+            row = self._conn.execute(
+                "SELECT COUNT(*) as cnt FROM chat_messages WHERE course_id = ? AND session_id = ?",
+                (course_id, session_id),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT COUNT(*) as cnt FROM chat_messages WHERE course_id = ?",
+                (course_id,),
+            ).fetchone()
+        return row["cnt"] if row else 0
+
+    # --- Review Sessions ---
+
+    def create_review_session(self, session_id: str, course_id: str, current_day: int = 1) -> None:
+        import json
+        self._conn.execute(
+            "INSERT INTO review_sessions (id, course_id, current_day) VALUES (?, ?, ?)",
+            (session_id, course_id, current_day),
+        )
+        self._conn.commit()
+
+    def get_review_session(self, course_id: str) -> dict[str, Any] | None:
+        import json
+        row = self._conn.execute(
+            "SELECT * FROM review_sessions WHERE course_id = ? AND status = 'active' ORDER BY updated_at DESC LIMIT 1",
+            (course_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        d["completed_steps"] = json.loads(d.get("completed_steps", "[]"))
+        return d
+
+    def update_review_session(
+        self,
+        session_id: str,
+        current_day: int | None = None,
+        current_step: str | None = None,
+        completed_steps_json: list[str] | None = None,
+    ) -> None:
+        import json
+        if current_day is not None:
+            self._conn.execute(
+                "UPDATE review_sessions SET current_day = ?, updated_at = datetime('now') WHERE id = ?",
+                (current_day, session_id),
+            )
+        if current_step is not None:
+            self._conn.execute(
+                "UPDATE review_sessions SET current_step = ?, updated_at = datetime('now') WHERE id = ?",
+                (current_step, session_id),
+            )
+        if completed_steps_json is not None:
+            self._conn.execute(
+                "UPDATE review_sessions SET completed_steps = ?, updated_at = datetime('now') WHERE id = ?",
+                (json.dumps(completed_steps_json, ensure_ascii=False), session_id),
+            )
+        self._conn.commit()
+
+    def complete_review_session(self, session_id: str) -> None:
+        self._conn.execute(
+            "UPDATE review_sessions SET status = 'completed', updated_at = datetime('now') WHERE id = ?",
+            (session_id,),
+        )
+        self._conn.commit()
+
+    # --- User Settings ---
+
+    def get_user_setting(self, key: str, default: str = "") -> str:
+        row = self._conn.execute(
+            "SELECT value FROM user_settings WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row else default
+
+    def set_user_setting(self, key: str, value: str) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO user_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+            (key, value),
+        )
+        self._conn.commit()

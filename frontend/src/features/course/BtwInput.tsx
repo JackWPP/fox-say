@@ -1,12 +1,6 @@
 import { useState } from "react";
-import { Send, FileText, ShieldCheck, HelpCircle, ShieldX, ArrowLeft } from "lucide-react";
-import type { BtwInterjection, ConfidenceStatus } from "../../shared/types";
-
-const confidenceConfig: Record<ConfidenceStatus, { label: string; color: string; Icon: typeof ShieldCheck }> = {
-  grounded: { label: "有据可依", color: "bg-green-100 text-green-700", Icon: ShieldCheck },
-  ambiguous: { label: "不太确定", color: "bg-foxAmber/20 text-foxAmber", Icon: HelpCircle },
-  out_of_scope: { label: "超出范围", color: "bg-red-100 text-red-600", Icon: ShieldX },
-};
+import { Send, FileText, ArrowLeft } from "lucide-react";
+import type { BtwInterjection } from "../../shared/types";
 
 interface BtwInputProps {
   onSend: (question: string) => void;
@@ -48,20 +42,6 @@ export default function BtwInput({ onSend, loading, btwAnswer, onBack }: BtwInpu
               ))}
             </div>
           )}
-
-          {btwAnswer.answer.confidence_status && (() => {
-            const status = btwAnswer.answer.confidence_status as ConfidenceStatus;
-            const cfg = confidenceConfig[status];
-            const ConfIcon = cfg.Icon;
-            return (
-              <div className="mt-2">
-                <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium ${cfg.color}`}>
-                  <ConfIcon className="w-3 h-3" />
-                  {cfg.label}
-                </span>
-              </div>
-            );
-          })()}
 
           <button
             onClick={onBack}

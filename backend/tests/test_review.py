@@ -198,3 +198,34 @@ async def test_fallback_generate():
     assert len(plan.daily_plan) <= 5
     assert plan.weak_areas == ["难点1"]
     assert "A" in plan.likely_exam_points
+
+
+@pytest.mark.asyncio
+async def test_review_session_complete_does_not_crash(client: AsyncClient):
+    """Regression: complete_session must not crash after flipping status to 'completed'."""
+    store = client._transport.app.state.store  # type: ignore[union-attr]
+
+    from app.schemas.foxsay import Course
+    course_id = "review-complete-test"
+    store.create_course(Course(id=course_id, title="Test", status="ready"))
+
+    # Start session
+    resp = await client.post(f"/courses/{course_id}/review-session/start")
+    assert resp.status_code == 200
+    data = resp.json()
+    session_id = data["session_id"]
+    assert data["status"] == "active"
+
+    # Advance a step
+    resp = await client.post(
+        f"/courses/{course_id}/review-session/advance",
+        json={"current_day": 2, "step_id": "day_1"},
+    )
+    assert resp.status_code == 200
+
+    # Complete — must NOT crash (regression: was deref-ing None after get_review_session filtered for active)
+    resp = await client.post(f"/courses/{course_id}/review-session/complete")
+    assert resp.status_code == 200
+    result = resp.json()
+    assert result["status"] == "completed"
+    assert result["session_id"] == session_id
