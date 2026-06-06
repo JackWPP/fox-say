@@ -12,7 +12,11 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_api_base: str = "https://api.siliconflow.cn/v1"
     embedding_model: str = "BAAI/bge-m3"
-    qdrant_url: str = "http://localhost:6333"
+    # Qdrant 启动模式:
+    #   - qdrant_url 为空字符串 → 进程内 local mode (文件持久化, 无需 Docker, 默认)
+    #   - qdrant_url = "http://host:port" → 远程模式 (Qdrant 单独容器/服务器)
+    qdrant_url: str = ""
+    qdrant_local_path: str = str(_PROJECT_ROOT / "data" / "qdrant_storage")
     upload_root: str = str(_PROJECT_ROOT / "uploads")
     sqlite_path: str = str(_PROJECT_ROOT / "data" / "foxsay.db")
     foxsay_env: str = "development"

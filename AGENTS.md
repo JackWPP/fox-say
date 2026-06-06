@@ -32,7 +32,7 @@ MVP 只包含以下功能:
 - Knowledge graph: MVP 阶段不引入。骨架从材料直接生成,不存图数据库。
 - RAG direction: 单层 RAG + CRAG 门控。多层混合检索是 post-MVP 才考虑。
 - Boundary control: CRAG gate plus system-prompt hard constraints.
-- LLM: DeepSeek OpenAI-compatible API。模型名必须是真实存在的(deepseek-chat / deepseek-coder / deepseek-reasoner 等),**禁止杜撰** `v4-flash` 这类不存在的 model string。
+- LLM: DeepSeek OpenAI-compatible API(实际可用的 model string 必须是**先在 `docs/postmortem/verified.md` 写"已验证"记录**才能用,见 HEC-5)。当前已知可用:`deepseek-v4-flash` / `deepseek-v4-pro`(2026 V4),以及到 2026/07/24 之前兼容的 `deepseek-chat` / `deepseek-reasoner`。
 - Deployment baseline: Docker Compose.
 
 ## CRAG Policy

@@ -11,7 +11,15 @@ _client: QdrantClient | None = None
 def _get_client() -> QdrantClient:
     global _client
     if _client is None:
-        _client = QdrantClient(url=settings.qdrant_url)
+        if settings.qdrant_url:
+            # 远程模式: qdrant_url = "http://host:port"
+            _client = QdrantClient(url=settings.qdrant_url)
+        else:
+            # 进程内 local mode: 数据持久化到 qdrant_local_path, 无需 Docker
+            from pathlib import Path
+            local_path = Path(settings.qdrant_local_path)
+            local_path.mkdir(parents=True, exist_ok=True)
+            _client = QdrantClient(path=str(local_path))
     return _client
 
 
