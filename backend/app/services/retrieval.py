@@ -79,3 +79,103 @@ def _format_results(confidence: str, top_score: float, results: list[dict]) -> d
             },
         })
     return {"confidence": confidence, "top_score": top_score, "results": formatted}
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """手算 cosine,避免依赖 numpy;空向量返回 0。"""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def search_wiki_layer(
+    course_id: str,
+    query: str,
+    layer: str = "all",
+    top_k: int = 5,
+    store: Any = None,
+) -> list[dict]:
+    """三层混合检索统一入口(阶段 3 引入)。
+
+    layer:
+      - macro: 在 ChapterWiki 标题 + overview + key_concepts 里搜
+      - micro: 在 KC 卡片 name + definition + formula 里搜(向量检索)
+      - all:   三层合并排序去重
+    """
+    results: list[dict] = []
+    if store is None:
+        return results
+
+    q_emb = embed_texts([query])[0] if query else None
+
+    # Macro 层:章节级
+    if layer in ("macro", "all"):
+        chapter_wikis = store.get_chapter_wikis_by_course(course_id)
+        for cw in chapter_wikis:
+            text = f"{cw.title} {cw.overview} {' '.join(cw.key_concepts)}"
+            emb = embed_texts([text])[0] if text else None
+            if emb and q_emb:
+                score = _cosine_similarity(q_emb, emb)
+                results.append({
+                    "id": cw.id,
+                    "name": cw.title,
+                    "layer": "macro",
+                    "score": score,
+                    "content": cw.overview,
+                    "source_ref": f"[{cw.title}]",
+                    "file_name": "",
+                    "locator": cw.title,
+                })
+
+    # Micro 层:KC 卡 + Qdrant chunks
+    if layer in ("micro", "all"):
+        kcs = store.get_kcs_by_course(course_id)
+        for kc in kcs:
+            text = f"{kc.name} {kc.definition} {kc.formula}"
+            emb = embed_texts([text])[0] if text else None
+            if emb and q_emb:
+                score = _cosine_similarity(q_emb, emb)
+                results.append({
+                    "id": kc.id,
+                    "name": kc.name,
+                    "layer": kc.layer,
+                    "score": score,
+                    "content": kc.definition,
+                    "source_ref": kc.source_refs[0].file if kc.source_refs else "",
+                    "file_name": kc.source_refs[0].file if kc.source_refs else "",
+                    "locator": kc.chapter_id,
+                })
+        if q_emb:
+            q_results = _qdrant.search(course_id, q_emb, limit=top_k)
+            for r in q_results:
+                payload = r.get("payload", {})
+                idx = payload.get("index", 0)
+                loc = f"第{idx + 1}部分"
+                fname = payload.get("file_name", "")
+                results.append({
+                    "id": "",
+                    "name": "",
+                    "layer": "chunk",
+                    "score": r.get("score", 0),
+                    "content": payload.get("text", ""),
+                    "source_ref": f"{fname} · {loc}",
+                    "file_name": fname,
+                    "locator": loc,
+                })
+
+    if layer == "all":
+        results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        # 去重 (同 id + 同 file_name + 同 locator 视为重复)
+        seen: set[tuple] = set()
+        deduped = []
+        for r in results:
+            key = (r.get("id", ""), r.get("file_name", ""), r.get("locator", ""))
+            if key not in seen:
+                seen.add(key)
+                deduped.append(r)
+        results = deduped
+
+    return results[:top_k]

@@ -269,3 +269,33 @@ def _is_descendant(maybe_ancestor: DMAPNode, node: DMAPNode) -> bool:
         if _is_descendant(c, node):
             return True
     return False
+
+
+def get_dmap_node_by_id(dmap: DMAP, node_id: str) -> DMAPNode | None:
+    """DFS 找 node.id == node_id 的节点。找不到返回 None。
+
+    阶段 3 引入:wiki 工具 get_source_content 需要按 ID 拿原始材料片段。
+    """
+    def _walk(node: DMAPNode) -> DMAPNode | None:
+        if node.id == node_id:
+            return node
+        for child in node.children:
+            found = _walk(child)
+            if found is not None:
+                return found
+        return None
+    return _walk(dmap.root)
+
+
+def get_dmap_element_by_id(dmap: DMAP, element_id: str) -> DMAPElement | None:
+    """DFS 找 element.id == element_id 的元素。找不到返回 None。"""
+    def _walk(node: DMAPNode) -> DMAPElement | None:
+        for el in node.elements:
+            if el.id == element_id:
+                return el
+        for child in node.children:
+            found = _walk(child)
+            if found is not None:
+                return found
+        return None
+    return _walk(dmap.root)

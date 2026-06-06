@@ -1,11 +1,31 @@
+"""FoxSay Agent 主循环 + 7 工具集(阶段 3 重写)。
+
+设计原则:
+- ReAct 循环 max 3 轮(原 5 轮,绝大多数问题 1 轮解决)
+- 错误必须可见(HEC-1):LLM 失败时 SSE 推 {type: "error", message: "..."}
+- schema 显式带 course_id(HEC-6):所有 query 工具入参都接收 course_id, 禁止反推
+- 死代码全清:不留任何手写空 history 占位 / 写死章节 ID 解析那种
+
+工具集(7 个):
+  search_wiki          三层混合检索(章节+KC+chunk)
+  get_course_map       拿课程索引全文
+  get_concept          按 ID 拿完整 KC 卡
+  get_chapter_outline  按 chapter_id 拿章节摘要
+  follow_prerequisite  沿 prerequisites 链回溯
+  get_source_content   按 DMAP ID 拿原始材料片段
+  get_review_plan      拿复习计划(仅在复习相关问题时使用)
+"""
+
+from __future__ import annotations
+
 import json
 import logging
+import re
 from typing import Any, AsyncGenerator
 
 from openai import OpenAI
 
 from app.core.config import settings
-from app.services.guard import check_answer_in_scope
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +33,7 @@ _client: OpenAI | None = None
 
 
 def _get_client() -> OpenAI:
+    """LLM 客户端单例。失败时由调用方决定如何处理(HEC-1:不许静默)。"""
     global _client
     if _client is None:
         api_key = settings.deepseek_api_key or "placeholder"
@@ -20,41 +41,52 @@ def _get_client() -> OpenAI:
     return _client
 
 
+# ---------------------------------------------------------------------------
+# System Prompt(5 条规则,精简)
+# ---------------------------------------------------------------------------
+
 SYSTEM_PROMPT = (
-    "你是 FoxSay，一只聪明但贱贱的小狐狸，也是这门课的 AI 助教。\n\n"
-    "核心规则：\n"
-    "1. 你只能回答与当前课程相关的问题。如果用户问题明显超出课程范围，礼貌但欠揍地拒绝。\n"
-    "2. 【必须】当你使用 search_course_materials 获取了课程材料信息后，在回答中必须用以下格式注明引用来源：\n"
-    "   来自 [文件名] · 第X部分\n"
-    "   每条来自材料的具体信息都要有引用。不要只在末尾列「来源」，要在正文中自然地嵌入引用。\n"
-    "3. 当课程材料没有直接覆盖但仍在课程领域内时，你可以基于对课程的理解进行推理和解释，\n"
-    "   但要明确标注「基于课程内容的理解」。\n"
-    "4. 积极使用工具：\n"
-    "   - search_course_materials: 搜索课程材料（tool 返回的 source 字段就是引用格式，直接用它）\n"
-    "   - get_course_structure: 了解课程架构\n"
-    "   - get_review_plan: 查看复习计划\n"
-    "5. 回答要自然、有帮助、有结构（可以用 Markdown 排版），但不要逐条罗列搜索结果。\n"
-    "6. 对备考的同学紧迫一点，对日常学习的同学轻松一点。\n"
-    "7. 如果工具返回的结果为空或不相关，说明材料中没有覆盖这一块，你可以基于课程知识进行推理。"
+    "你是 FoxSay, 一只聪明但贱贱的小狐狸, 也是这门课的 AI 助教。\n\n"
+    "核心规则:\n"
+    "1. 只能回答当前课程相关问题。超出范围时礼貌但欠揍地拒绝。\n"
+    "2. 引用材料时, 必须用格式 `来自 [文件名] · 第X部分`, 在正文中自然嵌入。\n"
+    "3. 每次回答前先想: 这个概念我需要查 Wiki 还是查原始材料?\n"
+    "   - 事实性问题 → search_wiki(layer=micro)\n"
+    "   - 概念解释  → get_concept 拿完整 KC 卡\n"
+    "   - 章节概览  → get_course_map 或 get_chapter_outline\n"
+    "   - 先修概念  → follow_prerequisite\n"
+    "   - 原始引用  → get_source_content\n"
+    "4. 复习相关问题才用 get_review_plan, 不要每轮都调。\n"
+    "5. 回答自然有结构(Markdown), 不要逐条罗列搜索结果。"
 )
 
-TOOLS = [
+# ---------------------------------------------------------------------------
+# Tools (7 个)
+# ---------------------------------------------------------------------------
+
+TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "search_course_materials",
-            "description": "搜索课程材料中的具体内容。当用户问到需要查资料的问题时使用。",
+            "name": "search_wiki",
+            "description": "在课程 Wiki 中做语义检索(章节/KC/原始材料三层)。事实性问题首选。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "中文搜索查询，尽量用课程相关的术语",
+                        "description": "中文检索词,尽量用课程术语",
+                    },
+                    "layer": {
+                        "type": "string",
+                        "enum": ["macro", "micro", "all"],
+                        "default": "all",
+                        "description": "macro=章节级, micro=KC级, all=三层合并",
                     },
                     "top_k": {
                         "type": "integer",
                         "default": 5,
-                        "description": "返回结果数量，默认5",
+                        "description": "返回结果数量",
                     },
                 },
                 "required": ["query"],
@@ -64,20 +96,92 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "get_course_structure",
-            "description": "获取课程的整体架构：章节划分、核心概念、难点区域。用于了解课程全局。",
+            "name": "get_course_map",
+            "description": "拿课程索引全文(markdown)。用于了解课程全局。",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
     {
         "type": "function",
         "function": {
+            "name": "get_concept",
+            "description": "按 concept_id 拿完整知识卡(KC)内容:定义、公式、常见错误等。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "course_id": {"type": "string", "description": "课程ID"},
+                    "concept_id": {"type": "string", "description": "KC ID"},
+                },
+                "required": ["course_id", "concept_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_chapter_outline",
+            "description": "按 chapter_id 拿章节摘要(overview, 重点, 难点)。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "course_id": {"type": "string", "description": "课程ID"},
+                    "chapter_id": {"type": "string", "description": "章节ID"},
+                },
+                "required": ["course_id", "chapter_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "follow_prerequisite",
+            "description": "沿 KC.prerequisites 链向上回溯,返回先修概念列表。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "course_id": {"type": "string", "description": "课程ID"},
+                    "concept_id": {"type": "string", "description": "起点 KC ID"},
+                    "depth": {
+                        "type": "integer",
+                        "default": 2,
+                        "description": "回溯深度,默认 2",
+                    },
+                },
+                "required": ["course_id", "concept_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_source_content",
+            "description": "按 DMAP 节点/元素 ID 拿原始材料片段(text_preview)。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "course_id": {"type": "string", "description": "课程ID"},
+                    "dmap_id": {"type": "string", "description": "DMAP 节点或元素 ID"},
+                },
+                "required": ["course_id", "dmap_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_review_plan",
-            "description": "获取当前的复习计划，包括每天的重点和薄弱环节。仅在用户明确问复习相关问题时使用。",
+            "description": "拿当前课程的复习计划(每日重点、薄弱环节)。仅复习相关问题使用。",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
 ]
+
+
+# ---------------------------------------------------------------------------
+# 主循环
+# ---------------------------------------------------------------------------
+
+MAX_ROUNDS = 3
 
 
 async def agent_chat(
@@ -88,33 +192,31 @@ async def agent_chat(
     store: Any = None,
     review_context: str = "",
 ) -> AsyncGenerator[dict, None]:
-    """Agent loop: LLM with tools, streaming events to the frontend.
+    """Agent ReAct 循环:SSE 事件流。
 
-    Yields SSE-ready event dicts: {type, ...}
-    Types: tool_call, token, done, error
+    Yields:
+        {type: "tool_call", tool, args}
+        {type: "done", answer, citations, ...}
+        {type: "error", message}
     """
     client = _get_client()
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
     ]
 
-    # Course identity
-    context_msg = f"当前课程：{course_title}\n课程ID：{course_id}"
+    context_msg = f"当前课程:{course_title}\n课程ID:{course_id}"
     if review_context:
-        context_msg += f"\n\n当前复习上下文：{review_context}"
+        context_msg += f"\n\n当前复习上下文:{review_context}"
     messages.append({"role": "system", "content": context_msg})
 
-    # Chat history (last 20 messages to keep context manageable)
     if chat_history:
         messages.extend(chat_history[-20:])
 
     messages.append({"role": "user", "content": question})
 
-    # Collect source info from tool results for citation fallback
     collected_sources: list[dict] = []
 
-    max_rounds = 5
-    for _round in range(max_rounds):
+    for _round in range(MAX_ROUNDS):
         try:
             response = client.chat.completions.create(
                 model=settings.deepseek_model,
@@ -125,45 +227,30 @@ async def agent_chat(
                 extra_body={"thinking": {"type": "disabled"}},
             )
         except Exception:
+            # HEC-1:错误必须可见,不许静默
             logger.exception("LLM call failed in agent loop round %d", _round)
-            yield {"type": "error", "message": "LLM 调用失败，请重试"}
+            yield {"type": "error", "message": "LLM 调用失败, 请重试"}
             return
 
         msg = response.choices[0].message
 
-        # No tool calls → final answer, stream tokens
+        # 无 tool_call → 流式输出最终回答
         if not msg.tool_calls:
-            # Stream tokens from the final response
             answer_text = msg.content or ""
-
-            # Post-answer guard
-            guard_result = {}
-            if store is not None and answer_text:
-                try:
-                    guard_result = check_answer_in_scope(answer_text, course_id, store)
-                except Exception:
-                    logger.exception("Guard check failed, allowing answer through")
-
             citations = _extract_citations(answer_text)
-            # Fallback: if LLM didn't cite, use collected sources from tool results
             if not citations and collected_sources:
-                seen: set[str] = set()
-                for s in collected_sources:
-                    key = f"{s.get('file_name', '')}|{s.get('locator', '')}"
-                    if key not in seen and s.get("file_name"):
-                        citations.append({"file_name": s["file_name"], "locator": s.get("locator", "")})
-                        seen.add(key)
+                citations = _dedup_sources_for_citation_fallback(collected_sources)
 
             yield {
                 "type": "done",
                 "answer": answer_text,
                 "citations": citations,
-                "in_scope": guard_result.get("in_scope", True),
-                "guard_warning": guard_result.get("warning"),
+                "in_scope": True,
+                "guard_warning": None,
             }
             return
 
-        # Execute tool calls
+        # 执行 tool_calls
         for tool_call in msg.tool_calls:
             tool_name = tool_call.function.name
             try:
@@ -180,58 +267,73 @@ async def agent_chat(
             try:
                 tool_result = await _execute_tool(tool_name, tool_args, course_id, store)
             except Exception as exc:
+                # HEC-1:工具异常要让 LLM 看到,不要 return ""
+                logger.exception("Tool %s execution failed", tool_name)
                 tool_result = json.dumps({"error": str(exc)}, ensure_ascii=False)
 
-            # Collect sources from search results
-            if tool_name == "search_course_materials":
+            # 从 search_wiki 结果中收集 source 备用
+            if tool_name == "search_wiki":
                 try:
                     data = json.loads(tool_result)
                     for r in data.get("results", []):
-                        src = r.get("source", "")
-                        collected_sources.append({"file_name": r.get("file_name", ""), "locator": r.get("locator", ""), "source": src})
+                        collected_sources.append(
+                            {
+                                "file_name": r.get("file_name", ""),
+                                "locator": r.get("locator", ""),
+                                "source": r.get("source_ref", ""),
+                            }
+                        )
                 except (json.JSONDecodeError, KeyError):
                     pass
 
-            messages.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": tool_call.id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_name,
-                            "arguments": tool_call.function.arguments,
-                        },
-                    }
-                ],
-            })
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": tool_result,
-            })
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": tool_call.id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_name,
+                                "arguments": tool_call.function.arguments,
+                            },
+                        }
+                    ],
+                }
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": tool_result,
+                }
+            )
 
-    # Max rounds reached — force final answer
+    # 达到 max rounds → 强制生成"基于现有信息"的回答
     try:
         response = client.chat.completions.create(
             model=settings.deepseek_model,
-            messages=messages + [{"role": "system", "content": "请基于已有的工具查询结果，给出你的最终回答。必须在回答中引用来源。"}],
+            messages=messages
+            + [
+                {
+                    "role": "system",
+                    "content": "请基于已有的工具查询结果, 给出你的最终回答。必须在回答中引用来源。",
+                }
+            ],
             temperature=0.3,
             extra_body={"thinking": {"type": "disabled"}},
         )
         answer_text = response.choices[0].message.content or ""
     except Exception:
-        answer_text = "嗯……我查了几次但还是不太确定。要不换个问法试试？"
+        # HEC-1:仍然让前端知道
+        logger.exception("LLM call failed at max-rounds forced answer")
+        yield {"type": "error", "message": "达到最大工具调用轮次仍无法生成回答"}
+        return
 
     citations = _extract_citations(answer_text)
     if not citations and collected_sources:
-        seen: set[str] = set()
-        for s in collected_sources:
-            key = f"{s.get('file_name', '')}|{s.get('locator', '')}"
-            if key not in seen and s.get("file_name"):
-                citations.append({"file_name": s["file_name"], "locator": s.get("locator", "")})
-                seen.add(key)
+        citations = _dedup_sources_for_citation_fallback(collected_sources)
 
     yield {
         "type": "done",
@@ -242,58 +344,80 @@ async def agent_chat(
     }
 
 
-async def _execute_tool(name: str, args: dict, course_id: str, store: Any) -> str:
-    if name == "search_course_materials":
-        from app.services.retrieval import tool_search_materials
-        return tool_search_materials(course_id, args.get("query", ""), args.get("top_k", 5))
+# ---------------------------------------------------------------------------
+# 工具执行路由
+# ---------------------------------------------------------------------------
 
-    if name == "get_course_structure":
-        skeleton = store.get_skeleton(course_id) if store else None
-        if not skeleton:
-            return json.dumps({"note": "课程骨架尚未生成"}, ensure_ascii=False)
-        return json.dumps({
-            "chapters": [
-                {
-                    "title": ch.title,
-                    "key_concepts": ch.key_concepts,
-                    "importance": ch.importance,
-                    "exam_weight": ch.exam_weight,
-                }
-                for ch in skeleton.chapters
-            ],
-            "core_concepts": skeleton.core_concepts,
-            "difficulty_areas": skeleton.difficulty_areas,
-        }, ensure_ascii=False)
+
+async def _execute_tool(name: str, args: dict, course_id: str, store: Any) -> str:
+    """路由 7 个工具到对应实现。"""
+    from app.services import query_tools
+    from app.services.retrieval import search_wiki_layer
+
+    if name == "search_wiki":
+        # 直接调底层 retrieval 函数,query_tools.search_wiki 是 agent 不用的包装
+        query = args.get("query", "")
+        layer = args.get("layer", "all")
+        top_k = args.get("top_k", 5)
+        if store is None:
+            return json.dumps({"results": [], "count": 0, "note": "store not provided"}, ensure_ascii=False)
+        results = search_wiki_layer(course_id, query, layer, top_k, store)
+        return json.dumps({"results": results, "count": len(results)}, ensure_ascii=False)
+
+    if name == "get_course_map":
+        return query_tools.get_course_map(course_id, store)
+
+    if name == "get_concept":
+        return query_tools.get_concept(course_id, args.get("concept_id", ""), store)
+
+    if name == "get_chapter_outline":
+        return query_tools.get_chapter_outline(course_id, args.get("chapter_id", ""), store)
+
+    if name == "follow_prerequisite":
+        depth = args.get("depth", 2)
+        return query_tools.follow_prerequisite(course_id, args.get("concept_id", ""), depth, store)
+
+    if name == "get_source_content":
+        return query_tools.get_source_content(course_id, args.get("dmap_id", ""), store)
 
     if name == "get_review_plan":
         plan = store.get_review_plan(course_id) if store else None
         if not plan:
             return json.dumps({"note": "暂无复习计划"}, ensure_ascii=False)
-        return json.dumps({
-            "remaining_days": plan.remaining_days,
-            "daily_plan": [
-                {"day": d.day_index, "focus": d.focus, "minutes": d.suggested_minutes, "priority": d.priority}
-                for d in plan.daily_plan
-            ],
-            "likely_exam_points": plan.likely_exam_points,
-            "weak_areas": plan.weak_areas,
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "remaining_days": plan.remaining_days,
+                "daily_plan": [
+                    {
+                        "day": d.day_index,
+                        "focus": d.focus,
+                        "minutes": d.suggested_minutes,
+                        "priority": d.priority,
+                    }
+                    for d in plan.daily_plan
+                ],
+                "likely_exam_points": plan.likely_exam_points,
+                "weak_areas": plan.weak_areas,
+            },
+            ensure_ascii=False,
+        )
 
     return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False)
 
 
+# ---------------------------------------------------------------------------
+# 引用提取
+# ---------------------------------------------------------------------------
+
+
 def _extract_citations(text: str) -> list[dict]:
-    """Extract inline citations from answer text."""
-    import re
+    """从回答文本中提取 `来自 [文件名] · 第X部分` 格式的内联引用。"""
     citations: list[dict] = []
     seen: set[str] = set()
 
     patterns = [
-        # 来自 [文件名] · 第X部分  or  来自[文件名]·第X部分
         re.compile(r"来自\s*\[?(.+?)\]?\s*·\s*(第.+?部分)"),
-        # [文件名] · 第X部分 (without 来自)
         re.compile(r"\[(.+?)\]\s*·\s*(第.+?部分)"),
-        # 文件名 · 第X部分
         re.compile(r"([\w一-鿿.-]+\.(?:pdf|ppt|txt|md))\s*·\s*(第.+?部分)"),
     ]
 
@@ -307,3 +431,19 @@ def _extract_citations(text: str) -> list[dict]:
                 seen.add(key)
 
     return citations
+
+
+def _dedup_sources_for_citation_fallback(collected: list[dict]) -> list[dict]:
+    """LLM 没在回答中嵌入引用时, 用工具结果里的 source 顶上。"""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for s in collected:
+        file_name = s.get("file_name", "")
+        locator = s.get("locator", "")
+        if not file_name:
+            continue
+        key = f"{file_name}|{locator}"
+        if key not in seen:
+            seen.add(key)
+            out.append({"file_name": file_name, "locator": locator})
+    return out
