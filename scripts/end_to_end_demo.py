@@ -9,6 +9,12 @@ from pathlib import Path
 
 import httpx
 
+# Force UTF-8 stdout on Windows (avoid GBK encoding errors on Chinese + emoji)
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 BASE = "http://127.0.0.1:8000"
 
 

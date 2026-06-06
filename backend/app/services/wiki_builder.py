@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import operator
 import uuid
 from typing import Any, Annotated, TypedDict
 
@@ -125,7 +126,9 @@ class WikiState(TypedDict, total=False):
     dmap: DMAP
     course_index: CourseIndex
     tasks: list[WorkerTask]
-    raw_kcs: list[list[KC]]  # 嵌套:每个 worker 一份
+    # raw_kcs 接受并发 worker 的累积写入(每个 worker 返回 [kc, kc, ...])
+    # LangGraph 需要 Annotated[list, operator.add] 才能允许多个 worker 同时写
+    raw_kcs: Annotated[list[list[KC]], operator.add]
     merged_kcs: list[KC]
     chapter_wikis: list[ChapterWiki]
     review: ReviewResult
@@ -209,6 +212,37 @@ def _supervisor_impl(state: WikiState) -> dict[str, Any]:
             {"id": cid, "title": ctitle, "key_concepts": [], "importance": "medium", "depends_on": []}
             for cid, ctitle, _ in chapter_texts
         ]
+
+    def _normalize_importance(v: Any) -> str:
+        """LLM 偶尔给 0-10 数字 / 中文 / 错别字, 归一到 high/medium/low。"""
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("high", "h", "高", "高优先级", "1"):
+                return "high"
+            if s in ("low", "l", "低", "低优先级", "3"):
+                return "low"
+            return "medium"
+        if isinstance(v, (int, float)):
+            if v >= 7:
+                return "high"
+            if v <= 3:
+                return "low"
+            return "medium"
+        return "medium"
+
+    normalized_chapters = []
+    for c in ci_data["chapters"]:
+        if not isinstance(c, dict):
+            continue
+        c.setdefault("importance", "medium")
+        c["importance"] = _normalize_importance(c["importance"])
+        c.setdefault("id", "")
+        c.setdefault("title", "")
+        c.setdefault("key_concepts", [])
+        c.setdefault("depends_on", [])
+        normalized_chapters.append(c)
+    ci_data["chapters"] = normalized_chapters
+
     ci = CourseIndex(
         course_id=course_id,
         course_name=ci_data.get("course_name", ""),
@@ -263,27 +297,69 @@ def _worker_extract_kcs(task: WorkerTask) -> list[KC]:
         name = str(item["name"]).strip()
         if not name:
             continue
+
+        # Normalize fields that LLM sometimes returns in the wrong shape.
+        # key_properties should be list[{name, formula}]; if LLM gave strings,
+        # wrap them as {name: <string>, formula: ""} so schema validation passes.
+        raw_props = item.get("key_properties", []) or []
+        if isinstance(raw_props, list):
+            normalized_props: list[dict] = []
+            for p in raw_props:
+                if isinstance(p, dict):
+                    normalized_props.append(p)
+                elif isinstance(p, str):
+                    normalized_props.append({"name": p, "formula": ""})
+            key_properties = normalized_props
+        else:
+            key_properties = []
+
+        # Coerce list-like fields to list (LLM sometimes gives string)
+        def _to_list(v: Any) -> list[str]:
+            if v is None:
+                return []
+            if isinstance(v, list):
+                return [str(x) for x in v]
+            if isinstance(v, str):
+                return [v] if v else []
+            return [str(v)]
+
+        # exam_frequency must be in {high, medium, low}
+        ef = str(item.get("exam_frequency", "medium")).strip().lower()
+        if ef not in ("high", "medium", "low"):
+            ef = "medium"
+        # bloom_level must be one of the 4 levels
+        bl = str(item.get("bloom_level", "Understanding")).strip()
+        if bl not in ("Remembering", "Understanding", "Applying", "Analyzing"):
+            bl = "Understanding"
+
         kc_id = make_kc_id(task["course_id"], task["chapter_id"], name)
-        kcs.append(
-            KC(
-                id=kc_id,
-                course_id=task["course_id"],
-                chapter_id=task["chapter_id"],
-                name=name,
-                bloom_level=item.get("bloom_level", "Understanding"),
-                definition=item.get("definition", ""),
-                formula=item.get("formula", ""),
-                intuition=item.get("intuition", ""),
-                conditions=item.get("conditions", []),
-                key_properties=item.get("key_properties", []),
-                examples=item.get("examples", []),
-                common_mistakes=item.get("common_mistakes", []),
-                prerequisites=item.get("prerequisites", []),
-                related=item.get("related", []),
-                exam_frequency=item.get("exam_frequency", "medium"),
-                exam_patterns=item.get("exam_patterns", []),
+        try:
+            kcs.append(
+                KC(
+                    id=kc_id,
+                    course_id=task["course_id"],
+                    chapter_id=task["chapter_id"],
+                    name=name,
+                    bloom_level=bl,
+                    definition=item.get("definition", ""),
+                    formula=item.get("formula", ""),
+                    intuition=item.get("intuition", ""),
+                    conditions=_to_list(item.get("conditions", [])),
+                    key_properties=key_properties,
+                    examples=_to_list(item.get("examples", [])),
+                    common_mistakes=_to_list(item.get("common_mistakes", [])),
+                    prerequisites=_to_list(item.get("prerequisites", [])),
+                    related=_to_list(item.get("related", [])),
+                    exam_frequency=ef,
+                    exam_patterns=_to_list(item.get("exam_patterns", [])),
+                )
             )
-        )
+        except Exception as e:
+            # HEC-1: log the failure but don't crash the whole worker.
+            # A single bad KC shouldn't sink the whole chapter.
+            logger.warning("Skipping malformed KC '%s' in chapter %s: %s",
+                           name, task["chapter_id"], e)
+            continue
     return kcs
 
 

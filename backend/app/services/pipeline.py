@@ -9,6 +9,9 @@ from app.services.parsing import parse_document
 from app.services.skeleton import generate_skeleton
 from app.services.vectorstore import QdrantStore
 from app.api.events import push_event
+from app.services.dmap import build_dmap
+from app.services.merkle import compute_merkle_tree, diff_merkle_trees
+from app.services.wiki_builder import build_wiki_async
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +19,10 @@ _qdrant = QdrantStore()
 
 _material_texts: dict[str, dict[str, str]] = {}
 
-PIPELINE_STEPS = ["parsing", "chunking", "embedding", "storing", "skeleton_generating"]
+PIPELINE_STEPS = [
+    "parsing", "build_dmap", "wiki_build",
+    "chunking", "embedding", "storing", "skeleton_generating",
+]
 
 
 async def process_material(
@@ -41,7 +47,7 @@ async def process_material(
         logger.warning("Unsupported material kind for %s: %s", material_id, exc)
         store.update_task(task_ids["parsing"], "failed", detail=str(exc))
         store.update_material_status(course_id, material_id, "failed")
-        for remaining_step in ["chunking", "embedding", "storing", "skeleton_generating"]:
+        for remaining_step in ["build_dmap", "wiki_build", "chunking", "embedding", "storing", "skeleton_generating"]:
             store.update_task(task_ids[remaining_step], "skipped")
         return
     except Exception as exc:
@@ -54,20 +60,73 @@ async def process_material(
                 _update_course_if_ready(course_id, store)
                 _material_texts.setdefault(course_id, {})[material_id] = text
                 asyncio.create_task(_generate_and_store_skeleton(course_id, store))
-                for remaining_step in ["chunking", "embedding", "storing"]:
+                for remaining_step in ["build_dmap", "wiki_build", "chunking", "embedding", "storing"]:
                     store.update_task(task_ids[remaining_step], "skipped")
                 return
             else:
                 store.update_material_status(course_id, material_id, "failed")
-                for remaining_step in ["chunking", "embedding", "storing", "skeleton_generating"]:
+                for remaining_step in ["build_dmap", "wiki_build", "chunking", "embedding", "storing", "skeleton_generating"]:
                     store.update_task(task_ids[remaining_step], "skipped")
                 return
         except Exception as fallback_exc:
             logger.exception("Degraded extraction also failed for %s: %s", material_id, fallback_exc)
             store.update_material_status(course_id, material_id, "failed")
-            for remaining_step in ["chunking", "embedding", "storing", "skeleton_generating"]:
+            for remaining_step in ["build_dmap", "wiki_build", "chunking", "embedding", "storing", "skeleton_generating"]:
                 store.update_task(task_ids[remaining_step], "skipped")
             return
+
+    # Build DMAP from docling (or fallback flat text), then trigger Wiki build (best-effort)
+    docling_chunks: list[dict] = []
+    if kind == "pdf":
+        try:
+            from app.services.parsing_docling import parse_pdf_docling
+            docling_chunks = await asyncio.to_thread(parse_pdf_docling, file_path)
+        except Exception as e:
+            logger.warning("Docling failed for %s, using flat fallback: %s", material_id, e)
+    if not docling_chunks:
+        # Flat fallback: one paragraph with the whole text
+        docling_chunks = [{"text": text, "heading": file_name, "level": 1, "page": 0}]
+
+    try:
+        store.update_task(task_ids["build_dmap"], "running")
+        dmap_obj = build_dmap(course_id, docling_chunks, source_file=file_name)
+        store.save_dmap(course_id, dmap_obj.model_dump_json())
+        store.update_task(task_ids["build_dmap"], "done")
+    except Exception as exc:
+        logger.warning("DMAP build failed for %s: %s", material_id, exc)
+        store.update_task(task_ids["build_dmap"], "failed", detail=str(exc))
+        dmap_obj = None
+
+    if dmap_obj is not None:
+        try:
+            store.update_task(task_ids["wiki_build"], "running")
+            # Load previous merkle tree for incremental diff
+            old_merkle_json = store.get_merkle_tree(course_id)
+            old_merkle = None
+            if old_merkle_json:
+                from app.schemas.foxsay import MerkleTree
+                try:
+                    old_merkle = MerkleTree.model_validate_json(old_merkle_json)
+                except Exception:
+                    old_merkle = None
+            new_merkle = compute_merkle_tree(dmap_obj)
+            try:
+                store.save_merkle_tree(course_id, new_merkle.model_dump_json())
+            except Exception:
+                pass
+            changed = diff_merkle_trees(old_merkle, new_merkle) if old_merkle else None
+            # build_wiki_async internally: build_dmap (no-op since we have dmap) →
+            # compute_merkle → graph.invoke(supervisor → workers → reducer → reviewer)
+            # → persist_kc / persist_chapter_wiki / persist_dmap / persist_merkle
+            await build_wiki_async(
+                course_id, docling_chunks, store,
+                old_merkle_tree=old_merkle,
+                source_file=file_name,
+            )
+            store.update_task(task_ids["wiki_build"], "done")
+        except Exception as exc:
+            logger.exception("Wiki build failed for %s (continuing without wiki): %s", material_id, exc)
+            store.update_task(task_ids["wiki_build"], "failed", detail=str(exc))
 
     try:
         store.update_task(task_ids["chunking"], "running")
