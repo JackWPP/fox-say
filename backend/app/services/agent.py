@@ -31,7 +31,6 @@ SYSTEM_PROMPT = (
     "   但要明确标注「基于课程内容的理解」。\n"
     "4. 积极使用工具：\n"
     "   - search_course_materials: 搜索课程材料（tool 返回的 source 字段就是引用格式，直接用它）\n"
-    "   - query_knowledge_graph: 查找概念关系\n"
     "   - get_course_structure: 了解课程架构\n"
     "   - get_review_plan: 查看复习计划\n"
     "5. 回答要自然、有帮助、有结构（可以用 Markdown 排版），但不要逐条罗列搜索结果。\n"
@@ -65,28 +64,6 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "query_knowledge_graph",
-            "description": "查询课程知识图谱中概念的关系、前置依赖和邻居节点。用于理解概念间的关联。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "concept": {
-                        "type": "string",
-                        "description": "要查询的概念名称",
-                    },
-                    "depth": {
-                        "type": "integer",
-                        "default": 1,
-                        "description": "查询邻居的跳数，默认1",
-                    },
-                },
-                "required": ["concept"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "get_course_structure",
             "description": "获取课程的整体架构：章节划分、核心概念、难点区域。用于了解课程全局。",
             "parameters": {"type": "object", "properties": {}, "required": []},
@@ -98,23 +75,6 @@ TOOLS = [
             "name": "get_review_plan",
             "description": "获取当前的复习计划，包括每天的重点和薄弱环节。仅在用户明确问复习相关问题时使用。",
             "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_concepts",
-            "description": "在课程知识图谱中模糊搜索概念。用于不确定概念确切名称时查找。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "要搜索的概念名称或部分名称",
-                    },
-                },
-                "required": ["query"],
-            },
         },
     },
 ]
@@ -287,22 +247,6 @@ async def _execute_tool(name: str, args: dict, course_id: str, store: Any) -> st
         from app.services.retrieval import tool_search_materials
         return tool_search_materials(course_id, args.get("query", ""), args.get("top_k", 5))
 
-    if name == "query_knowledge_graph":
-        from app.services.knowledge_graph import KnowledgeGraph
-        kg = KnowledgeGraph.for_course(course_id, store=store)
-        concept = args.get("concept", "")
-        depth = args.get("depth", 1)
-        if kg.get_concept_count() == 0:
-            return json.dumps({"found": False, "note": "知识图谱尚未构建"}, ensure_ascii=False)
-        matching = kg.search_concepts_fuzzy(concept)
-        if not matching:
-            return json.dumps({"found": False, "note": f"未找到与'{concept}'匹配的概念"}, ensure_ascii=False)
-        subgraphs = []
-        for m in matching[:3]:
-            neighbors = kg.get_neighbors(m["id"], depth=depth)
-            subgraphs.append({"concept": m["label"], "match_type": m["match_type"], "neighbors": neighbors})
-        return json.dumps({"found": True, "results": subgraphs}, ensure_ascii=False)
-
     if name == "get_course_structure":
         skeleton = store.get_skeleton(course_id) if store else None
         if not skeleton:
@@ -334,14 +278,6 @@ async def _execute_tool(name: str, args: dict, course_id: str, store: Any) -> st
             "likely_exam_points": plan.likely_exam_points,
             "weak_areas": plan.weak_areas,
         }, ensure_ascii=False)
-
-    if name == "search_concepts":
-        from app.services.knowledge_graph import KnowledgeGraph
-        kg = KnowledgeGraph.for_course(course_id, store=store)
-        if kg.get_concept_count() == 0:
-            return json.dumps({"found": False, "note": "知识图谱尚未构建"}, ensure_ascii=False)
-        results = kg.search_concepts_fuzzy(args.get("query", ""))
-        return json.dumps({"results": results, "count": len(results)}, ensure_ascii=False)
 
     return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False)
 

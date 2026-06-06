@@ -1,12 +1,10 @@
-import { Search, GitBranch, BookOpen, Zap, Loader2 } from "lucide-react";
+import { Search, BookOpen, Zap, Loader2 } from "lucide-react";
 import type { ToolCallState } from "../../shared/types";
 
 const toolLabels: Record<string, { label: string; icon: typeof Search }> = {
   search_course_materials: { label: "搜索课程材料", icon: Search },
-  query_knowledge_graph: { label: "查询知识图谱", icon: GitBranch },
   get_course_structure: { label: "获取课程结构", icon: BookOpen },
   get_review_plan: { label: "获取复习计划", icon: Zap },
-  search_concepts: { label: "搜索概念", icon: Search },
 };
 
 interface ToolCallIndicatorProps {

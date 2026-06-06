@@ -58,13 +58,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS knowledge_graphs (
-    course_id TEXT PRIMARY KEY,
-    data_json TEXT NOT NULL,
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (course_id) REFERENCES courses(id)
-);
-
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id TEXT PRIMARY KEY,
     course_id TEXT NOT NULL,
@@ -288,21 +281,6 @@ class SqliteStore:
             (course_id, material_id),
         )
         self._conn.commit()
-
-    # --- Knowledge Graphs ---
-
-    def save_knowledge_graph(self, course_id: str, data_json: str) -> None:
-        self._conn.execute(
-            "INSERT OR REPLACE INTO knowledge_graphs (course_id, data_json, updated_at) VALUES (?, ?, datetime('now'))",
-            (course_id, data_json),
-        )
-        self._conn.commit()
-
-    def load_knowledge_graph(self, course_id: str) -> str | None:
-        row = self._conn.execute(
-            "SELECT data_json FROM knowledge_graphs WHERE course_id = ?", (course_id,)
-        ).fetchone()
-        return row["data_json"] if row else None
 
     # --- Chat Sessions ---
 

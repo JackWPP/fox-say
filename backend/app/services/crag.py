@@ -82,10 +82,6 @@ async def ask(course_id: str, course_title: str, question: str, store: Any = Non
             locator=r["metadata"]["locator"],
         ))
 
-    graph_context = retrieval_result.get("graph_context", "")
-    if graph_context:
-        context_parts.append(f"[知识图谱关联概念]\n{graph_context}")
-
     context = "\n\n".join(context_parts)
 
     if confidence == "grounded":

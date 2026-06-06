@@ -1,8 +1,6 @@
 import re
 from typing import Any
 
-from app.services.knowledge_graph import KnowledgeGraph
-
 
 def _extract_entities(text: str) -> set[str]:
     """Extract potential concept entities from answer text."""
@@ -18,40 +16,11 @@ def _extract_entities(text: str) -> set[str]:
 
 
 def check_answer_in_scope(answer: str, course_id: str, store: Any) -> dict:
-    """Post-answer guard: check if answer entities overlap with course knowledge.
+    """Post-answer guard: no-op in MVP (knowledge graph removed).
 
     Returns {in_scope: bool, overlap_count: int, warning: str|None}.
-    This is a safety net, not a primary gate — it only flags clear violations.
+    Without a knowledge graph, there is nothing to compare entities against,
+    so we cannot flag out-of-scope answers here. Primary in-scope gating
+    happens upstream in the CRAG layer (retrieve() thresholds).
     """
-    entities = _extract_entities(answer)
-    if not entities:
-        return {"in_scope": True, "overlap_count": 0, "warning": None}
-
-    kg = KnowledgeGraph.for_course(course_id, store=store)
-    if kg.get_concept_count() == 0:
-        # No graph built yet, can't verify — allow through
-        return {"in_scope": True, "overlap_count": 0, "warning": None}
-
-    # Check overlap with knowledge graph concepts
-    graph_concepts: set[str] = set()
-    for node_id in kg._graph.nodes:
-        label = str(kg._graph.nodes[node_id].get("label", node_id)).lower()
-        graph_concepts.add(label)
-
-    overlap = 0
-    for entity in entities:
-        entity_lower = entity.lower()
-        for gc in graph_concepts:
-            if entity_lower in gc or gc in entity_lower:
-                overlap += 1
-                break
-
-    # If zero overlap and answer is substantial, flag it
-    if overlap == 0 and len(entities) >= 3:
-        return {
-            "in_scope": False,
-            "overlap_count": 0,
-            "warning": "答案中的关键概念未在课程知识图谱中找到匹配，可能超出课程范围",
-        }
-
-    return {"in_scope": True, "overlap_count": overlap, "warning": None}
+    return {"in_scope": True, "overlap_count": 0, "warning": None}

@@ -5,8 +5,7 @@ from typing import Any
 from openai import OpenAI
 
 from app.core.config import settings
-from app.schemas.foxsay import CourseSkeleton
-from app.services.knowledge_graph import KnowledgeGraph
+from app.schemas.foxsay import CourseSkeleton, CourseSkeletonChapter
 
 logger = logging.getLogger(__name__)
 
@@ -20,19 +19,6 @@ def _get_client() -> OpenAI:
         _client = OpenAI(api_key=api_key, base_url=settings.deepseek_api_base)
     return _client
 
-
-SKELETON_FROM_GRAPH_PROMPT = (
-    "你是一个课程骨架分析助手。以下是课程知识图谱中自动抽取的概念和关系列表。\n"
-    "请将这些概念按章节组织起来。不要编造新概念，只能使用图谱中已有的概念。\n"
-    "如果图谱数据不足以组织章节，返回空 chapters 数组。\n\n"
-    "请以 JSON 格式返回：\n"
-    "{\n"
-    '  "chapters": [\n'
-    '    {"id": "ch-1", "title": "章节标题", "key_concepts": ["概念1"], "importance": "high|medium|low", "exam_weight": 0.3}\n'
-    "  ]\n"
-    "}\n"
-    "只返回 JSON，不要包含其他文字。"
-)
 
 SKELETON_FALLBACK_PROMPT = (
     "你是一个课程骨架分析助手。请根据提供的课程材料文本分析课程结构，"
@@ -52,44 +38,28 @@ async def generate_skeleton(
     materials_text: str,
     store: Any = None,
 ) -> CourseSkeleton:
-    kg = KnowledgeGraph.for_course(course_id, store=store)
-
+    # NOTE: `store` is kept in the signature for backward compatibility with callers
+    # (e.g. pipeline._generate_and_store_skeleton) — the store is now consumed
+    # *after* generate_skeleton returns, and not used inside.
     try:
-        skeleton = await _llm_generate(course_id, course_title, kg, materials_text)
+        return await _llm_generate(course_id, course_title, materials_text)
     except Exception:
         logger.exception("LLM skeleton generation failed for course %s, falling back", course_id)
-        skeleton = _fallback_generate(course_id, materials_text, kg)
-
-    if store is not None and kg._dirty:
-        kg.save(store)
-
-    return skeleton
+        return _fallback_generate(course_id, materials_text)
 
 
 async def _llm_generate(
     course_id: str,
     course_title: str,
-    kg: KnowledgeGraph,
     materials_text: str,
 ) -> CourseSkeleton:
-    has_graph = kg.get_concept_count() > 0
-
-    if has_graph:
-        graph_context = kg.to_context()
-        user_content = (
-            f"课程名：{course_title}\n\n"
-            f"知识图谱概念与关系：\n{graph_context}"
-        )
-        system_prompt = SKELETON_FROM_GRAPH_PROMPT
-    else:
-        user_content = f"课程名：{course_title}\n\n课程材料文本：\n{materials_text[:8000]}"
-        system_prompt = SKELETON_FALLBACK_PROMPT
+    user_content = f"课程名：{course_title}\n\n课程材料文本：\n{materials_text[:8000]}"
 
     client = _get_client()
     response = client.chat.completions.create(
         model=settings.deepseek_model,
         messages=[
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": SKELETON_FALLBACK_PROMPT},
             {"role": "user", "content": user_content},
         ],
         temperature=0.1,
@@ -99,7 +69,23 @@ async def _llm_generate(
     parsed = _parse_llm_json(raw)
     chapters_data = parsed.get("chapters", [])
 
-    return kg.to_skeleton(course_id, chapters_data)
+    chapters: list[CourseSkeletonChapter] = []
+    for ch in chapters_data:
+        chapters.append(CourseSkeletonChapter(
+            id=ch["id"],
+            title=ch["title"],
+            key_concepts=ch.get("key_concepts", []),
+            importance=ch.get("importance", "medium"),
+            exam_weight=ch.get("exam_weight", 0.0),
+        ))
+
+    return CourseSkeleton(
+        course_id=course_id,
+        chapters=chapters,
+        core_concepts=[],
+        difficulty_areas=[],
+        prerequisite_chain=[],
+    )
 
 
 def _parse_llm_json(raw: str) -> dict:
@@ -116,41 +102,27 @@ def _parse_llm_json(raw: str) -> dict:
 def _fallback_generate(
     course_id: str,
     materials_text: str,
-    kg: KnowledgeGraph,
 ) -> CourseSkeleton:
-    # If graph has nodes, derive chapters from graph connectivity rather than text
-    if kg.get_concept_count() > 0:
-        nodes = list(kg._graph.nodes(data=True))
-        in_degrees = dict(kg._graph.in_degree())
-        sorted_nodes = sorted(nodes, key=lambda n: in_degrees.get(n[0], 0), reverse=True)
-
-        chapters_data: list[dict] = []
-        for idx, (node_id, attrs) in enumerate(sorted_nodes[:20]):
-            label = attrs.get("label", node_id)
-            chapters_data.append({
-                "id": f"ch-{idx + 1}",
-                "title": label,
-                "key_concepts": [label],
-                "importance": "high" if in_degrees.get(node_id, 0) >= 3 else "medium",
-                "exam_weight": round(1.0 / min(len(sorted_nodes[:20]), 1), 2),
-            })
-        return kg.to_skeleton(course_id, chapters_data)
-
-    # No graph at all: fall back to text chunking
     chunk_size = 1500
     chunks: list[str] = []
     for i in range(0, len(materials_text), chunk_size):
         chunks.append(materials_text[i : i + chunk_size])
 
-    chapters_data: list[dict] = []
+    chapters: list[CourseSkeletonChapter] = []
     for idx, chunk in enumerate(chunks):
         title = chunk[:50].strip().split("\n")[0] or f"第{idx + 1}部分"
-        chapters_data.append({
-            "id": f"ch-{idx + 1}",
-            "title": title,
-            "key_concepts": [],
-            "importance": "medium",
-            "exam_weight": round(1.0 / max(len(chunks), 1), 2),
-        })
+        chapters.append(CourseSkeletonChapter(
+            id=f"ch-{idx + 1}",
+            title=title,
+            key_concepts=[],
+            importance="medium",
+            exam_weight=round(1.0 / max(len(chunks), 1), 2),
+        ))
 
-    return kg.to_skeleton(course_id, chapters_data)
+    return CourseSkeleton(
+        course_id=course_id,
+        chapters=chapters,
+        core_concepts=[],
+        difficulty_areas=[],
+        prerequisite_chain=[],
+    )
