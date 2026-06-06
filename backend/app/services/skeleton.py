@@ -126,3 +126,66 @@ def _fallback_generate(
         difficulty_areas=[],
         prerequisite_chain=[],
     )
+
+
+# =============================================================================
+# Wiki-First Pipeline 集成(阶段 2 新增)
+# =============================================================================
+
+
+async def generate_skeleton_from_wiki(
+    course_id: str, store: Any
+) -> "CourseSkeleton | None":
+    """从 Wiki 课程索引 + 章节摘要派生骨架。
+
+    行为:
+    - 读 store.get_course_index(course_id)。没有 / 解析失败 / chapters 为空 → return None。
+    - 读 store.get_chapter_wikis_by_course(course_id) 作为 key_concepts 来源。
+    - 把 CourseIndex.chapters 转成 CourseSkeletonChapter,带 course_id 显式声明。
+    - 不调 LLM(纯本地派生);Wiki building 与 skeleton generation 没有 lock,
+      上层需要保证先 build_wiki 再调本函数,否则会拿到 None。
+    - 不在 Wiki 还在 building 时做特殊处理 — 调用方负责 race。
+    """
+    from app.schemas.foxsay import CourseIndex  # local import to avoid cycle
+
+    raw = store.get_course_index(course_id)
+    if not raw:
+        return None
+    try:
+        ci = CourseIndex.model_validate_json(raw)
+    except Exception:
+        logger.warning("generate_skeleton_from_wiki: course_index parse failed for %s", course_id)
+        return None
+    if not ci.chapters:
+        return None
+
+    # 拿章节 wiki 的 key_concepts 做骨架的 key_concepts(优先)
+    cws = {cw.chapter_id: cw for cw in store.get_chapter_wikis_by_course(course_id)}
+
+    chapters: list[CourseSkeletonChapter] = []
+    for c in ci.chapters:
+        cw = cws.get(c.id)
+        key_concepts = c.key_concepts or (cw.key_concepts if cw else [])
+        chapters.append(
+            CourseSkeletonChapter(
+                id=c.id,
+                title=c.title,
+                key_concepts=key_concepts,
+                importance=c.importance,  # type: ignore[arg-type]
+                exam_weight=0.0,
+            )
+        )
+
+    # 构造 prerequisite_chain:依赖关系展平成 [a, b] 形式
+    prereq_chain: list[list[str]] = []
+    for c in ci.chapters:
+        for dep in c.depends_on:
+            prereq_chain.append([dep, c.id])
+
+    return CourseSkeleton(
+        course_id=course_id,
+        chapters=chapters,
+        core_concepts=ci.core_topics,
+        difficulty_areas=[],
+        prerequisite_chain=prereq_chain,
+    )

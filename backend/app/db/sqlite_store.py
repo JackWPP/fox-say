@@ -3,9 +3,13 @@ from pathlib import Path
 from typing import Any
 
 from app.schemas.foxsay import (
+    ChapterWiki,
     Course,
     CourseSkeleton,
+    DMAP,
+    KC,
     Material,
+    MerkleTree,
     ReviewPlan,
 )
 
@@ -96,6 +100,54 @@ CREATE TABLE IF NOT EXISTS user_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ===== Wiki-First Pipeline (阶段 2 新增) =====
+
+CREATE TABLE IF NOT EXISTS dmaps (
+    course_id TEXT PRIMARY KEY,
+    data_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id) REFERENCES courses(id)
+);
+
+CREATE TABLE IF NOT EXISTS merkle_trees (
+    course_id TEXT PRIMARY KEY,
+    data_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id) REFERENCES courses(id)
+);
+
+CREATE TABLE IF NOT EXISTS wiki_kcs (
+    kc_id TEXT PRIMARY KEY,
+    course_id TEXT NOT NULL,
+    chapter_id TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    layer TEXT NOT NULL DEFAULT 'micro',
+    bloom_level TEXT NOT NULL DEFAULT 'Understanding',
+    data_json TEXT NOT NULL,
+    valid_at TEXT NOT NULL,
+    invalid_at TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    content_hash TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_wiki_kcs_course ON wiki_kcs(course_id);
+CREATE INDEX IF NOT EXISTS idx_wiki_kcs_chapter ON wiki_kcs(course_id, chapter_id);
+
+CREATE TABLE IF NOT EXISTS wiki_chapters (
+    chapter_id TEXT PRIMARY KEY,
+    course_id TEXT NOT NULL,
+    data_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id) REFERENCES courses(id)
+);
+
+CREATE TABLE IF NOT EXISTS course_indices (
+    course_id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id) REFERENCES courses(id)
 );
 """
 
@@ -430,3 +482,183 @@ class SqliteStore:
             (key, value),
         )
         self._conn.commit()
+
+    # ===== Wiki-First Pipeline (阶段 2 新增) =====
+
+    # --- DMAP ---
+
+    def save_dmap(self, course_id: str, data_json: str) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO dmaps (course_id, data_json) VALUES (?, ?)",
+            (course_id, data_json),
+        )
+        self._conn.commit()
+
+    def get_dmap(self, course_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT data_json FROM dmaps WHERE course_id = ?", (course_id,)
+        ).fetchone()
+        return row["data_json"] if row else None
+
+    def get_dmap_obj(self, course_id: str) -> DMAP | None:
+        raw = self.get_dmap(course_id)
+        if raw is None:
+            return None
+        return DMAP.model_validate_json(raw)
+
+    # --- Merkle Trees ---
+
+    def save_merkle_tree(self, course_id: str, data_json: str) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO merkle_trees (course_id, data_json) VALUES (?, ?)",
+            (course_id, data_json),
+        )
+        self._conn.commit()
+
+    def get_merkle_tree(self, course_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT data_json FROM merkle_trees WHERE course_id = ?", (course_id,)
+        ).fetchone()
+        return row["data_json"] if row else None
+
+    def get_merkle_tree_obj(self, course_id: str) -> MerkleTree | None:
+        raw = self.get_merkle_tree(course_id)
+        if raw is None:
+            return None
+        return MerkleTree.model_validate_json(raw)
+
+    # --- KC (Knowledge Components) ---
+
+    def save_kc(self, kc: KC) -> None:
+        """保存一条 KC。KC.id 必须是 uuid5 确定的。"""
+        data_json = kc.model_dump_json()
+        self._conn.execute(
+            """
+            INSERT OR REPLACE INTO wiki_kcs
+                (kc_id, course_id, chapter_id, name, layer, bloom_level,
+                 data_json, valid_at, invalid_at, version, content_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                kc.id,
+                kc.course_id,
+                kc.chapter_id,
+                kc.name,
+                kc.layer,
+                kc.bloom_level,
+                data_json,
+                kc.valid_at,
+                kc.invalid_at,
+                kc.version,
+                kc.content_hash,
+            ),
+        )
+        self._conn.commit()
+
+    def get_kc(self, kc_id: str) -> KC | None:
+        row = self._conn.execute(
+            "SELECT data_json FROM wiki_kcs WHERE kc_id = ?", (kc_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return KC.model_validate_json(row["data_json"])
+
+    def get_kcs_by_course(
+        self, course_id: str, include_invalid: bool = False
+    ) -> list[KC]:
+        if include_invalid:
+            rows = self._conn.execute(
+                "SELECT data_json FROM wiki_kcs WHERE course_id = ? ORDER BY kc_id",
+                (course_id,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT data_json FROM wiki_kcs WHERE course_id = ? AND invalid_at IS NULL ORDER BY kc_id",
+                (course_id,),
+            ).fetchall()
+        return [KC.model_validate_json(r["data_json"]) for r in rows]
+
+    def get_kcs_by_chapter(
+        self,
+        course_id: str,
+        chapter_id: str,
+        include_invalid: bool = False,
+    ) -> list[KC]:
+        if include_invalid:
+            rows = self._conn.execute(
+                "SELECT data_json FROM wiki_kcs WHERE course_id = ? AND chapter_id = ? ORDER BY kc_id",
+                (course_id, chapter_id),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT data_json FROM wiki_kcs WHERE course_id = ? AND chapter_id = ? AND invalid_at IS NULL ORDER BY kc_id",
+                (course_id, chapter_id),
+            ).fetchall()
+        return [KC.model_validate_json(r["data_json"]) for r in rows]
+
+    def invalidate_kc(self, kc_id: str) -> None:
+        """把一条 KC 标为 invalid,设 invalid_at = now(UTC ISO 字符串)。"""
+        self._conn.execute(
+            "UPDATE wiki_kcs SET invalid_at = datetime('now') WHERE kc_id = ? AND invalid_at IS NULL",
+            (kc_id,),
+        )
+        self._conn.commit()
+
+    def search_kcs_by_name(
+        self,
+        course_id: str,
+        query: str,
+        include_invalid: bool = False,
+    ) -> list[KC]:
+        like = f"%{query}%"
+        if include_invalid:
+            rows = self._conn.execute(
+                "SELECT data_json FROM wiki_kcs WHERE course_id = ? AND name LIKE ? ORDER BY kc_id",
+                (course_id, like),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT data_json FROM wiki_kcs WHERE course_id = ? AND name LIKE ? AND invalid_at IS NULL ORDER BY kc_id",
+                (course_id, like),
+            ).fetchall()
+        return [KC.model_validate_json(r["data_json"]) for r in rows]
+
+    # --- Chapter Wiki ---
+
+    def save_chapter_wiki(self, cw: ChapterWiki) -> None:
+        data_json = cw.model_dump_json()
+        self._conn.execute(
+            "INSERT OR REPLACE INTO wiki_chapters (chapter_id, course_id, data_json) VALUES (?, ?, ?)",
+            (cw.chapter_id, cw.course_id, data_json),
+        )
+        self._conn.commit()
+
+    def get_chapter_wiki(self, chapter_id: str) -> ChapterWiki | None:
+        row = self._conn.execute(
+            "SELECT data_json FROM wiki_chapters WHERE chapter_id = ?", (chapter_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return ChapterWiki.model_validate_json(row["data_json"])
+
+    def get_chapter_wikis_by_course(self, course_id: str) -> list[ChapterWiki]:
+        rows = self._conn.execute(
+            "SELECT data_json FROM wiki_chapters WHERE course_id = ? ORDER BY chapter_id",
+            (course_id,),
+        ).fetchall()
+        return [ChapterWiki.model_validate_json(r["data_json"]) for r in rows]
+
+    # --- Course Index ---
+
+    def save_course_index(self, course_id: str, content: str) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO course_indices (course_id, content) VALUES (?, ?)",
+            (course_id, content),
+        )
+        self._conn.commit()
+
+    def get_course_index(self, course_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT content FROM course_indices WHERE course_id = ?", (course_id,)
+        ).fetchone()
+        return row["content"] if row else None
