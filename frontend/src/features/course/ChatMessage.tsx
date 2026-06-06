@@ -40,6 +40,7 @@ function MarkdownRenderer({ content }: { content: string }) {
 export default function ChatMessage({ message }: { message: ChatMessageType }) {
   const isUser = message.role === "user";
   const isRefusal = message.role === "assistant" && message.confidenceStatus === "out_of_scope";
+  const isError = message.role === "assistant" && message.isError === true;
 
   if (isUser) {
     return (
@@ -55,15 +56,20 @@ export default function ChatMessage({ message }: { message: ChatMessageType }) {
     <div className="flex justify-start">
       <div
         className={`max-w-[80%] rounded-2xl rounded-bl-sm px-4 py-3 text-sm ${
-          isRefusal
-            ? "bg-gray-100 text-gray-400"
-            : "bg-midnightCharcoal text-warmWhite"
+          isError
+            ? "bg-red-950/40 text-red-200 border border-red-500/30"
+            : isRefusal
+              ? "bg-gray-100 text-gray-400"
+              : "bg-midnightCharcoal text-warmWhite"
         }`}
       >
-        {isRefusal && (
+        {isError && (
+          <span className="inline-block mr-1.5" aria-label="error">⚠️</span>
+        )}
+        {isRefusal && !isError && (
           <span className="inline-block mr-1.5">🦊</span>
         )}
-        {isRefusal ? (
+        {isRefusal || isError ? (
           <p className="whitespace-pre-wrap">{message.content}</p>
         ) : (
           <MarkdownRenderer content={message.content} />

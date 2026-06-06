@@ -1,9 +1,13 @@
-import { Search, BookOpen, Zap, Loader2 } from "lucide-react";
+import { Search, BookOpen, Zap, Loader2, Map, FileQuestion, ListTree, ArrowLeft, FileCode } from "lucide-react";
 import type { ToolCallState } from "../../shared/types";
 
 const toolLabels: Record<string, { label: string; icon: typeof Search }> = {
-  search_course_materials: { label: "搜索课程材料", icon: Search },
-  get_course_structure: { label: "获取课程结构", icon: BookOpen },
+  search_wiki: { label: "搜索 Wiki", icon: Search },
+  get_course_map: { label: "获取课程索引", icon: Map },
+  get_concept: { label: "获取知识点", icon: FileQuestion },
+  get_chapter_outline: { label: "获取章节摘要", icon: ListTree },
+  follow_prerequisite: { label: "追溯先修链", icon: ArrowLeft },
+  get_source_content: { label: "获取原始材料", icon: FileCode },
   get_review_plan: { label: "获取复习计划", icon: Zap },
 };
 

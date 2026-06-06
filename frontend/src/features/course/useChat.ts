@@ -13,6 +13,7 @@ export interface ChatMessage {
   refusalReason?: string;
   toolCalls?: ToolCallState[];
   isStreaming?: boolean;
+  isError?: boolean;
 }
 
 export interface ChatSession {
@@ -146,6 +147,7 @@ export function useChat(courseId: string) {
         let buf = "";
         let fullAnswer = "";
         let allCitations: Citation[] = [];
+        let streamError = false;
         const toolCallMap = new Map<string, ToolCallState>();
 
         while (true) {
@@ -173,18 +175,19 @@ export function useChat(courseId: string) {
                 setActiveToolCalls([]);
               } else if (event.type === "error") {
                 fullAnswer = event.message || foxCopy.errors.generic;
+                streamError = true;
               }
             } catch { /* skip malformed */ }
           }
         }
 
-        const aiMsg: ChatMessage = { id: generateId(), role: "assistant", content: fullAnswer || foxCopy.errors.generic, citations: allCitations, toolCalls: [...toolCallMap.values()], isStreaming: false };
+        const aiMsg: ChatMessage = { id: generateId(), role: "assistant", content: fullAnswer || foxCopy.errors.generic, citations: allCitations, toolCalls: [...toolCallMap.values()], isStreaming: false, isError: streamError };
         setMessages((prev) => [...prev, aiMsg]);
         setStreamingBuffer("");
         setActiveToolCalls([]);
         loadSessions(); // refresh session list (updated_at)
       } catch {
-        const errMsg: ChatMessage = { id: generateId(), role: "assistant", content: foxCopy.errors.generic };
+        const errMsg: ChatMessage = { id: generateId(), role: "assistant", content: foxCopy.errors.generic, isError: true };
         setMessages((prev) => [...prev, errMsg]);
         setStreamingBuffer("");
         setActiveToolCalls([]);
