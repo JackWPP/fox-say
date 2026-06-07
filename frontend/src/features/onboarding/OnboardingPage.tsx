@@ -60,7 +60,9 @@ export default function OnboardingPage() {
     localStorage.setItem("foxsay_onboarding_done", "true");
     // Persist onboarding completion to backend
     api.put("/user/settings/onboarding").catch(() => {});
-    navigate("/");
+    // Force reload so OnboardingGuard re-evaluates and BookshelfPage mounts.
+    // (navigate("/") on the same path is a no-op in react-router v7.)
+    window.location.href = "/";
   };
 
   const handleTextSubmit = async () => {

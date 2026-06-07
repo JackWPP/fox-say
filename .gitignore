@@ -69,3 +69,11 @@ infra/qdrant/data/
 
 # Docker volumes
 *.volume
+
+# Playwright / headless browser artifacts
+.edge-profile*/
+.screenshots/
+.playwright-cache/
+
+# Qdrant local mode (in-process file storage)
+backend/data/qdrant_storage/
