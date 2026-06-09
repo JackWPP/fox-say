@@ -121,9 +121,14 @@
 |---|---|---|
 | `JUDGE_API_KEY` | "lm-studio" | LM Studio 不验证 key |
 | `JUDGE_API_BASE` | "http://localhost:1234/v1" | LM Studio 默认端口 |
-| `JUDGE_MODEL_NAME` | "qwen3.5-9b-instruct" | 用户最终敲定的 Judge 模型 |
+| `JUDGE_MODEL_NAME` | "qwen/qwen3.5-9b" | 主 Judge,reasoning 模型 (~2000 token/次) |
+| `JUDGE_FAST_MODEL_NAME` | "qwen/qwen3-4b-2507" | 批量轻活,非 reasoning (5 选 1 / 格式校验) |
+| `RERANKER_MODEL_NAME` | "qwen3-reranker-0.6b" | NLI 蕴含判定,评测 v2 ALiiCE 用 |
 
-DeepSeek V4 Flash (现有 deepseek_* 配置) 留在**生成端** (KC 抽取 / ChapterWiki / 出题 / Agent 回答)。Qwen3.5 9B 留在**评判端** (Judge / 题库质检 / cognitive_dim 分类)。
+DeepSeek V4 Flash (现有 deepseek_* 配置) 留在**生成端** (KC 抽取 / ChapterWiki / 出题 / Agent 回答)。Qwen 系列留在**评判端**,按任务复杂度分流:
+- 复杂判断 (Faithfulness / 教学规约) → qwen3.5-9b (reasoning, 慢, 高质量)
+- 批量轻活 (cognitive_dim 5 选 1 / JSON schema 校验) → qwen3-4b-2507 (非 reasoning, 快)
+- NLI 蕴含 (ALiiCE 引用细粒度判定) → qwen3-reranker-0.6b (专用 reranker,免 BGE)
 
 **禁止** DeepSeek 当 Judge — self-preference bias (调研 `research_result/FoxSay RAG 评测设计.md` 第 "LLM Judge 偏见" 节)。
 

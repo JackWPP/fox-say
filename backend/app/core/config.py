@@ -29,7 +29,11 @@ class Settings(BaseSettings):
     #       cognitive_dimension 分类 / ChapterWiki overview 质检。
     judge_api_key: str = "lm-studio"  # LM Studio 不验证 key, 占位即可
     judge_api_base: str = "http://localhost:1234/v1"
-    judge_model_name: str = "qwen3.5-9b-instruct"
+    judge_model_name: str = "qwen/qwen3.5-9b"
+    # 大批量轻活用 (非 reasoning, 快): cognitive_dim 5 选 1, JSON 格式校验
+    judge_fast_model_name: str = "qwen/qwen3-4b-2507"
+    # NLI 蕴含判定 (评测 v2 ALiiCE 用):
+    reranker_model_name: str = "qwen3-reranker-0.6b"
 
     model_config = {
         "env_prefix": "",

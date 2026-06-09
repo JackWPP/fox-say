@@ -310,15 +310,17 @@ def test_settings_judge_defaults():
     s = Settings(_env_file=None)  # 不读 .env, 用纯默认
     assert s.judge_api_key == "lm-studio"
     assert s.judge_api_base == "http://localhost:1234/v1"
-    assert s.judge_model_name == "qwen3.5-9b-instruct"
+    assert s.judge_model_name == "qwen/qwen3.5-9b"
+    assert s.judge_fast_model_name == "qwen/qwen3-4b-2507"
+    assert s.reranker_model_name == "qwen3-reranker-0.6b"
 
 
 def test_settings_judge_overridable_via_init():
     """judge_* 字段可通过环境变量风格的初始化参数覆盖。"""
     s = Settings(
         _env_file=None,
-        judge_api_base="http://192.168.1.100:8000/v1",
-        judge_model_name="qwen3.5-32b-instruct",
+        judge_api_base="http://192.168.1.40:1234/v1",
+        judge_model_name="qwen/qwen3-32b",
     )
-    assert s.judge_api_base == "http://192.168.1.100:8000/v1"
-    assert s.judge_model_name == "qwen3.5-32b-instruct"
+    assert s.judge_api_base == "http://192.168.1.40:1234/v1"
+    assert s.judge_model_name == "qwen/qwen3-32b"
