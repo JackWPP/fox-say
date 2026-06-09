@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     foxsay_env: str = "development"
     pdf_parser: str = "docling"
 
+    # PR0 新增:解耦 Judge 模型 (评测端 / 轻量分类端使用)
+    # 必须跟 deepseek_model 不同家族,否则 self-preference bias (调研结论)。
+    # 默认指向 LM Studio 本地部署的 Qwen3.5 9B (OpenAI 兼容)。
+    # 用途:DeepEval Judge / 题库质检 / prereq 字符串纠偏二审 /
+    #       cognitive_dimension 分类 / ChapterWiki overview 质检。
+    judge_api_key: str = "lm-studio"  # LM Studio 不验证 key, 占位即可
+    judge_api_base: str = "http://localhost:1234/v1"
+    judge_model_name: str = "qwen3.5-9b-instruct"
+
     model_config = {
         "env_prefix": "",
         "case_sensitive": False,

@@ -165,6 +165,61 @@ def test_follow_prerequisite_cycle_safe():
     assert isinstance(data["prerequisites"], list)
 
 
+def test_follow_prerequisite_new_structure():
+    """PR0 新增:覆盖结构化 KCPrerequisite 路径 (line A 完成后场景)。
+
+    A 的 prerequisites 是 [KCPrerequisite(prerequisite_kc_id="b", ...)],
+    follow_prerequisite 应通过 store.get_kc("b") 直接拿到 B,无需模糊搜索。
+    """
+    from app.schemas.foxsay import KCPrerequisite
+
+    store = _MockStore()
+    a = _make_kc(
+        "a",
+        course_id="c1",
+        name="A",
+        prerequisites=[
+            KCPrerequisite(prerequisite_kc_id="b", dependency_strength=0.9, source="etl_judge_reviewed"),
+        ],
+    )
+    b = _make_kc("b", course_id="c1", name="B", definition="b def")
+    store.kcs["a"] = a
+    store.kcs["b"] = b
+    out = query_tools.follow_prerequisite("c1", "a", depth=2, store=store)
+    data = json.loads(out)
+    names = [p["name"] for p in data["prerequisites"]]
+    assert "B" in names
+
+
+def test_follow_prerequisite_mixed_old_and_new():
+    """A 同时挂 prerequisites_raw=["B"] 和 prerequisites=[KCP(c)] → 两个都应找到。
+
+    模拟 line A ETL 已部分对齐的中间状态:有些 prereq 已结构化,
+    有些还停留在字符串。两条路径都要 work。
+    """
+    from app.schemas.foxsay import KCPrerequisite
+
+    store = _MockStore()
+    a = _make_kc(
+        "a",
+        course_id="c1",
+        name="A",
+        prerequisites=[
+            KCPrerequisite(prerequisite_kc_id="c", dependency_strength=1.0),
+        ],
+        prerequisites_raw=["B"],
+    )
+    b = _make_kc("b", course_id="c1", name="B", definition="b def")
+    c = _make_kc("c", course_id="c1", name="C", definition="c def")
+    store.kcs["a"] = a
+    store.kcs["b"] = b
+    store.kcs["c"] = c
+    out = query_tools.follow_prerequisite("c1", "a", depth=2, store=store)
+    data = json.loads(out)
+    names = {p["name"] for p in data["prerequisites"]}
+    assert names == {"B", "C"}
+
+
 def test_get_source_content_no_dmap():
     """store.get_dmap 返回 None → 返回 "DMAP 未找到"。"""
     store = _MockStore()

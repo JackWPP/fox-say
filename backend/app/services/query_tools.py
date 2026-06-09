@@ -74,7 +74,15 @@ def follow_prerequisite(
 ) -> str:
     """沿 KC.prerequisites 链向上回溯。
 
-    算法:BFS, 沿 KC.prerequisites 名字模糊搜同课程内的 KC, 防止 cycle。
+    算法:BFS, 同时支持两种 prereq 表达 (PR0 兼容):
+      - 新格式 KC.prerequisites: list[KCPrerequisite] → 按 prerequisite_kc_id
+        直接拿目标 KC (无需模糊搜索)。
+      - 老格式 KC.prerequisites_raw: list[str] → 按名字模糊搜同课程 KC。
+
+    PR0 之前数据库里已有 KC 的 prerequisites 字段都是 list[str],经
+    KC.model_validator 反序列化后会搬到 prerequisites_raw,prerequisites
+    留空。line A (prereq ETL) 完成后才会填充结构化 prerequisites。
+    所以两条路径都必须支持。
     """
     if store is None:
         return json.dumps({"prerequisites": []}, ensure_ascii=False)
@@ -88,7 +96,21 @@ def follow_prerequisite(
         current = store.get_kc(current_id)
         if current is None:
             continue
-        for prereq_name in current.prerequisites:
+
+        # 路径 1:新结构 KCPrerequisite (line A 完成后填充)
+        for prereq_obj in current.prerequisites:
+            candidate = store.get_kc(prereq_obj.prerequisite_kc_id)
+            if (
+                candidate is not None
+                and candidate.id not in visited
+                and candidate.course_id == course_id
+            ):
+                visited.add(candidate.id)
+                found.append(candidate.model_dump())
+                queue.append((candidate.id, d + 1))
+
+        # 路径 2:老字符串 fallback (line A 完成前)
+        for prereq_name in current.prerequisites_raw:
             candidates = store.search_kcs_by_name(course_id, prereq_name)
             for c in candidates[:1]:
                 if c.id not in visited and c.course_id == course_id:

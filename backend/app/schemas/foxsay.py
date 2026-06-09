@@ -1,7 +1,7 @@
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 NAMESPACE_DMAP = uuid.UUID("12345678-1234-5678-1234-567812345678")  # 稳定 namespace
 
@@ -9,6 +9,18 @@ CourseStatus = Literal["empty", "processing", "ready", "failed"]
 MaterialKind = Literal["pdf", "ppt", "image", "text_note"]
 Importance = Literal["high", "medium", "low"]
 ConfidenceStatus = Literal["grounded", "ambiguous", "out_of_scope"]
+
+# PR0 新增 (锁三线并行的 contract)
+QuestionType = Literal[
+    "definition", "derivation", "cross_chapter", "refusal", "ambiguous"
+]
+CognitiveDimension = Literal[
+    "factual", "conceptual",
+    "procedural_skill", "procedural_principle",
+    "metacognitive",
+]
+PrereqSource = Literal["expert", "etl_auto", "etl_judge_reviewed", "legacy"]
+EdgeType = Literal["prerequisite", "related"]
 
 
 class Course(BaseModel):
@@ -103,10 +115,59 @@ class KCSourceRef(BaseModel):
     page_ref: str = ""
 
 
+# ---------------------------------------------------------------------------
+# PR0:三线并行的共享 contract — KCPrerequisite / CommonMistake
+# ---------------------------------------------------------------------------
+
+
+class KCPrerequisite(BaseModel):
+    """KC 之间的有向依赖关系。
+
+    取代旧 `KC.prerequisites: list[str]` (字符串列表)。
+    旧字符串自动迁移到 `KC.prerequisites_raw` (见 KC.model_validator)。
+
+    HEC-6:prerequisite_kc_id 必须是真实存在的 KC.id (uuid5),
+           跨课程引用在调用层 (query_tools / agent) 二次校验。
+
+    line A (prereq ETL) 会基于 prerequisites_raw 生成结构化版本,
+    填充 dependency_strength (默认 1.0, 后续由 COMMAND/E-PRISM 等
+    算法学出真实概率) 和 source。
+    """
+
+    prerequisite_kc_id: str
+    dependency_strength: float = 1.0  # [0,1] — 冷启动期都设 1.0
+    source: PrereqSource = "etl_auto"
+
+
+class CommonMistake(BaseModel):
+    """KC 上挂的常见错误,带可追溯的 bug_rule_id (评测溯源用)。
+
+    取代旧 `KC.common_mistakes: list[str]` (字符串列表)。
+    旧字段以 `common_mistakes` 名字保留 (向后兼容),
+    新结构化字段挂到 `common_mistakes_v2`。
+
+    评测线 B 的 gold_answer 判定时,可以引用 associated_bug_rule_id
+    精准归因 (例如学生选错 = 触发某个 bug_rule)。
+    """
+
+    mistake_id: str
+    description: str
+    associated_bug_rule_id: str = ""
+
+
 class KC(BaseModel):
     """Knowledge Component — 知识卡片,课程内最小的知识单元。
 
     HEC-6:course_id 显式声明,不允许反推。
+
+    PR0 升级:
+    - prerequisites: list[str] → list[KCPrerequisite] (结构化先修依赖)
+      旧字符串通过 model_validator 自动迁移到 prerequisites_raw。
+    - 新增 cognitive_dimension (KLI 理论 5 分类)
+    - 新增 derivation_steps (理工偏字段:推导过程)
+    - 新增 common_mistakes_v2 (结构化常见错误,旧 common_mistakes 保留)
+    - 新增学情字段 (一期不更新, 留接口给"贯穿学期"二期)
+    - 新增文科字段 (一期不写, 留位置)
     """
 
     id: str
@@ -114,7 +175,7 @@ class KC(BaseModel):
     course_id: str  # ★ 显式
     chapter_id: str = ""
     name: str
-    bloom_level: str = "Understanding"  # Remembering/Understanding/Applying/Analyzing
+    bloom_level: str = "Understanding"  # Remembering/Understanding/Applying/Analyzing/Evaluating/Creating
     layer: str = "micro"  # micro/meso/macro
     definition: str = ""
     formula: str = ""
@@ -122,8 +183,15 @@ class KC(BaseModel):
     conditions: list[str] = []
     key_properties: list[dict] = []
     examples: list[str] = []
-    common_mistakes: list[str] = []
-    prerequisites: list[str] = []
+
+    # --- 常见错误:旧 list[str] 保留,新结构化版本 ---
+    common_mistakes: list[str] = []          # 旧字段 (向后兼容,Agent 优先读 v2)
+    common_mistakes_v2: list[CommonMistake] = []  # 新结构化
+
+    # --- 先修依赖:旧 list[str] 迁移到 raw,新结构化版本 ---
+    prerequisites_raw: list[str] = []        # 旧字符串 fallback (供 ETL 重新对齐)
+    prerequisites: list[KCPrerequisite] = []  # 新结构化 (KC_ID + 强度)
+
     related: list[str] = []
     exam_frequency: str = "medium"  # high/medium/low
     exam_patterns: list[str] = []
@@ -132,6 +200,45 @@ class KC(BaseModel):
     invalid_at: str | None = None
     version: int = 1
     content_hash: str = ""
+
+    # --- PR0 新增:KLI 认知维度 ---
+    cognitive_dimension: CognitiveDimension = "conceptual"
+
+    # --- PR0 新增:理工偏字段 ---
+    derivation_steps: list[str] = []
+
+    # --- PR0 新增:学情字段 (一期不更新,二期"贯穿学期"用) ---
+    last_practiced_at: str | None = None  # ISO datetime
+    mastery_score: float = 0.0            # [0,1]
+    srs_state: dict | None = None         # FSRS/SM-2 state blob
+
+    # --- PR0 新增:文科留位 (一期不写) ---
+    viewpoints: list[str] = []
+    counter_arguments: list[str] = []
+    classical_quotes: list[str] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_fields(cls, data: Any) -> Any:
+        """惰性 migration:把老格式字段搬到新字段名,不破坏既有数据。
+
+        触发场景:从 SQLite wiki_kcs.data_json 反序列化老 KC 时,
+        老 JSON 里 prerequisites 是 list[str],新 schema 期望 list[KCPrerequisite]。
+        本方法在反序列化最前面把老 list[str] 平移到 prerequisites_raw,
+        并把 prerequisites 留空 (等 ETL 线 A 后续填充结构化版本)。
+        """
+        if not isinstance(data, dict):
+            return data
+
+        prereqs = data.get("prerequisites")
+        # 检测老格式:非空 list 且第一个元素是字符串
+        if isinstance(prereqs, list) and prereqs and isinstance(prereqs[0], str):
+            # 不覆盖已有 prerequisites_raw (避免幂等问题)
+            if not data.get("prerequisites_raw"):
+                data["prerequisites_raw"] = list(prereqs)
+            data["prerequisites"] = []
+
+        return data
 
 
 class ChapterWiki(BaseModel):
@@ -235,3 +342,65 @@ class WikiBuildResult(BaseModel):
     course_index: CourseIndex | None = None
     dmap: DMAP | None = None
     merkle_tree: MerkleTree | None = None
+
+
+# =============================================================================
+# PR0 新增:评测集 contract (line B 主导)
+# =============================================================================
+
+
+class EvalCase(BaseModel):
+    """评测集单条用例 schema。
+
+    line B 的 200 题黄金集每条都是一个 EvalCase。Judge LLM (Qwen3.5 9B)
+    会基于 gold_answer / gold_citations / answerability / pedagogical_constraint
+    对 FoxSay 实际输出打分。
+
+    设计依据:research_result/FoxSay RAG 评测设计.md "Ground Truth 字段规范"。
+    """
+
+    case_id: str  # 全局唯一 (e.g. "LA-CH04-023")
+    course_id: str
+    question: str
+    question_type: QuestionType
+    associated_kc_id: str | None = None  # 关联到具体 KC;跨章题可空
+    bloom_level: str = "Understanding"
+    gold_answer: str
+    gold_citations: list[Citation] = []
+    gold_evidence_chunks: list[str] = []  # 期望检索到的物理 Chunk ID
+    answerability: bool = True  # false = 应拒答 (拒答类题型)
+    pedagogical_constraint: str = ""  # 给 Judge 看的强教学规约
+
+
+# =============================================================================
+# PR0 新增:知识图谱 API contract (line C 主导)
+# =============================================================================
+
+
+class KGNode(BaseModel):
+    """知识图谱节点。前端 React Flow 渲染。"""
+
+    id: str  # KC.id
+    label: str  # KC.name
+    chapter_id: str
+    mastery: float = 0.0  # [0,1] 一期固定 0,二期接学情
+    importance: Importance = "medium"
+    cognitive_dimension: CognitiveDimension = "conceptual"
+
+
+class KGEdge(BaseModel):
+    """知识图谱边 (有向)。"""
+
+    source: str  # KC.id (先修)
+    target: str  # KC.id (后继)
+    strength: float = 1.0  # [0,1]
+    edge_type: EdgeType = "prerequisite"
+
+
+class KnowledgeGraphResponse(BaseModel):
+    """GET /courses/{id}/knowledge-graph 响应体。"""
+
+    course_id: str
+    nodes: list[KGNode]
+    edges: list[KGEdge]
+    layout_hint: str = "dagre"  # 给前端的布局算法提示
