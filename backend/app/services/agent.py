@@ -183,6 +183,36 @@ TOOLS: list[dict] = [
 
 MAX_ROUNDS = 3
 
+# ---------------------------------------------------------------------------
+# DSML defense layer
+# ---------------------------------------------------------------------------
+# Some DeepSeek models emit a fake tool-call syntax in `content` text instead
+# of using the real `tool_calls` field, leaving raw markup like:
+#   < | DSML | tool_calls> < | DSML | invoke name="X"> < | DSML | parameter
+#   name="k" type="t">value</ | DSML | parameter> </ | DSML | invoke>
+#   </ | DSML | tool_calls>
+# Or with full-width pipes and no spaces (markdown-table escape):
+#   <｜｜DSML｜｜tool_calls>...
+# Strategy: strip it. Don't try to execute it — the LLM typically passes
+# wrong arg names (e.g. `source_id` instead of `dmap_id`) and retrying just
+# burns rounds. Mirrored by the frontend `stripDSML` in MarkdownRenderer.tsx.
+
+# Pipe class: ASCII '|' or full-width '｜' (U+FF5C), one or more.
+_PIPE = r"[|｜]+"
+
+_DSML_ANY_TAG_RE = re.compile(
+    rf"<\s*{_PIPE}\s*DSML\s*{_PIPE}[^>]*>.*?<\s*/\s*{_PIPE}\s*DSML\s*{_PIPE}[^>]*>",
+    re.DOTALL,
+)
+_DSML_ORPHAN_RE = re.compile(rf"</?\s*{_PIPE}\s*DSML\s*{_PIPE}[^>]*>")
+
+
+def _strip_dsml_blocks(content: str) -> str:
+    """Remove all DSML tags from text (defense in depth — used by frontend too)."""
+    cleaned = _DSML_ANY_TAG_RE.sub("", content)
+    cleaned = _DSML_ORPHAN_RE.sub("", cleaned)
+    return cleaned.strip()
+
 
 async def agent_chat(
     course_id: str,
@@ -234,12 +264,34 @@ async def agent_chat(
 
         msg = response.choices[0].message
 
+        # ---- DSML guard ----
+        # Some DeepSeek models emit fake tool-call syntax in `content` text instead
+        # of using the real `tool_calls` field. Strategy: strip it (don't try to
+        # execute it — args are usually wrong and retrying wastes rounds).
+        dsml_in_content = bool(msg.content) and "DSML" in msg.content
+        if dsml_in_content:
+            logger.info("DSML detected in content (round %d), stripping", _round)
+            # If the LLM was confused into tool-calling mode, tell it explicitly
+            # and force a clean answer on the next pass.
+            messages.append({
+                "role": "system",
+                "content": (
+                    "你刚才的回复里包含了非法的工具调用语法 (DSML), 已为你清理。"
+                    "请用 `tool_calls` 字段调用工具, 或直接用中文文字给出最终回答。"
+                ),
+            })
+
         # 无 tool_call → 流式输出最终回答
         if not msg.tool_calls:
-            answer_text = msg.content or ""
+            answer_text = _strip_dsml_blocks(msg.content or "")
             citations = _extract_citations(answer_text)
             if not citations and collected_sources:
                 citations = _dedup_sources_for_citation_fallback(collected_sources)
+
+            # Degenerate case: LLM only emitted DSML and we stripped it clean.
+            # Surface a friendly placeholder so the user doesn't see a blank bubble.
+            if not answer_text:
+                answer_text = "（模型在尝试调用工具时输出了无效语法,我已自动清理。请换个问法或稍后再试。）"
 
             yield {
                 "type": "done",
@@ -324,7 +376,8 @@ async def agent_chat(
             temperature=0.3,
             extra_body={"thinking": {"type": "disabled"}},
         )
-        answer_text = response.choices[0].message.content or ""
+        # Strip DSML one more time as belt-and-suspenders
+        answer_text = _strip_dsml_blocks(response.choices[0].message.content or "")
     except Exception:
         # HEC-1:仍然让前端知道
         logger.exception("LLM call failed at max-rounds forced answer")
@@ -334,6 +387,10 @@ async def agent_chat(
     citations = _extract_citations(answer_text)
     if not citations and collected_sources:
         citations = _dedup_sources_for_citation_fallback(collected_sources)
+
+    # Same degenerate-case guard as the normal path
+    if not answer_text:
+        answer_text = "（达到最大工具调用轮次仍无法生成有效回答,请换个问法或稍后再试。）"
 
     yield {
         "type": "done",
