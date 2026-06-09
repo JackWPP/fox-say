@@ -1,25 +1,27 @@
 import { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
-import { ArrowLeft, FileText, GitBranch, MessageCircle, Zap } from "lucide-react";
+import { ArrowLeft, FileText, GitBranch, MessageCircle, Network, Zap } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useCourse } from "../bookshelf/useCourses";
 import MaterialsTab from "./MaterialsTab";
 import SkeletonTab from "./SkeletonTab";
 import ChatTab from "./ChatTab";
 import ReviewTab from "./ReviewTab";
+import KnowledgeGraphTab from "./KnowledgeGraphTab";
 
 type StudyMode = "exam" | "study";
-type Tab = "materials" | "skeleton" | "qa" | "review";
+type Tab = "materials" | "skeleton" | "qa" | "kg" | "review";
 
 const allTabs: { key: Tab; label: string; icon: typeof FileText }[] = [
   { key: "materials", label: "材料", icon: FileText },
   { key: "skeleton", label: "骨架", icon: GitBranch },
   { key: "qa", label: "问答", icon: MessageCircle },
+  { key: "kg", label: "知识图谱", icon: Network },
   { key: "review", label: "备考", icon: Zap },
 ];
 
-const studyTabOrder: Tab[] = ["materials", "skeleton", "qa", "review"];
-const examTabOrder: Tab[] = ["review", "skeleton", "qa", "materials"];
+const studyTabOrder: Tab[] = ["materials", "skeleton", "qa", "kg", "review"];
+const examTabOrder: Tab[] = ["review", "skeleton", "qa", "kg", "materials"];
 
 export default function CourseDetailPage() {
   const { courseId } = useParams<{ courseId: string }>();
@@ -102,6 +104,7 @@ export default function CourseDetailPage() {
       {activeTab === "materials" && <MaterialsTab courseId={courseId} />}
       {activeTab === "skeleton" && <SkeletonTab courseId={courseId} onConceptClick={handleConceptClick} />}
       {activeTab === "qa" && <ChatTab courseId={courseId} prefillQuestion={prefillQuestion} onPrefillConsumed={() => setPrefillQuestion("")} />}
+      {activeTab === "kg" && <KnowledgeGraphTab courseId={courseId} />}
       {activeTab === "review" && <ReviewTab courseId={courseId} course={course ?? undefined} />}
     </div>
   );
