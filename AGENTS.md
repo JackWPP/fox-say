@@ -82,6 +82,13 @@ MVP 只包含以下功能:
 - 装了不用的库(比如声明了 langgraph 但 0 处 import)不允许
 - 反过来,代码里 import 但 pyproject 没声明的,必须立刻补
 
+### HEC-8. 文档必须与代码对齐
+- `docs/architecture.md` 必须反映实际代码架构,不是理想架构
+- 架构变更后必须同步更新 architecture.md
+- 过时文档必须在顶部标注 `⚠️ 已过时` + 日期 + 原因
+- 新 agent 读到的文档必须能直接指导代码修改,不需要"先猜再验证"
+- HANDOFF.md 的架构描述必须与 architecture.md 一致
+
 ## Security And Data Rules
 - Never hardcode API keys, DeepSeek credentials, user materials, or real course data.
 - All model, vector-store, and runtime settings must come from environment variables.
@@ -97,6 +104,7 @@ MVP 只包含以下功能:
 - Behavior-changing work must include tests or a clear `Not-tested` note.
 - After code changes, run the narrowest relevant checks first, then broader lint/type/test checks when available.
 - 提交前自查 `docs/refactor-plan-2026-06.md` 的"禁止模式"列表,确认新代码不命中。
+- Architecture changes must update `docs/architecture.md` in the same commit.
 
 ## Design Direction
 - Product voice: smart, mischievous fox; helpful but not generic.

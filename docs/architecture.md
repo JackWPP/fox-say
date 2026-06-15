@@ -3,27 +3,32 @@
 ## MVP Architecture
 ```text
 Frontend: Vite + React + TypeScript + Tailwind
-Backend: FastAPI + uv + pyproject.toml
-Vector store: Qdrant
-Knowledge graph: NetworkX
-Document parsing: Docling for structured documents, Marker for formula-heavy material
-RAG: LightRAG-style incremental retrieval
-Boundary control: CRAG gate plus system-prompt hard constraints
-LLM: DeepSeek OpenAI-compatible API, deepseek-v4-flash
-Deployment: Docker Compose
+Backend: FastAPI + Python + uv (pyproject.toml)
+Vector store: Qdrant (course-scoped collections)
+Knowledge representation: DMAP (文档结构图) + KC (Knowledge Component) + ChapterWiki
+Wiki build: LangGraph 4 阶段 (Supervisor → Workers → Reducer → Reviewer)
+RAG: 单层向量检索 + 三层混合检索 (macro=章节, micro=KC, all=合并) + CRAG 门控
+Agent: 7 工具 ReAct 循环 (search_wiki, get_course_map, get_concept, get_chapter_outline, follow_prerequisite, get_source_content, get_review_plan)
+Document parsing: pdfplumber (PDF), python-pptx (PPT)
+Boundary control: CRAG gate (0.72/0.55 阈值) + system-prompt hard constraints
+LLM: DeepSeek V4 Flash (生成端) + Qwen3.5-9B (Judge) + Qwen3-4b (批量轻活)
+Deployment: Docker Compose (Qdrant container)
+Pipeline: 7 步 (parsing → build_dmap → wiki_build → chunking → embedding → storing → skeleton_generating)
 ```
 
 ## Data Flow
 ```text
 Course creation
-  -> material registration
-  -> async parsing
-  -> text chunks and embeddings
-  -> course-scoped Qdrant collection
-  -> knowledge extraction
-  -> NetworkX graph
-  -> course skeleton
-  -> course-bound chat and review plan
+  → material registration
+  → async parsing (pdfplumber / python-pptx)
+  → DMAP build (文档结构图)
+  → Wiki build (4-stage LangGraph: Supervisor → Workers → Reducer → Reviewer)
+  → KC extraction (Knowledge Component)
+  → chunking
+  → embedding (BGE-M3)
+  → Qdrant storing (course-scoped collection)
+  → skeleton generating
+  → course-bound Agent chat (7 工具 ReAct) and review plan
 ```
 
 ## Isolation Rules

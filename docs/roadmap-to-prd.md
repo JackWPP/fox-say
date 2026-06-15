@@ -1,5 +1,7 @@
 # FoxSay PRD 达标路线图
 
+> ⚠️ **已过时 (2026-06)**: 本文档描述的"三元组 + Neo4j + LightRAG 双层检索"路线已被实际架构"DMAP + KC + ChapterWiki + LangGraph + Qdrant 三层检索"替代。保留作为历史参考，不要照做。见 `docs/architecture.md` 获取当前架构。
+
 > 基准日期：2026-05-10
 > 基准状态：综合完成度约 46%，详见 `docs/gap-analysis.md`
 

@@ -1,5 +1,7 @@
 # FoxSay 现状与 PRD 差距评估报告
 
+> ⚠️ **部分过时 (2026-06)**: 本文档基于旧 PRD v0.1 评估。技术架构差距（§三）中描述的 LightRAG/NetworkX/Docling 差距已不适用，实际架构已迁移到 DMAP+KC+ChapterWiki+LangGraph。功能差距（§一）和产品体验差距（§五）的评估仍然有效。综合完成度 46% 是旧估计，三线并行后约 55%。
+
 > 评估日期：2026-05-10
 > 对照文档：`foxsay-prd.md` v0.1
 
