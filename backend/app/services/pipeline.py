@@ -82,11 +82,24 @@ async def process_material(
             from app.services.parsing_docling import parse_pdf_docling
             docling_chunks = await asyncio.to_thread(parse_pdf_docling, file_path)
         except Exception as e:
-            logger.warning("Docling failed for %s, using flat fallback: %s", material_id, e)
+            logger.warning("Docling failed for %s, trying MinerU: %s", material_id, e)
+
+        # Docling 没产出结构化 chunks → 试 MinerU API 获取带 heading 的结构化输出
+        if not docling_chunks:
+            try:
+                from app.services.mineru import parse_pdf_mineru
+                md_text = await asyncio.to_thread(parse_pdf_mineru, file_path)
+                if md_text and len(md_text) > 100:
+                    logger.info("MinerU returned %d chars for %s", len(md_text), material_id)
+                    # 用 MinerU 的 markdown 作为 text (覆盖 pdfplumber 的结果)
+                    text = md_text
+                    # 从 markdown 标题生成结构化 chunks
+                    docling_chunks = _markdown_to_chunks(md_text)
+            except Exception as e:
+                logger.warning("MinerU fallback failed for %s: %s", material_id, e)
+
     if not docling_chunks:
         # Flat fallback: treat entire text as a paragraph element (no heading/level)
-        # so build_dmap creates a default ch-0 chapter and attaches it as an element.
-        # Previously: heading=file_name, level=1 → build_dmap created an EMPTY chapter node.
         docling_chunks = [{"text": text, "heading": "", "level": 0, "page": 0}]
 
     try:
@@ -224,3 +237,41 @@ def _degraded_extract(file_path: str, kind: str) -> str:
         from app.services.parsing import parse_pdf
         return parse_pdf(file_path)
     return ""
+
+
+def _markdown_to_chunks(md_text: str) -> list[dict]:
+    """把 MinerU 返回的 Markdown 转成 build_dmap 期望的 chunks 格式。
+
+    解析 Markdown 标题 (# / ## / ###) 作为 heading + level,
+    非标题段落作为 text。
+    """
+    import re
+    chunks: list[dict] = []
+    current_heading = ""
+    current_level = 0
+    current_text_parts: list[str] = []
+
+    def _flush():
+        text = "\n".join(current_text_parts).strip()
+        if text:
+            chunks.append({
+                "text": text,
+                "heading": current_heading,
+                "level": current_level,
+                "page": 0,
+            })
+
+    heading_re = re.compile(r"^(#{1,6})\s+(.+)$")
+
+    for line in md_text.split("\n"):
+        m = heading_re.match(line.strip())
+        if m:
+            _flush()
+            current_text_parts = []
+            current_level = len(m.group(1))
+            current_heading = m.group(2).strip()
+        else:
+            current_text_parts.append(line)
+
+    _flush()
+    return chunks

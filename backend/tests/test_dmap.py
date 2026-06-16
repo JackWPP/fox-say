@@ -88,3 +88,29 @@ def test_build_dmap_empty_chunks_raises():
     """空 chunks 不算错(会得到一个空 dmap),但空 course_id 必须抛。"""
     with pytest.raises(ValueError):
         build_dmap("", [])
+
+
+def test_markdown_to_chunks():
+    """MinerU markdown 输出转 build_dmap chunks。"""
+    from app.services.pipeline import _markdown_to_chunks
+
+    md = """# 第7章 数据库恢复技术
+
+事务是恢复和并发控制的基本单位。
+
+## 7.1 事务的基本概念
+
+所谓事务是用户定义的一个数据库操作序列。
+
+## 7.2 故障的种类
+
+系统故障和事务故障。
+"""
+    chunks = _markdown_to_chunks(md)
+    assert len(chunks) == 3
+    assert chunks[0]["heading"] == "第7章 数据库恢复技术"
+    assert chunks[0]["level"] == 1
+    assert "事务" in chunks[0]["text"]
+    assert chunks[1]["heading"] == "7.1 事务的基本概念"
+    assert chunks[1]["level"] == 2
+    assert chunks[2]["heading"] == "7.2 故障的种类"

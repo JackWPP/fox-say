@@ -4,6 +4,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_converter = None
+
+
+def _get_converter():
+    global _converter
+    if _converter is None:
+        from docling.document_converter import DocumentConverter
+        _converter = DocumentConverter()
+    return _converter
+
 
 def parse_pdf_docling(file_path: str) -> list[dict]:
     """Parse a PDF using Docling, preserving headings, pages, and hierarchy.
@@ -12,13 +22,12 @@ def parse_pdf_docling(file_path: str) -> list[dict]:
     Falls back to returning empty list on any error.
     """
     try:
-        from docling.document_converter import DocumentConverter
+        converter = _get_converter()
     except ImportError:
         logger.warning("Docling not installed, falling back to pdfplumber")
         return []
 
     try:
-        converter = DocumentConverter()
         result = converter.convert(file_path)
         doc = result.document
     except Exception:
