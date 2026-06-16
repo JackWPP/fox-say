@@ -27,20 +27,20 @@ def parse_pdf_docling(file_path: str) -> list[dict]:
 
     chunks: list[dict] = []
     try:
+        current_heading = ""
+        current_level = 0
         for item in doc.iterate_items():
             text = ""
-            heading = ""
-            level = 0
             page = 0
 
             if hasattr(item, "label"):
                 lvl_str = str(item.label)
                 if lvl_str.startswith("heading"):
                     try:
-                        level = int(lvl_str.replace("heading", ""))
+                        current_level = int(lvl_str.replace("heading", ""))
                     except ValueError:
-                        level = 1
-                    heading = str(item.text) if hasattr(item, "text") and item.text else ""
+                        current_level = 1
+                    current_heading = str(item.text) if hasattr(item, "text") and item.text else ""
                     continue
 
             if hasattr(item, "text") and item.text:
@@ -52,8 +52,8 @@ def parse_pdf_docling(file_path: str) -> list[dict]:
             if text:
                 chunks.append({
                     "text": text,
-                    "heading": heading,
-                    "level": level,
+                    "heading": current_heading,
+                    "level": current_level,
                     "page": page,
                 })
 
