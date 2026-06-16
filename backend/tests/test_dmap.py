@@ -62,6 +62,28 @@ def test_extract_cross_refs():
     assert len(self_refs) == 0
 
 
+def test_build_dmap_fallback_flat_text():
+    """Docling 不可用时 pipeline fallback: heading='', level=0, 全文作为 element。
+
+    修复前: heading+level=1 导致 build_dmap 创建空 chapter,文本被丢弃。
+    修复后: level=0,文本挂到默认 ch-0 chapter 的 elements 里。
+    """
+    # 模拟 pipeline.py fallback (修复后的形式)
+    chunks = [
+        {"text": "数据库安全性是指保护数据库以防止不合法使用。", "heading": "", "level": 0, "page": 0},
+    ]
+    dmap = build_dmap("course-fallback", chunks, source_file="db.pdf")
+
+    # 应该有 1 个默认 chapter (ch-0)
+    chapters = [c for c in dmap.root.children if c.type == "chapter"]
+    assert len(chapters) == 1
+    assert chapters[0].id == "ch-0"
+
+    # chapter 下应该有 1 个 element (文本不能被丢掉)
+    assert len(chapters[0].elements) == 1
+    assert "数据库安全性" in chapters[0].elements[0].text_preview
+
+
 def test_build_dmap_empty_chunks_raises():
     """空 chunks 不算错(会得到一个空 dmap),但空 course_id 必须抛。"""
     with pytest.raises(ValueError):
