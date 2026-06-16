@@ -56,11 +56,11 @@ def _get_client():
         from openai import OpenAI
 
         api_key = settings.deepseek_api_key or "placeholder"
-        _client = OpenAI(api_key=api_key, base_url=settings.deepseek_api_base)
+        _client = OpenAI(api_key=api_key, base_url=settings.deepseek_api_base, timeout=30)
     return _client
 
 
-def _llm_call(system: str, user: str, temperature: float = 0.2) -> str:
+def _llm_call(system: str, user: str, temperature: float = 0.2, max_tokens: int = 2000) -> str:
     """调 LLM 并返回 content 字符串。
 
     HEC-1:失败抛 RuntimeError,绝不允许 `return ""` 静默吞错。
@@ -74,6 +74,7 @@ def _llm_call(system: str, user: str, temperature: float = 0.2) -> str:
                 {"role": "user", "content": user},
             ],
             temperature=temperature,
+            max_tokens=max_tokens,
         )
     except Exception as e:
         raise RuntimeError(f"LLM call failed: {e}") from e
