@@ -237,21 +237,26 @@ def _supervisor_impl(state: WikiState) -> dict[str, Any]:
             continue
         c.setdefault("importance", "medium")
         c["importance"] = _normalize_importance(c["importance"])
-        c.setdefault("id", "")
-        c.setdefault("title", "")
-        c.setdefault("key_concepts", [])
-        c.setdefault("depends_on", [])
+        c["id"] = str(c.get("id", ""))
+        c["title"] = str(c.get("title", ""))
+        c["key_concepts"] = [str(kc) for kc in c.get("key_concepts", []) if kc]
+        c["depends_on"] = [str(d) for d in c.get("depends_on", []) if d]
         normalized_chapters.append(c)
     ci_data["chapters"] = normalized_chapters
 
+    # Normalize list fields to ensure all items are strings
+    core_topics = [str(t) for t in ci_data.get("core_topics", []) if t]
+    hfep = [str(t) for t in ci_data.get("high_frequency_exam_points", []) if t]
+    prereq_chain = [str(t) for t in ci_data.get("prerequisite_chain", []) if t]
+
     ci = CourseIndex(
         course_id=course_id,
-        course_name=ci_data.get("course_name", ""),
-        core_topics=ci_data.get("core_topics", []),
+        course_name=str(ci_data.get("course_name", "")),
+        core_topics=core_topics,
         chapters=[CourseIndexChapter(**c) for c in ci_data["chapters"]],
-        high_frequency_exam_points=ci_data.get("high_frequency_exam_points", []),
-        concept_totals=ci_data.get("concept_totals", ""),
-        prerequisite_chain=ci_data.get("prerequisite_chain", []),
+        high_frequency_exam_points=hfep,
+        concept_totals=str(ci_data.get("concept_totals", "")),
+        prerequisite_chain=prereq_chain,
     )
 
     return {"tasks": tasks, "course_index": ci}
