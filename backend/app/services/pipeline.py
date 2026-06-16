@@ -84,8 +84,10 @@ async def process_material(
         except Exception as e:
             logger.warning("Docling failed for %s, using flat fallback: %s", material_id, e)
     if not docling_chunks:
-        # Flat fallback: one paragraph with the whole text
-        docling_chunks = [{"text": text, "heading": file_name, "level": 1, "page": 0}]
+        # Flat fallback: treat entire text as a paragraph element (no heading/level)
+        # so build_dmap creates a default ch-0 chapter and attaches it as an element.
+        # Previously: heading=file_name, level=1 → build_dmap created an EMPTY chapter node.
+        docling_chunks = [{"text": text, "heading": "", "level": 0, "page": 0}]
 
     try:
         store.update_task(task_ids["build_dmap"], "running")

@@ -91,6 +91,23 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+def _text_overlap_score(query: str, text: str) -> float:
+    """快速文本重叠评分(0~1),用于 macro/micro 层,避免逐条调 embedding API。
+
+    算法:query 字符集与 text 字符集的 Jaccard 相似度。
+    对中文效果好(单字即 token),零 API 调用。
+    """
+    if not query or not text:
+        return 0.0
+    q_chars = set(query.lower())
+    t_chars = set(text.lower())
+    if not q_chars or not t_chars:
+        return 0.0
+    intersection = q_chars & t_chars
+    union = q_chars | t_chars
+    return len(intersection) / len(union) if union else 0.0
+
+
 def search_wiki_layer(
     course_id: str,
     query: str,
@@ -101,24 +118,25 @@ def search_wiki_layer(
     """三层混合检索统一入口(阶段 3 引入)。
 
     layer:
-      - macro: 在 ChapterWiki 标题 + overview + key_concepts 里搜
-      - micro: 在 KC 卡片 name + definition + formula 里搜(向量检索)
+      - macro: 在 ChapterWiki 标题 + overview + key_concepts 里搜(文本匹配)
+      - micro: 在 KC 卡片 name + definition + formula 里搜(文本匹配)
+      - chunk: 在 Qdrant 向量库搜(向量检索)
       - all:   三层合并排序去重
+
+    macro/micro 用文本匹配而非逐条 embed,避免 N 次 API 调用。
+    chunk 层用 Qdrant 已有向量,只 embed query 一次。
     """
     results: list[dict] = []
     if store is None:
         return results
 
-    q_emb = embed_texts([query])[0] if query else None
-
-    # Macro 层:章节级
+    # Macro 层:章节级(文本匹配,零 API 调用)
     if layer in ("macro", "all"):
         chapter_wikis = store.get_chapter_wikis_by_course(course_id)
         for cw in chapter_wikis:
             text = f"{cw.title} {cw.overview} {' '.join(cw.key_concepts)}"
-            emb = embed_texts([text])[0] if text else None
-            if emb and q_emb:
-                score = _cosine_similarity(q_emb, emb)
+            score = _text_overlap_score(query, text)
+            if score > 0:
                 results.append({
                     "id": cw.id,
                     "name": cw.title,
@@ -130,14 +148,13 @@ def search_wiki_layer(
                     "locator": cw.title,
                 })
 
-    # Micro 层:KC 卡 + Qdrant chunks
+    # Micro 层:KC 卡(文本匹配) + Qdrant chunks(向量检索)
     if layer in ("micro", "all"):
         kcs = store.get_kcs_by_course(course_id)
         for kc in kcs:
             text = f"{kc.name} {kc.definition} {kc.formula}"
-            emb = embed_texts([text])[0] if text else None
-            if emb and q_emb:
-                score = _cosine_similarity(q_emb, emb)
+            score = _text_overlap_score(query, text)
+            if score > 0:
                 results.append({
                     "id": kc.id,
                     "name": kc.name,
@@ -148,6 +165,8 @@ def search_wiki_layer(
                     "file_name": kc.source_refs[0].file if kc.source_refs else "",
                     "locator": kc.chapter_id,
                 })
+        # Chunk 层:Qdrant 向量检索(只 embed query 一次)
+        q_emb = embed_texts([query])[0] if query else None
         if q_emb:
             q_results = _qdrant.search(course_id, q_emb, limit=top_k)
             for r in q_results:
