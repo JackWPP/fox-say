@@ -212,6 +212,23 @@ def test_build_chapter_wikis_uses_course_id():
     assert "绪论概念" in ch1_wiki.key_concepts
 
 
+def test_build_chapter_wikis_overview_from_elements():
+    """overview 从 DMAP elements 的 text_preview 拼出来,不应为空。"""
+    dmap = _make_dmap()
+    kcs = [
+        KC(id="k1", course_id="course-wb-1", chapter_id="ch-1", name="绪论", definition=""),
+        KC(id="k2", course_id="course-wb-1", chapter_id="ch-2", name="极限", definition=""),
+    ]
+    wikis = _build_chapter_wikis("course-wb-1", kcs, dmap)
+    ch1_wiki = next(w for w in wikis if w.chapter_id == "ch-1")
+    ch2_wiki = next(w for w in wikis if w.chapter_id == "ch-2")
+    # ch-1 有 element "学习微积分。",ch-2 有 element "极限的 ε-δ 定义。"
+    assert ch1_wiki.overview != "", "overview 不应为空"
+    assert "微积分" in ch1_wiki.overview
+    assert ch2_wiki.overview != "", "overview 不应为空"
+    assert "极限" in ch2_wiki.overview
+
+
 def test_invalidate_old_kcs_order():
     """invalidate 必须在 save_kc 之前(顺序合约)。"""
     # 我们直接验证 _invalidate_old_kcs 真的把 invalid_at 设上了

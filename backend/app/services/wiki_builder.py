@@ -433,13 +433,16 @@ def _build_chapter_wikis(
         if child.type != "chapter":
             continue
         chapter_kcs = kcs_by_chapter.get(child.id, [])
+        # 从 DMAP elements 拼 overview (取前 5 个 element 的 text_preview)
+        elem_texts = [el.text_preview for el in child.elements if el.text_preview]
+        overview = " ".join(elem_texts[:5]) if elem_texts else ""
         wikis.append(
             ChapterWiki(
                 id=f"cw-{child.id}",
                 course_id=course_id,
                 chapter_id=child.id,
                 title=child.title,
-                overview="",
+                overview=overview,
                 key_concepts=[kc.name for kc in chapter_kcs],
                 exam_weight=0.0,
                 difficulty="medium",
