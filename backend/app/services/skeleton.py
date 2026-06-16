@@ -22,12 +22,19 @@ def _get_client() -> OpenAI:
 
 SKELETON_FALLBACK_PROMPT = (
     "你是一个课程骨架分析助手。请根据提供的课程材料文本分析课程结构，"
-    "以 JSON 格式返回章节组织。\n"
+    "以 JSON 格式返回。\n"
+    "返回格式:\n"
     "{\n"
     '  "chapters": [\n'
     '    {"id": "ch-1", "title": "章节标题", "key_concepts": ["概念1"], "importance": "high|medium|low", "exam_weight": 0.3}\n'
-    "  ]\n"
+    "  ],\n"
+    '  "core_concepts": ["最核心的概念1", "最核心的概念2"],\n'
+    '  "difficulty_areas": ["难点1"],\n'
+    '  "prerequisite_chain": [["先修概念", "后续概念"]]\n'
     "}\n"
+    "core_concepts: 列出这门课最核心的 3-5 个概念。\n"
+    "difficulty_areas: 列出学生最容易搞混或出错的 2-3 个知识点。\n"
+    "prerequisite_chain: 列出概念间的先修关系 [先修, 后续]。\n"
     "只返回 JSON，不要包含其他文字。"
 )
 
