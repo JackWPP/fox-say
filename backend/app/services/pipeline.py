@@ -78,28 +78,18 @@ async def process_material(
                 store.update_task(task_ids[remaining_step], "skipped")
             return
 
-    # Build DMAP from docling (or fallback flat text), then trigger Wiki build (best-effort)
+    # 尝试从 MinerU 获取带 heading 的结构化输出
     docling_chunks: list[dict] = []
     if kind == "pdf":
         try:
-            from app.services.parsing_docling import parse_pdf_docling
-            docling_chunks = await asyncio.to_thread(parse_pdf_docling, file_path)
+            from app.services.mineru import parse_pdf_mineru
+            md_text = await asyncio.to_thread(parse_pdf_mineru, file_path)
+            if md_text and len(md_text) > 100:
+                logger.info("MinerU returned %d chars for %s", len(md_text), material_id)
+                text = md_text
+                docling_chunks = _markdown_to_chunks(md_text)
         except Exception as e:
-            logger.warning("Docling failed for %s, trying MinerU: %s", material_id, e)
-
-        # Docling 没产出结构化 chunks → 试 MinerU API 获取带 heading 的结构化输出
-        if not docling_chunks:
-            try:
-                from app.services.mineru import parse_pdf_mineru
-                md_text = await asyncio.to_thread(parse_pdf_mineru, file_path)
-                if md_text and len(md_text) > 100:
-                    logger.info("MinerU returned %d chars for %s", len(md_text), material_id)
-                    # 用 MinerU 的 markdown 作为 text (覆盖 pdfplumber 的结果)
-                    text = md_text
-                    # 从 markdown 标题生成结构化 chunks
-                    docling_chunks = _markdown_to_chunks(md_text)
-            except Exception as e:
-                logger.warning("MinerU fallback failed for %s: %s", material_id, e)
+            logger.warning("MinerU fallback failed for %s: %s", material_id, e)
 
     if not docling_chunks:
         # Flat fallback: treat entire text as a paragraph element (no heading/level)
