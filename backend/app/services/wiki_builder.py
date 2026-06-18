@@ -146,12 +146,20 @@ class WikiState(TypedDict, total=False):
 
 
 SUPERVISOR_SYSTEM = (
-    "你是一个课程结构分析助手。给定课程的章节信息,生成:"
-    "(1) 每个章节需要提取的 KC 候选数量建议(1-5 之间);\n"
-    "(2) 一个 CourseIndex JSON,包含 chapters(每章 id/title/key_concepts/importance/depends_on)。\n"
+    "你是一个课程结构分析助手。给定课程的章节信息,生成:\n"
+    "(1) 每个章节需要提取的 KC 候选数量建议(3-8 之间);\n"
+    "(2) 一个 CourseIndex JSON,包含 chapters(每章 id/title/key_concepts/importance/depends_on)。\n\n"
+    "重要规则:\n"
+    "- 如果只有一个章节且标题是'(未分章)',你需要从文本内容中推断出合理的章节划分,\n"
+    "  把文本按主题拆成 3-8 个章节,每个章节给出 id、title 和 kc_target。\n"
+    "- key_concepts: 列出每章最核心的 3-5 个概念名称。\n"
+    "- importance: high/medium/low。\n"
+    "- depends_on: 依赖的其他章节 id 列表。\n"
+    "- course_name: 课程的正式名称。\n"
+    "- core_topics: 整门课最核心的 3-5 个概念。\n\n"
     "只返回 JSON,不要包含其他文字。\n"
-    '{"chapters": [{"id": "ch-1", "title": "第一章", "kc_target": 3}],'
-    ' "course_index": {"course_name": "课程名", "chapters": [...]}}'
+    '{"chapters": [{"id": "ch-1", "title": "第一章", "kc_target": 5}],'
+    ' "course_index": {"course_name": "课程名", "core_topics": ["概念1"], "chapters": [...]}}'
 )
 
 
@@ -174,12 +182,23 @@ def _supervisor_impl(state: WikiState) -> dict[str, Any]:
                 text_parts.append(el.text_preview)
         chapter_texts.append((child.id, child.title, "\n".join(text_parts)))
 
+    # 扁平 DMAP 检测:只有 1 个 chapter 且标题是"(未分章)"或文件名
+    # → 把全部文本合并,让 LLM 自行划分章节
+    is_flat = (
+        len(chapter_texts) == 1
+        and chapter_texts[0][1] in ("(未分章)", "")
+    )
+    if is_flat:
+        # 合并所有材料文本
+        all_text = chapter_texts[0][2]
+        chapter_texts = [("ch-flat", "(未分章)", all_text[:8000])]
+
     # 调 LLM 生成分配(失败抛)
     user_content = json.dumps(
         {
             "course_id": course_id,
             "chapters": [
-                {"id": cid, "title": ctitle, "text_preview": text[:1500]}
+                {"id": cid, "title": ctitle, "text_preview": text[:3000]}
                 for cid, ctitle, text in chapter_texts
             ],
         },
@@ -190,28 +209,48 @@ def _supervisor_impl(state: WikiState) -> dict[str, Any]:
 
     # 解析 LLM 返回的分配
     tasks: list[WorkerTask] = []
-    ch_assignments = {a["id"]: a for a in parsed.get("chapters", [])}
-    for cid, ctitle, text in chapter_texts:
-        kc_target = int(ch_assignments.get(cid, {}).get("kc_target", 3))
-        tasks.append(
-            WorkerTask(
+    ch_assignments = parsed.get("chapters", [])
+
+    if is_flat and ch_assignments:
+        # 扁平 DMAP + LLM 划分了多个章节 → 用 LLM 的章节列表
+        # 从原始文本中按顺序切分(简单方案:均分)
+        full_text = chapter_texts[0][2]
+        n_chapters = len(ch_assignments)
+        chunk_size = len(full_text) // max(n_chapters, 1)
+        for i, ch in enumerate(ch_assignments):
+            cid = str(ch.get("id", f"ch-{i+1}"))
+            ctitle = str(ch.get("title", f"第{i+1}章"))
+            start = i * chunk_size
+            end = start + chunk_size if i < n_chapters - 1 else len(full_text)
+            chunk_text = full_text[start:end]
+            kc_target = int(ch.get("kc_target", 5))
+            tasks.append(WorkerTask(
                 course_id=course_id,
                 chapter_id=cid,
                 chapter_title=ctitle,
-                chapter_text=text,
+                chapter_text=chunk_text + f"\n\n[Supervisor] 目标 KC 数量: {kc_target}",
                 retry=0,
-            )
-        )
-        # 修一下:kc_target 也存到 task 上下文(简单塞到 chapter_text 末尾)
-        tasks[-1]["chapter_text"] = text + f"\n\n[Supervisor] 目标 KC 数量: {kc_target}"
+            ))
+    else:
+        # 正常 DMAP → 按原有章节分配
+        ch_map = {a["id"]: a for a in ch_assignments}
+        for cid, ctitle, text in chapter_texts:
+            kc_target = int(ch_map.get(cid, {}).get("kc_target", 3))
+            tasks.append(WorkerTask(
+                course_id=course_id,
+                chapter_id=cid,
+                chapter_title=ctitle,
+                chapter_text=text + f"\n\n[Supervisor] 目标 KC 数量: {kc_target}",
+                retry=0,
+            ))
 
     # 解析 course_index
     ci_data = parsed.get("course_index", {})
     if not ci_data.get("chapters"):
-        # LLM 没给 chapters → 用 DMAP 兜底(纯本地,不调 LLM)
+        # LLM 没给 chapters → 用任务列表兜底
         ci_data["chapters"] = [
-            {"id": cid, "title": ctitle, "key_concepts": [], "importance": "medium", "depends_on": []}
-            for cid, ctitle, _ in chapter_texts
+            {"id": t["chapter_id"], "title": t["chapter_title"], "key_concepts": [], "importance": "medium", "depends_on": []}
+            for t in tasks
         ]
 
     def _normalize_importance(v: Any) -> str:
@@ -285,7 +324,7 @@ def _worker_extract_kcs(task: WorkerTask) -> list[KC]:
         {
             "chapter_id": task["chapter_id"],
             "chapter_title": task["chapter_title"],
-            "text": task["chapter_text"][:6000],
+            "text": task["chapter_text"][:15000],
         },
         ensure_ascii=False,
     )

@@ -24,6 +24,9 @@ PIPELINE_STEPS = [
     "chunking", "embedding", "storing", "skeleton_generating",
 ]
 
+# 这些步骤在所有材料就绪后统一执行(不逐材料跑)
+_COURSE_LEVEL_STEPS = {"build_dmap", "wiki_build", "skeleton_generating"}
+
 
 async def process_material(
     course_id: str,
@@ -102,46 +105,14 @@ async def process_material(
         # Flat fallback: treat entire text as a paragraph element (no heading/level)
         docling_chunks = [{"text": text, "heading": "", "level": 0, "page": 0}]
 
-    try:
-        store.update_task(task_ids["build_dmap"], "running")
-        dmap_obj = build_dmap(course_id, docling_chunks, source_file=file_name)
-        store.save_dmap(course_id, dmap_obj.model_dump_json())
-        store.update_task(task_ids["build_dmap"], "done")
-    except Exception as exc:
-        logger.warning("DMAP build failed for %s: %s", material_id, exc)
-        store.update_task(task_ids["build_dmap"], "failed", detail=str(exc))
-        dmap_obj = None
+    # 存储 docling_chunks 供后续 course-level wiki_build 使用
+    if course_id not in _material_texts:
+        _material_texts[course_id] = {}
+    _material_texts[course_id][material_id] = text
 
-    if dmap_obj is not None:
-        try:
-            store.update_task(task_ids["wiki_build"], "running")
-            # Load previous merkle tree for incremental diff
-            old_merkle_json = store.get_merkle_tree(course_id)
-            old_merkle = None
-            if old_merkle_json:
-                from app.schemas.foxsay import MerkleTree
-                try:
-                    old_merkle = MerkleTree.model_validate_json(old_merkle_json)
-                except Exception:
-                    old_merkle = None
-            new_merkle = compute_merkle_tree(dmap_obj)
-            try:
-                store.save_merkle_tree(course_id, new_merkle.model_dump_json())
-            except Exception:
-                pass
-            changed = diff_merkle_trees(old_merkle, new_merkle) if old_merkle else None
-            # build_wiki_async internally: build_dmap (no-op since we have dmap) →
-            # compute_merkle → graph.invoke(supervisor → workers → reducer → reviewer)
-            # → persist_kc / persist_chapter_wiki / persist_dmap / persist_merkle
-            await build_wiki_async(
-                course_id, docling_chunks, store,
-                old_merkle_tree=old_merkle,
-                source_file=file_name,
-            )
-            store.update_task(task_ids["wiki_build"], "done")
-        except Exception as exc:
-            logger.exception("Wiki build failed for %s (continuing without wiki): %s", material_id, exc)
-            store.update_task(task_ids["wiki_build"], "failed", detail=str(exc))
+    # build_dmap + wiki_build 不再逐材料执行,标记为 pending 等 course-level 处理
+    store.update_task(task_ids["build_dmap"], "skipped", detail="deferred to course-level")
+    store.update_task(task_ids["wiki_build"], "skipped", detail="deferred to course-level")
 
     try:
         store.update_task(task_ids["chunking"], "running")
@@ -163,19 +134,15 @@ async def process_material(
         await asyncio.to_thread(_qdrant.upsert_chunks, course_id, chunks, embeddings, metadata)
         store.update_task(task_ids["storing"], "done")
 
-        if course_id not in _material_texts:
-            _material_texts[course_id] = {}
-        _material_texts[course_id][material_id] = text
-
         store.update_material_status(course_id, material_id, "ready")
         push_event(course_id, "material_processed", {"material_id": material_id})
 
         just_ready = _update_course_if_ready(course_id, store)
         if just_ready:
-            store.update_task(task_ids["skeleton_generating"], "running")
-            asyncio.create_task(_generate_and_store_skeleton(course_id, store, task_ids.get("skeleton_generating")))
+            # 所有材料就绪 → 统一跑 DMAP + wiki_build + skeleton
+            asyncio.create_task(_build_course_wiki(course_id, store))
         else:
-            store.update_task(task_ids["skeleton_generating"], "skipped", detail="skeleton already exists")
+            store.update_task(task_ids["skeleton_generating"], "skipped", detail="waiting for other materials")
 
     except Exception:
         logger.exception("Failed to process material %s for course %s", material_id, course_id)
@@ -230,6 +197,68 @@ async def _generate_and_store_skeleton(course_id: str, store: SqliteStore, task_
         logger.exception("Failed to generate skeleton for course %s", course_id)
         if task_id:
             store.update_task(task_id, "failed")
+
+
+async def _build_course_wiki(course_id: str, store: SqliteStore) -> None:
+    """所有材料就绪后统一跑 DMAP + wiki_build + skeleton。
+
+    合并所有材料文本,只跑一次 wiki_build,避免逐材料覆盖。
+    """
+    logger.info("All materials ready for %s, building course wiki", course_id)
+
+    # 1. 合并所有材料文本
+    texts_dict = _material_texts.get(course_id, {})
+    if not texts_dict:
+        logger.warning("No material texts for %s, skipping wiki build", course_id)
+        return
+    combined_text = "\n\n".join(texts_dict.values())
+
+    # 2. 生成 docling_chunks (从合并文本)
+    docling_chunks = [{"text": combined_text, "heading": "", "level": 0, "page": 0}]
+
+    # 3. build_dmap
+    try:
+        dmap_obj = build_dmap(course_id, docling_chunks, source_file="merged")
+        store.save_dmap(course_id, dmap_obj.model_dump_json())
+        logger.info("DMAP built for %s: %d chapters", course_id, len(dmap_obj.root.children))
+    except Exception:
+        logger.exception("DMAP build failed for %s", course_id)
+        return
+
+    # 4. wiki_build
+    try:
+        old_merkle_json = store.get_merkle_tree(course_id)
+        old_merkle = None
+        if old_merkle_json:
+            from app.schemas.foxsay import MerkleTree
+            try:
+                old_merkle = MerkleTree.model_validate_json(old_merkle_json)
+            except Exception:
+                old_merkle = None
+        new_merkle = compute_merkle_tree(dmap_obj)
+        try:
+            store.save_merkle_tree(course_id, new_merkle.model_dump_json())
+        except Exception:
+            pass
+        await build_wiki_async(
+            course_id, docling_chunks, store,
+            old_merkle_tree=old_merkle,
+            source_file="merged",
+        )
+        logger.info("Wiki build completed for %s", course_id)
+    except Exception:
+        logger.exception("Wiki build failed for %s", course_id)
+
+    # 5. skeleton
+    try:
+        course = store.get_course(course_id)
+        if course:
+            skeleton = await generate_skeleton(course_id, course.title, combined_text)
+            store.create_skeleton(skeleton)
+            push_event(course_id, "skeleton_ready", {"course_id": course_id})
+            logger.info("Skeleton generated for %s", course_id)
+    except Exception:
+        logger.exception("Skeleton generation failed for %s", course_id)
 
 
 def _degraded_extract(file_path: str, kind: str) -> str:
