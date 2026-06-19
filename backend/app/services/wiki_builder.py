@@ -213,16 +213,18 @@ def _supervisor_impl(state: WikiState) -> dict[str, Any]:
 
     if is_flat and ch_assignments:
         # 扁平 DMAP + LLM 划分了多个章节 → 用 LLM 的章节列表
-        # 从原始文本中按顺序切分(简单方案:均分)
+        # 按段落边界(\n\n)切分,而非均分字符(均分会切断句子)
         full_text = chapter_texts[0][2]
         n_chapters = len(ch_assignments)
-        chunk_size = len(full_text) // max(n_chapters, 1)
+        paragraphs = full_text.split("\n\n")
+        total_paras = len(paragraphs)
+        paras_per_ch = max(total_paras // max(n_chapters, 1), 1)
         for i, ch in enumerate(ch_assignments):
             cid = str(ch.get("id", f"ch-{i+1}"))
             ctitle = str(ch.get("title", f"第{i+1}章"))
-            start = i * chunk_size
-            end = start + chunk_size if i < n_chapters - 1 else len(full_text)
-            chunk_text = full_text[start:end]
+            start = i * paras_per_ch
+            end = start + paras_per_ch if i < n_chapters - 1 else total_paras
+            chunk_text = "\n\n".join(paragraphs[start:end])
             kc_target = int(ch.get("kc_target", 5))
             tasks.append(WorkerTask(
                 course_id=course_id,
