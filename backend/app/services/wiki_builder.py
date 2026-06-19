@@ -319,93 +319,92 @@ WORKER_SYSTEM = (
 
 
 def _worker_extract_kcs(task: WorkerTask) -> list[KC]:
-    """单个 worker:对一章调一次 LLM 提取 KC 列表。失败抛。"""
-    user = json.dumps(
-        {
-            "chapter_id": task["chapter_id"],
-            "chapter_title": task["chapter_title"],
-            "text": task["chapter_text"][:15000],
-        },
-        ensure_ascii=False,
-    )
-    raw = _llm_call(WORKER_SYSTEM, user, temperature=0.2)
-    parsed = _parse_llm_json(raw)
-    if not isinstance(parsed, list):
-        raise RuntimeError(
-            f"Worker expected JSON list, got {type(parsed).__name__}: {parsed!r}"
+    """单个 worker:对一章调一次 LLM 提取 KC 列表。失败返回空列表。"""
+    try:
+        user = json.dumps(
+            {
+                "chapter_id": task["chapter_id"],
+                "chapter_title": task["chapter_title"],
+                "text": task["chapter_text"][:15000],
+            },
+            ensure_ascii=False,
         )
-
-    kcs: list[KC] = []
-    for item in parsed:
-        if not isinstance(item, dict) or "name" not in item:
-            continue
-        name = str(item["name"]).strip()
-        if not name:
-            continue
-
-        # Normalize fields that LLM sometimes returns in the wrong shape.
-        # key_properties should be list[{name, formula}]; if LLM gave strings,
-        # wrap them as {name: <string>, formula: ""} so schema validation passes.
-        raw_props = item.get("key_properties", []) or []
-        if isinstance(raw_props, list):
-            normalized_props: list[dict] = []
-            for p in raw_props:
-                if isinstance(p, dict):
-                    normalized_props.append(p)
-                elif isinstance(p, str):
-                    normalized_props.append({"name": p, "formula": ""})
-            key_properties = normalized_props
-        else:
-            key_properties = []
-
-        # Coerce list-like fields to list (LLM sometimes gives string)
-        def _to_list(v: Any) -> list[str]:
-            if v is None:
-                return []
-            if isinstance(v, list):
-                return [str(x) for x in v]
-            if isinstance(v, str):
-                return [v] if v else []
-            return [str(v)]
-
-        # exam_frequency must be in {high, medium, low}
-        ef = str(item.get("exam_frequency", "medium")).strip().lower()
-        if ef not in ("high", "medium", "low"):
-            ef = "medium"
-        # bloom_level must be one of the 4 levels
-        bl = str(item.get("bloom_level", "Understanding")).strip()
-        if bl not in ("Remembering", "Understanding", "Applying", "Analyzing"):
-            bl = "Understanding"
-
-        kc_id = make_kc_id(task["course_id"], task["chapter_id"], name)
-        try:
-            kcs.append(
-                KC(
-                    id=kc_id,
-                    course_id=task["course_id"],
-                    chapter_id=task["chapter_id"],
-                    name=name,
-                    bloom_level=bl,
-                    definition=item.get("definition", ""),
-                    formula=item.get("formula", ""),
-                    intuition=item.get("intuition", ""),
-                    conditions=_to_list(item.get("conditions", [])),
-                    key_properties=key_properties,
-                    examples=_to_list(item.get("examples", [])),
-                    common_mistakes=_to_list(item.get("common_mistakes", [])),
-                    prerequisites=_to_list(item.get("prerequisites", [])),
-                    related=_to_list(item.get("related", [])),
-                    exam_frequency=ef,
-                    exam_patterns=_to_list(item.get("exam_patterns", [])),
-                )
+        raw = _llm_call(WORKER_SYSTEM, user, temperature=0.2)
+        parsed = _parse_llm_json(raw)
+        if not isinstance(parsed, list):
+            logger.warning(
+                "Worker for chapter %s expected JSON list, got %s",
+                task["chapter_id"], type(parsed).__name__,
             )
-        except Exception as e:
-            # HEC-1: log the failure but don't crash the whole worker.
-            # A single bad KC shouldn't sink the whole chapter.
-            logger.warning("Skipping malformed KC '%s' in chapter %s: %s",
-                           name, task["chapter_id"], e)
-            continue
-    return kcs
+            return []
+
+        kcs: list[KC] = []
+        for item in parsed:
+            if not isinstance(item, dict) or "name" not in item:
+                continue
+            name = str(item["name"]).strip()
+            if not name:
+                continue
+
+            # Normalize fields that LLM sometimes returns in the wrong shape.
+            raw_props = item.get("key_properties", []) or []
+            if isinstance(raw_props, list):
+                normalized_props: list[dict] = []
+                for p in raw_props:
+                    if isinstance(p, dict):
+                        normalized_props.append(p)
+                    elif isinstance(p, str):
+                        normalized_props.append({"name": p, "formula": ""})
+                key_properties = normalized_props
+            else:
+                key_properties = []
+
+            def _to_list(v: Any) -> list[str]:
+                if v is None:
+                    return []
+                if isinstance(v, list):
+                    return [str(x) for x in v]
+                if isinstance(v, str):
+                    return [v] if v else []
+                return [str(v)]
+
+            ef = str(item.get("exam_frequency", "medium")).strip().lower()
+            if ef not in ("high", "medium", "low"):
+                ef = "medium"
+            bl = str(item.get("bloom_level", "Understanding")).strip()
+            if bl not in ("Remembering", "Understanding", "Applying", "Analyzing"):
+                bl = "Understanding"
+
+            kc_id = make_kc_id(task["course_id"], task["chapter_id"], name)
+            try:
+                kcs.append(
+                    KC(
+                        id=kc_id,
+                        course_id=task["course_id"],
+                        chapter_id=task["chapter_id"],
+                        name=name,
+                        bloom_level=bl,
+                        definition=item.get("definition", ""),
+                        formula=item.get("formula", ""),
+                        intuition=item.get("intuition", ""),
+                        conditions=_to_list(item.get("conditions", [])),
+                        key_properties=key_properties,
+                        examples=_to_list(item.get("examples", [])),
+                        common_mistakes=_to_list(item.get("common_mistakes", [])),
+                        prerequisites=_to_list(item.get("prerequisites", [])),
+                        related=_to_list(item.get("related", [])),
+                        exam_frequency=ef,
+                        exam_patterns=_to_list(item.get("exam_patterns", [])),
+                    )
+                )
+            except Exception as e:
+                logger.warning("Skipping malformed KC '%s' in chapter %s: %s",
+                               name, task["chapter_id"], e)
+                continue
+        return kcs
+    except Exception as e:
+        logger.warning("Worker failed for chapter %s: %s", task["chapter_id"], e)
+        return []
 
 
 # LangGraph 节点包装(并发执行 worker)

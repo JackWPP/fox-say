@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from app.db.sqlite_store import SqliteStore
 from app.services.chunking import chunk_text
@@ -157,6 +158,7 @@ async def process_material(
 
 
 def _update_course_if_ready(course_id: str, store: SqliteStore) -> bool:
+    _timeout_stuck_materials(course_id, store)
     materials = store.get_all_materials(course_id)
     if not materials:
         return False
@@ -169,6 +171,17 @@ def _update_course_if_ready(course_id: str, store: SqliteStore) -> bool:
             store.update_course(course_id, updated)
             return True
     return False
+
+
+def _timeout_stuck_materials(course_id: str, store: SqliteStore) -> None:
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+    rows = store._conn.execute(
+        "SELECT id FROM materials WHERE course_id = ? AND status = 'processing' AND created_at < ?",
+        (course_id, cutoff),
+    ).fetchall()
+    for row in rows:
+        logger.warning("Material %s stuck in processing for >5min, marking as failed", row["id"])
+        store.update_material_status(course_id, row["id"], "failed")
 
 
 async def _generate_and_store_skeleton(course_id: str, store: SqliteStore, task_id: str | None = None) -> None:
@@ -239,14 +252,18 @@ async def _build_course_wiki(course_id: str, store: SqliteStore) -> None:
     except Exception:
         logger.exception("Wiki build failed for %s", course_id)
 
-    # 5. skeleton
+    # 5. skeleton — 优先从 course_index 派生(不调 LLM),fallback 到 LLM 生成
     try:
-        course = store.get_course(course_id)
-        if course:
-            skeleton = await generate_skeleton(course_id, course.title, combined_text)
+        from app.services.skeleton import generate_skeleton_from_wiki
+        skeleton = await generate_skeleton_from_wiki(course_id, store)
+        if skeleton is None:
+            course = store.get_course(course_id)
+            if course:
+                skeleton = await generate_skeleton(course_id, course.title, combined_text)
+        if skeleton:
             store.create_skeleton(skeleton)
             push_event(course_id, "skeleton_ready", {"course_id": course_id})
-            logger.info("Skeleton generated for %s", course_id)
+            logger.info("Skeleton generated for %s (%d chapters)", course_id, len(skeleton.chapters))
     except Exception:
         logger.exception("Skeleton generation failed for %s", course_id)
 
