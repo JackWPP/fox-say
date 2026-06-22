@@ -215,15 +215,24 @@ async def _build_course_wiki(course_id: str, store: SqliteStore) -> None:
         logger.warning("No material texts for %s, skipping wiki build", course_id)
         return
     combined_text = "\n\n".join(texts_dict.values())
+    logger.info(
+        "[WikiBuild] course_id=%s materials=%d combined_text_len=%d",
+        course_id, len(texts_dict), len(combined_text),
+    )
 
     # 2. 生成 docling_chunks (从合并文本)
     docling_chunks = [{"text": combined_text, "heading": "", "level": 0, "page": 0}]
+    logger.info("[WikiBuild] course_id=%s docling_chunks=%d", course_id, len(docling_chunks))
 
     # 3. build_dmap
     try:
         dmap_obj = build_dmap(course_id, docling_chunks, source_file="merged")
         store.save_dmap(course_id, dmap_obj.model_dump_json())
-        logger.info("DMAP built for %s: %d chapters", course_id, len(dmap_obj.root.children))
+        chapter_ids = [c.id for c in dmap_obj.root.children if c.type == "chapter"]
+        logger.info(
+            "DMAP built for %s: %d chapters, chapter_ids=%s",
+            course_id, len(chapter_ids), chapter_ids,
+        )
     except Exception:
         logger.exception("DMAP build failed for %s", course_id)
         return
@@ -249,6 +258,12 @@ async def _build_course_wiki(course_id: str, store: SqliteStore) -> None:
             source_file="merged",
         )
         logger.info("Wiki build completed for %s", course_id)
+        # Log KC count from store after wiki build
+        try:
+            kcs = store.get_kcs_by_course(course_id, include_invalid=False)
+            logger.info("[WikiBuild] course_id=%s total_kcs_in_store=%d", course_id, len(kcs))
+        except Exception:
+            pass
     except Exception:
         logger.exception("Wiki build failed for %s", course_id)
 
