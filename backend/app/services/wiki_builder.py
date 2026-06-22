@@ -322,27 +322,47 @@ WORKER_SYSTEM = (
 
 def _worker_extract_kcs(task: WorkerTask) -> list[KC]:
     """单个 worker:对一章调一次 LLM 提取 KC 列表。失败返回空列表。"""
+    chapter_id = task["chapter_id"]
+    chapter_title = task["chapter_title"]
+    text_len = len(task["chapter_text"])
+    logger.info(
+        "[Worker] ENTER chapter_id=%s title='%s' text_len=%d",
+        chapter_id, chapter_title, text_len,
+    )
     try:
         user = json.dumps(
             {
-                "chapter_id": task["chapter_id"],
-                "chapter_title": task["chapter_title"],
+                "chapter_id": chapter_id,
+                "chapter_title": chapter_title,
                 "text": task["chapter_text"][:15000],
             },
             ensure_ascii=False,
         )
+        logger.info("[Worker] Calling LLM for chapter_id=%s ...", chapter_id)
         raw = _llm_call(WORKER_SYSTEM, user, temperature=0.2)
+        logger.info(
+            "[Worker] LLM returned for chapter_id=%s, raw[:200]=%r",
+            chapter_id, raw[:200],
+        )
         parsed = _parse_llm_json(raw)
         if not isinstance(parsed, list):
             logger.warning(
-                "Worker for chapter %s expected JSON list, got %s",
-                task["chapter_id"], type(parsed).__name__,
+                "[Worker] chapter_id=%s expected JSON list, got %s. raw[:200]=%r",
+                chapter_id, type(parsed).__name__, raw[:200],
             )
             return []
+        logger.info(
+            "[Worker] chapter_id=%s parsed %d items from LLM response",
+            chapter_id, len(parsed),
+        )
 
         kcs: list[KC] = []
         for item in parsed:
             if not isinstance(item, dict) or "name" not in item:
+                logger.warning(
+                    "[Worker] chapter_id=%s skipping non-dict or nameless item: %r",
+                    chapter_id, item,
+                )
                 continue
             name = str(item["name"]).strip()
             if not name:
@@ -377,13 +397,13 @@ def _worker_extract_kcs(task: WorkerTask) -> list[KC]:
             if bl not in ("Remembering", "Understanding", "Applying", "Analyzing"):
                 bl = "Understanding"
 
-            kc_id = make_kc_id(task["course_id"], task["chapter_id"], name)
+            kc_id = make_kc_id(task["course_id"], chapter_id, name)
             try:
                 kcs.append(
                     KC(
                         id=kc_id,
                         course_id=task["course_id"],
-                        chapter_id=task["chapter_id"],
+                        chapter_id=chapter_id,
                         name=name,
                         bloom_level=bl,
                         definition=item.get("definition", ""),
@@ -399,13 +419,26 @@ def _worker_extract_kcs(task: WorkerTask) -> list[KC]:
                         exam_patterns=_to_list(item.get("exam_patterns", [])),
                     )
                 )
+                logger.info(
+                    "[Worker] chapter_id=%s extracted KC '%s' (id=%s)",
+                    chapter_id, name, kc_id,
+                )
             except Exception as e:
-                logger.warning("Skipping malformed KC '%s' in chapter %s: %s",
-                               name, task["chapter_id"], e)
+                logger.warning(
+                    "[Worker] chapter_id=%s skipping malformed KC '%s': %s",
+                    chapter_id, name, e, exc_info=True,
+                )
                 continue
+        logger.info(
+            "[Worker] DONE chapter_id=%s total_kcs=%d",
+            chapter_id, len(kcs),
+        )
         return kcs
     except Exception as e:
-        logger.warning("Worker failed for chapter %s: %s", task["chapter_id"], e)
+        logger.warning(
+            "[Worker] FAILED chapter_id=%s: %s",
+            chapter_id, e, exc_info=True,
+        )
         return []
 
 
@@ -423,12 +456,20 @@ def worker_node(state: WikiState) -> dict[str, Any]:
 
 async def _run_workers(tasks: list[WorkerTask]) -> list[list[KC]]:
     """真并发跑所有 worker(用 asyncio.gather)。失败任一即抛。"""
+    logger.info("[Workers] Dispatching %d tasks", len(tasks))
+    for i, t in enumerate(tasks):
+        logger.info(
+            "[Workers] task[%d] chapter_id=%s title='%s' text_len=%d",
+            i, t["chapter_id"], t["chapter_title"], len(t["chapter_text"]),
+        )
 
     def _one(t: WorkerTask) -> list[KC]:
         return _worker_extract_kcs(t)
 
     # asyncio.to_thread 让同步 LLM 调用不阻塞事件循环
     results = await asyncio.gather(*(asyncio.to_thread(_one, t) for t in tasks))
+    for i, kcs in enumerate(results):
+        logger.info("[Workers] task[%d] returned %d kcs", i, len(kcs))
     return list(results)
 
 
