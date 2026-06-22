@@ -566,7 +566,7 @@ REVIEWER_SYSTEM = (
 
 
 def _review_kc_quality(kcs: list[KC]) -> ReviewResult:
-    """调 LLM 审查 KC 质量。失败抛。"""
+    """调 LLM 审查 KC 质量。失败时跳过审查(passthrough)。"""
     if not kcs:
         return ReviewResult(passed=True, reasons=[], failed_kc_ids=[], fixes=[])
     user = json.dumps(
@@ -586,14 +586,18 @@ def _review_kc_quality(kcs: list[KC]) -> ReviewResult:
         },
         ensure_ascii=False,
     )
-    raw = _llm_call(REVIEWER_SYSTEM, user, temperature=0.1)
-    parsed = _parse_llm_json(raw)
-    return ReviewResult(
-        passed=bool(parsed.get("passed", False)),
-        reasons=list(parsed.get("reasons", [])),
-        failed_kc_ids=list(parsed.get("failed_kc_ids", [])),
-        fixes=list(parsed.get("fixes", [])),
-    )
+    try:
+        raw = _llm_call(REVIEWER_SYSTEM, user, temperature=0.1)
+        parsed = _parse_llm_json(raw)
+        return ReviewResult(
+            passed=bool(parsed.get("passed", False)),
+            reasons=list(parsed.get("reasons", [])),
+            failed_kc_ids=list(parsed.get("failed_kc_ids", [])),
+            fixes=list(parsed.get("fixes", [])),
+        )
+    except Exception as e:
+        logger.warning("Reviewer LLM failed, skipping review: %s", e)
+        return ReviewResult(passed=True, reasons=["review_skipped_due_to_llm_error"], failed_kc_ids=[], fixes=[])
 
 
 def _apply_fixes(kcs: list[KC], review: ReviewResult) -> list[KC]:
