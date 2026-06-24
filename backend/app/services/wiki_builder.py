@@ -88,15 +88,26 @@ def _llm_call(system: str, user: str, temperature: float = 0.2, max_tokens: int 
 
 
 def _parse_llm_json(raw: str) -> dict:
-    """剥 ```json ... ``` 围栏并 json.loads。失败抛 ValueError。"""
+    """剥 ```json ... ``` 围栏并 json.loads。增强:strip 尾逗号、提取 JSON 数组。失败抛 ValueError。"""
+    import re
     text = raw.strip()
+    # Strip markdown fences
     if text.startswith("```"):
         lines = text.split("\n")
         lines = lines[1:]
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         text = "\n".join(lines)
-    return json.loads(text)
+    # Strip trailing commas: ,} → }  ,] → ]
+    text = re.sub(r',\s*([}\]])', r'\1', text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Try to extract JSON array from the text
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+        if match:
+            return json.loads(match.group())
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +350,7 @@ def _worker_extract_kcs(task: WorkerTask) -> list[KC]:
             ensure_ascii=False,
         )
         logger.info("[Worker] Calling LLM for chapter_id=%s ...", chapter_id)
-        raw = _llm_call(WORKER_SYSTEM, user, temperature=0.2)
+        raw = _llm_call(WORKER_SYSTEM, user, temperature=0.2, max_tokens=4000)
         logger.info(
             "[Worker] LLM returned for chapter_id=%s, raw[:200]=%r",
             chapter_id, raw[:200],
