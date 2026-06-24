@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams } from "react-router-dom";
-import { ArrowLeft, FileText, GitBranch, MessageCircle, Network, Zap } from "lucide-react";
+import { ArrowLeft, FileText, GitBranch, MessageCircle, Network, Zap, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useCourse } from "../bookshelf/useCourses";
 import MaterialsTab from "./MaterialsTab";
@@ -8,6 +8,7 @@ import SkeletonTab from "./SkeletonTab";
 import ChatTab from "./ChatTab";
 import ReviewTab from "./ReviewTab";
 import KnowledgeGraphTab from "./KnowledgeGraphTab";
+import { API_BASE } from "../../shared/api";
 
 type StudyMode = "exam" | "study";
 type Tab = "materials" | "skeleton" | "qa" | "kg" | "review";
@@ -38,6 +39,25 @@ export default function CourseDetailPage() {
 
   const { course } = useCourse(courseId ?? "");
 
+  // 第一个惊喜:监听 course_ready 事件
+  const [toast, setToast] = useState<{ message: string; weakAreas: string[]; coreConcepts: string[] } | null>(null);
+
+  useEffect(() => {
+    if (!courseId) return;
+    const es = new EventSource(`${API_BASE}/courses/${courseId}/events`);
+    es.addEventListener("course_ready", (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setToast({
+          message: data.message || "你的课程已准备好了！",
+          weakAreas: data.weak_areas || [],
+          coreConcepts: data.core_concepts || [],
+        });
+      } catch { /* ignore */ }
+    });
+    return () => es.close();
+  }, [courseId]);
+
   const handleConceptClick = (concept: string) => {
     setPrefillQuestion(`请解释"${concept}"`);
     setActiveTab("qa");
@@ -58,6 +78,33 @@ export default function CourseDetailPage() {
 
   return (
     <div className="p-6 md:p-8 max-w-4xl mx-auto">
+      {/* 第一个惊喜:课程就绪 toast */}
+      {toast && (
+        <div className="mb-4 bg-foxAmber/10 border border-foxAmber/30 rounded-xl px-5 py-4 shadow-sm fox-fade-in">
+          <div className="flex items-start justify-between">
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-midnightCharcoal mb-1">🦊 {toast.message}</p>
+              {toast.coreConcepts.length > 0 && (
+                <p className="text-xs text-gray-600 mb-1">
+                  核心概念：{toast.coreConcepts.join("、")}
+                </p>
+              )}
+              {toast.weakAreas.length > 0 && (
+                <p className="text-xs text-red-500">
+                  薄弱区域：{toast.weakAreas.join("、")}
+                </p>
+              )}
+            </div>
+            <button
+              onClick={() => setToast(null)}
+              className="p-1 rounded-lg hover:bg-gray-100 transition-colors text-gray-400"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center gap-3 mb-6">
         <button
           onClick={() => navigate("/")}

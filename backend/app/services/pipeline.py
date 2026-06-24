@@ -279,6 +279,19 @@ async def _build_course_wiki(course_id: str, store: SqliteStore) -> None:
             store.create_skeleton(skeleton)
             push_event(course_id, "skeleton_ready", {"course_id": course_id})
             logger.info("Skeleton generated for %s (%d chapters)", course_id, len(skeleton.chapters))
+
+            # 6. 第一个惊喜:推送 course_ready 事件(骨架 + 薄弱诊断)
+            weak_chapters = [ch.title for ch in skeleton.chapters if ch.importance == "high"]
+            total_kcs = len(store.get_kcs_by_course(course_id, include_invalid=False))
+            push_event(course_id, "course_ready", {
+                "course_id": course_id,
+                "chapters_count": len(skeleton.chapters),
+                "kcs_count": total_kcs,
+                "weak_areas": skeleton.difficulty_areas[:3],
+                "core_concepts": skeleton.core_concepts[:5],
+                "message": f"你的课程已准备好了！共{len(skeleton.chapters)}章、{total_kcs}个知识点。",
+            })
+            logger.info("Course ready event pushed for %s", course_id)
     except Exception:
         logger.exception("Skeleton generation failed for %s", course_id)
 
