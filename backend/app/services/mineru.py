@@ -59,14 +59,19 @@ def parse_pdf_mineru(file_path: str, language: str = "ch") -> str:
         logger.error("MinerU: submit request failed: %s", e)
         return ""
 
-    # Step 2: PUT 上传文件到 OSS
-    try:
-        with open(file_path, "rb") as f:
-            put_req = urllib.request.Request(file_url, data=f.read(), method="PUT")
-            urllib.request.urlopen(put_req, timeout=30)
-    except Exception as e:
-        logger.error("MinerU: file upload failed: %s", e)
-        return ""
+    # Step 2: PUT 上传文件到 OSS (重试 3 次)
+    for attempt in range(3):
+        try:
+            with open(file_path, "rb") as f:
+                put_req = urllib.request.Request(file_url, data=f.read(), method="PUT")
+                urllib.request.urlopen(put_req, timeout=30)
+            break
+        except Exception as e:
+            if attempt == 2:
+                logger.error("MinerU: file upload failed after 3 attempts: %s", e)
+                return ""
+            logger.warning("MinerU: upload attempt %d failed: %s, retrying...", attempt + 1, e)
+            time.sleep(2)
 
     # Step 3: 轮询任务结果
     markdown_url = None

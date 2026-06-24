@@ -87,8 +87,8 @@ def _llm_call(system: str, user: str, temperature: float = 0.2, max_tokens: int 
     return content
 
 
-def _parse_llm_json(raw: str) -> dict:
-    """剥 ```json ... ``` 围栏并 json.loads。增强:strip 尾逗号、提取 JSON 数组。失败抛 ValueError。"""
+def _parse_llm_json(raw: str):
+    """剥 ```json ... ``` 围栏并 json.loads。增强:strip 尾逗号、提取 JSON 数组、截断补全。失败抛 ValueError。"""
     import re
     text = raw.strip()
     # Strip markdown fences
@@ -106,7 +106,38 @@ def _parse_llm_json(raw: str) -> dict:
         # Try to extract JSON array from the text
         match = re.search(r'\[.*\]', text, re.DOTALL)
         if match:
-            return json.loads(match.group())
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                # Truncated JSON array: try appending ]
+                candidate = match.group().rstrip()
+                if not candidate.endswith(']'):
+                    candidate += ']'
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        pass
+        # Truncated JSON object: try appending }]
+        text_stripped = text.rstrip()
+        if text_stripped and not text_stripped[-1] in (']', '}'):
+            for suffix in [']', '}', ']}', '}}']:
+                try:
+                    return json.loads(text_stripped + suffix)
+                except json.JSONDecodeError:
+                    continue
+        # Multiple JSON arrays: merge them
+        arrays = re.findall(r'\[.*?\]', text, re.DOTALL)
+        if len(arrays) > 1:
+            merged = []
+            for a in arrays:
+                try:
+                    parsed_item = json.loads(a)
+                    if isinstance(parsed_item, list):
+                        merged.extend(parsed_item)
+                except json.JSONDecodeError:
+                    continue
+            if merged:
+                return merged
         raise
 
 
@@ -349,13 +380,26 @@ def _worker_extract_kcs(task: WorkerTask) -> list[KC]:
             },
             ensure_ascii=False,
         )
-        logger.info("[Worker] Calling LLM for chapter_id=%s ...", chapter_id)
-        raw = _llm_call(WORKER_SYSTEM, user, temperature=0.2, max_tokens=4000)
-        logger.info(
-            "[Worker] LLM returned for chapter_id=%s, raw[:200]=%r",
-            chapter_id, raw[:200],
-        )
-        parsed = _parse_llm_json(raw)
+        parsed = None
+        for attempt in range(2):
+            logger.info("[Worker] Calling LLM for chapter_id=%s (attempt %d)...", chapter_id, attempt + 1)
+            raw = _llm_call(WORKER_SYSTEM, user, temperature=0.2, max_tokens=4000)
+            logger.info(
+                "[Worker] LLM returned for chapter_id=%s, raw[:200]=%r",
+                chapter_id, raw[:200],
+            )
+            try:
+                parsed = _parse_llm_json(raw)
+            except Exception:
+                logger.warning("[Worker] chapter_id=%s JSON parse failed on attempt %d", chapter_id, attempt + 1)
+                if attempt == 0:
+                    continue
+                raise
+            if isinstance(parsed, list) and len(parsed) > 0:
+                break
+            if attempt == 0:
+                logger.warning("[Worker] chapter_id=%s got empty/non-list result, retrying...", chapter_id)
+                continue
         if not isinstance(parsed, list):
             logger.warning(
                 "[Worker] chapter_id=%s expected JSON list, got %s. raw[:200]=%r",
