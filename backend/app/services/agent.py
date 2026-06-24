@@ -177,6 +177,12 @@ TOOLS: list[dict] = [
 ]
 
 
+def _get_tools() -> list[dict]:
+    """获取 Agent 工具列表:静态 7 个 + 动态注册的 Skills。"""
+    from app.services.skills import build_tools
+    return TOOLS + build_tools()
+
+
 # ---------------------------------------------------------------------------
 # 主循环
 # ---------------------------------------------------------------------------
@@ -251,7 +257,7 @@ async def agent_chat(
             response = client.chat.completions.create(
                 model=settings.deepseek_model,
                 messages=messages,
-                tools=TOOLS,
+                tools=_get_tools(),
                 tool_choice="auto",
                 temperature=0.3,
                 extra_body={"thinking": {"type": "disabled"}},
