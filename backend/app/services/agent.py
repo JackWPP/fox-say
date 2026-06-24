@@ -230,14 +230,12 @@ async def agent_chat(
         {type: "error", message}
     """
     client = _get_client()
-    messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-    ]
 
     context_msg = f"当前课程:{course_title}\n课程ID:{course_id}"
     if review_context:
         context_msg += f"\n\n当前复习上下文:{review_context}"
-    messages.append({"role": "system", "content": context_msg})
+    system_content = SYSTEM_PROMPT + f"\n\n{context_msg}\n请注意:以上是课程信息,不是用户问题。"
+    messages: list[dict] = [{"role": "system", "content": system_content}]
 
     if chat_history:
         messages.extend(chat_history[-20:])
@@ -419,7 +417,15 @@ async def _execute_tool(name: str, args: dict, course_id: str, store: Any) -> st
         if store is None:
             return json.dumps({"results": [], "count": 0, "note": "store not provided"}, ensure_ascii=False)
         results = search_wiki_layer(course_id, query, layer, top_k, store)
-        return json.dumps({"results": results, "count": len(results)}, ensure_ascii=False)
+
+        # CRAG 门控:检查检索结果的最高分,控制 LLM 回答边界
+        max_score = max((r.get("score", 0) for r in results), default=0)
+        payload: dict[str, Any] = {"results": results, "count": len(results)}
+        if not results or max_score < 0.55:
+            payload["note"] = "检索结果与问题无关，可能超出课程范围。请诚实拒答。"
+        elif max_score < 0.72:
+            payload["note"] = "检索结果相关性较低，请谨慎回答。"
+        return json.dumps(payload, ensure_ascii=False)
 
     if name == "get_course_map":
         return query_tools.get_course_map(course_id, store)
