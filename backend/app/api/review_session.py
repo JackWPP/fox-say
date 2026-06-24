@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from app.db.deps import get_store
 from app.db.sqlite_store import SqliteStore
+from app.services.agent import agent_chat
 
 router = APIRouter(prefix="/courses/{course_id}/review-session")
 
@@ -17,6 +18,18 @@ class StartSessionResponse(BaseModel):
 
 class AdvanceRequest(BaseModel):
     current_day: int
+    step_id: str
+    step_type: str | None = None  # 'teach' | 'quiz' | 'review'
+
+
+class GenerateStepRequest(BaseModel):
+    current_day: int
+    step_type: str  # 'teach' | 'quiz' | 'review'
+
+
+class GenerateStepResponse(BaseModel):
+    content: str
+    citations: list[dict]
     step_id: str
 
 
@@ -74,6 +87,54 @@ async def advance_session(
         current_day=updated["current_day"],
         current_step=updated.get("current_step"),
         completed_steps=updated["completed_steps"],
+    )
+
+
+@router.post("/generate-step", response_model=GenerateStepResponse)
+async def generate_step(
+    course_id: str,
+    body: GenerateStepRequest,
+    store: SqliteStore = Depends(get_store),
+):
+    course = store.get_course(course_id)
+    if course is None:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    plan = store.get_review_plan(course_id)
+
+    current_day_plan = plan.daily_plan[body.current_day - 1] if plan and plan.daily_plan else None
+    review_context = f"用户正在复习第{body.current_day}天，当前步骤：{body.step_type}。"
+    if current_day_plan:
+        review_context += f"复习重点：{current_day_plan.focus}。"
+    if plan:
+        review_context += f"\n薄弱区域：{', '.join(plan.weak_areas)}。"
+        review_context += f"\n可能考点：{', '.join(plan.likely_exam_points)}。"
+
+    if body.step_type == "teach":
+        question = "请讲解今天复习内容的核心概念，用简洁易懂的方式。"
+    elif body.step_type == "quiz":
+        question = "请出一道关于今天复习内容的练习题。"
+    elif body.step_type == "review":
+        question = "请总结今天的复习内容。"
+    else:
+        raise HTTPException(status_code=400, detail=f"Invalid step_type: {body.step_type}")
+
+    full_answer = ""
+    all_citations: list[dict] = []
+    async for event in agent_chat(
+        course_id, course.title, question,
+        store=store, review_context=review_context,
+    ):
+        if event["type"] == "done":
+            full_answer = event.get("answer", "")
+            all_citations = event.get("citations", [])
+        elif event["type"] == "error":
+            raise HTTPException(status_code=502, detail=event.get("message", "Agent error"))
+
+    return GenerateStepResponse(
+        content=full_answer,
+        citations=all_citations,
+        step_id=f"day-{body.current_day}-{body.step_type}",
     )
 
 

@@ -2,6 +2,35 @@ import { useState, useCallback, useEffect } from "react";
 import { api } from "../../shared/api";
 import type { ReviewPlan, BtwInterjection } from "../../shared/types";
 
+export type ReviewStepType = "teach" | "quiz" | "review";
+
+export function useReviewStep(courseId: string) {
+  const [stepContent, setStepContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [stepType, setStepType] = useState<ReviewStepType>("teach");
+
+  const generateStep = useCallback(
+    async (currentDay: number, type: ReviewStepType) => {
+      setLoading(true);
+      setStepType(type);
+      try {
+        const data = await api.post<{ content: string }>(
+          `/courses/${courseId}/review-session/generate-step`,
+          { current_day: currentDay, step_type: type },
+        );
+        setStepContent(data.content);
+      } catch {
+        setStepContent(null);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [courseId],
+  );
+
+  return { stepContent, loading, stepType, generateStep, setStepContent };
+}
+
 export interface ReviewProgress {
   session_id: string | null;
   status: string;
