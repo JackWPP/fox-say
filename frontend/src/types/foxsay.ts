@@ -92,3 +92,30 @@ export interface StreamEvent {
   message?: string;
 }
 
+// KC (Knowledge Component) type
+export interface KCPrerequisite {
+  prerequisite_kc_id: string;
+  dependency_strength: number;
+  source: string;
+}
+
+export interface KC {
+  id: string;
+  course_id: string;
+  chapter_id: string;
+  name: string;
+  bloom_level: string;
+  layer: string;
+  definition: string;
+  formula: string;
+  intuition: string;
+  conditions: string[];
+  key_properties: Array<{ name: string; formula: string }>;
+  examples: string[];
+  common_mistakes: string[];
+  prerequisites: KCPrerequisite[];
+  related: string[];
+  exam_frequency: string;
+  exam_patterns: string[];
+}
+

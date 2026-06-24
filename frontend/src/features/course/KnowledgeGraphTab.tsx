@@ -1,10 +1,12 @@
-import { useMemo } from "react";
+import { useMemo, useState, useCallback } from "react";
 import { ReactFlow, Background, Controls, type Node, type Edge } from "reactflow";
 import "reactflow/dist/style.css";
 import dagre from "@dagrejs/dagre";
-import { GitBranch, RefreshCw } from "lucide-react";
+import { GitBranch, RefreshCw, X, BookOpen, Link2 } from "lucide-react";
 import { useKnowledgeGraph, type KGNode, type KGEdge } from "./useKnowledgeGraph";
 import { foxCopy } from "../../shared/fox-copy";
+import { api } from "../../shared/api";
+import type { KC } from "../../shared/types";
 
 interface KnowledgeGraphTabProps {
   courseId: string;
@@ -70,17 +72,31 @@ function buildLayout(
 export default function KnowledgeGraphTab({ courseId }: KnowledgeGraphTabProps) {
   const { data, loading, error, refetch } = useKnowledgeGraph(courseId);
 
+  // Drawer state
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [selectedKC, setSelectedKC] = useState<KC | null>(null);
+  const [kcLoading, setKcLoading] = useState(false);
+
+  const handleNodeClick = useCallback((_: unknown, node: Node) => {
+    setKcLoading(true);
+    setDrawerOpen(true);
+    setSelectedKC(null);
+    // Fetch KC details from backend
+    api.get<KC>(`/courses/${courseId}/knowledge-graph/nodes/${node.id}`)
+      .then((kc) => setSelectedKC(kc))
+      .catch(() => setSelectedKC(null))
+      .finally(() => setKcLoading(false));
+  }, [courseId]);
+
+  const closeDrawer = useCallback(() => {
+    setDrawerOpen(false);
+    setSelectedKC(null);
+  }, []);
+
   const { nodes, edges } = useMemo(() => {
     if (!data) return { nodes: [], edges: [] };
     return buildLayout(data.nodes, data.edges);
   }, [data]);
-
-  const onNodeClick = (_: unknown, node: Node) => {
-    // MVP 占位:HEC-3 — 行为可见(console + alert),后续接详情抽屉
-    // eslint-disable-next-line no-console
-    console.log("[KG] clicked node:", node.id, node.data);
-    alert(`知识节点:${node.data?.label ?? node.id}`);
-  };
 
   if (loading) {
     return (
@@ -116,35 +132,101 @@ export default function KnowledgeGraphTab({ courseId }: KnowledgeGraphTabProps) 
   }
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-4 text-xs text-gray-600">
-        <span className="font-semibold text-midnightCharcoal">图例</span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block w-3 h-3 rounded" style={{ background: IMPORTANCE_COLOR.high }} />
-          高频考点
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block w-3 h-3 rounded" style={{ background: IMPORTANCE_COLOR.medium }} />
-          中频
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block w-3 h-3 rounded" style={{ background: IMPORTANCE_COLOR.low }} />
-          低频
-        </span>
-        <span className="ml-auto text-gray-400">点击节点查看(占位)</span>
+    <div className="flex gap-4">
+      {/* 知识图谱 */}
+      <div className="flex-1 space-y-3">
+        <div className="flex items-center gap-4 text-xs text-gray-600">
+          <span className="font-semibold text-midnightCharcoal">图例</span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block w-3 h-3 rounded" style={{ background: IMPORTANCE_COLOR.high }} />
+            高频考点
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block w-3 h-3 rounded" style={{ background: IMPORTANCE_COLOR.medium }} />
+            中频
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block w-3 h-3 rounded" style={{ background: IMPORTANCE_COLOR.low }} />
+            低频
+          </span>
+        </div>
+        <div className="border border-gray-200 rounded-xl bg-white" style={{ height: 520 }}>
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodeClick={handleNodeClick}
+            fitView
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background />
+            <Controls />
+          </ReactFlow>
+        </div>
       </div>
-      <div className="border border-gray-200 rounded-xl bg-white" style={{ height: 520 }}>
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodeClick={onNodeClick}
-          fitView
-          proOptions={{ hideAttribution: true }}
-        >
-          <Background />
-          <Controls />
-        </ReactFlow>
-      </div>
+
+      {/* KC 详情 Drawer */}
+      {drawerOpen && (
+        <div className="w-80 shrink-0 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden fox-fade-in">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50">
+            <h3 className="text-sm font-bold text-midnightCharcoal">知识详情</h3>
+            <button onClick={closeDrawer} className="p-1 rounded hover:bg-gray-200 transition-colors text-gray-400">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="p-4 overflow-y-auto" style={{ maxHeight: 460 }}>
+            {kcLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <div className="w-5 h-5 border-2 border-foxAmber border-t-transparent rounded-full animate-spin" />
+              </div>
+            ) : selectedKC ? (
+              <div className="space-y-4">
+                <div>
+                  <h4 className="text-lg font-bold text-midnightCharcoal">{selectedKC.name}</h4>
+                  <p className="text-xs text-gray-400 mt-1">Bloom: {selectedKC.bloom_level}</p>
+                </div>
+                {selectedKC.definition && (
+                  <div>
+                    <p className="text-xs font-semibold text-gray-500 mb-1">定义</p>
+                    <p className="text-sm text-gray-700 leading-relaxed">{selectedKC.definition}</p>
+                  </div>
+                )}
+                {selectedKC.formula && (
+                  <div>
+                    <p className="text-xs font-semibold text-gray-500 mb-1">公式</p>
+                    <p className="text-sm text-gray-700 font-mono bg-gray-50 rounded-lg px-3 py-2">{selectedKC.formula}</p>
+                  </div>
+                )}
+                {selectedKC.prerequisites && selectedKC.prerequisites.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold text-gray-500 mb-1 flex items-center gap-1">
+                      <Link2 className="w-3 h-3" /> 先修概念
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {selectedKC.prerequisites.map((p, i) => (
+                        <span key={i} className="text-xs px-2 py-0.5 bg-foxAmber/10 text-foxAmber rounded-full">{typeof p === 'string' ? p : p.prerequisite_kc_id}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {selectedKC.examples && selectedKC.examples.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold text-gray-500 mb-1 flex items-center gap-1">
+                      <BookOpen className="w-3 h-3" /> 例子
+                    </p>
+                    <ul className="space-y-1">
+                      {selectedKC.examples.map((ex, i) => (
+                        <li key={i} className="text-sm text-gray-600">• {ex}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-400 text-center py-8">无法加载详情</p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -117,3 +117,21 @@ async def get_knowledge_graph(
     return KnowledgeGraphResponse(
         course_id=course_id, nodes=nodes, edges=edges, layout_hint="dagre"
     )
+
+
+@router.get("/{course_id}/knowledge-graph/nodes/{node_id}")
+async def get_kc_detail(
+    course_id: str, node_id: str, store: SqliteStore = Depends(get_store)
+):
+    """获取单个 KC 详情(供 Drawer 使用)。"""
+    course = store.get_course(course_id)
+    if course is None:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    kc = store.get_kc(node_id)
+    if kc is None:
+        raise HTTPException(status_code=404, detail="KC not found")
+    if kc.course_id != course_id:
+        raise HTTPException(status_code=404, detail="KC not found in this course")
+
+    return kc.model_dump()
