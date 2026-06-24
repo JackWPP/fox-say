@@ -50,8 +50,8 @@ Phase 3: 产品打磨 + 开源准备（10 → 14 周）
 | 0.4 | CRAG 边界控制生效 | 超范围问题正确拒答 | ✅ |
 | 0.5 | 超级备考模式 v1 | 对话式引导（teach→quiz→review） | ✅ |
 | 0.6 | 前端 build 通过 | `npm run build` 无错误 | ✅ |
-| 0.7 | 第一个惊喜 | 材料处理完主动推骨架 + 薄弱诊断 | ❌ |
-| 0.8 | 知识图谱 Drawer | 点击节点弹 KC 详情 | ❌ |
+| 0.7 | 第一个惊喜 | 材料处理完主动推骨架 + 薄弱诊断 | ✅ |
+| 0.8 | 知识图谱 Drawer | 点击节点弹 KC 详情 | ✅ |
 
 ### 验收方式
 
@@ -80,15 +80,15 @@ Phase 3: 产品打磨 + 开源准备（10 → 14 周）
 
 ### 里程碑
 
-| # | 事项 | 验收标准 | 依赖 |
+| # | 事项 | 验收标准 | 状态 |
 |---|------|---------|------|
-| 1.1 | Skill 注册机制 | 新增 Skill 不改 Agent 代码，tool 列表动态构建 | 无 |
-| 1.2 | `generate_lecture` Skill | Agent 能从 KC + Wiki 生成结构化讲义（Markdown + 公式 + 引用） | 1.1 |
-| 1.3 | `generate_quiz` Skill | Agent 能从 KC 生成练习题（选择/填空/证明）+ 答案 + 解析 | 1.1 |
-| 1.4 | `generate_flashcards` Skill | Agent 能从 KC 生成闪卡（front/back） | 1.1 |
-| 1.5 | `show_concept_graph` Skill | 返回概念的先修链路 + 相关概念，前端渲染为图谱 | 1.1 |
-| 1.6 | 讲义生成前端 | 讲义渲染为可交互页面（公式、图谱、练习题入口） | 1.2 |
-| 1.7 | 练习题前端 | 练习题渲染为交互式卡片（选择/填空 + 判分） | 1.3 |
+| 1.1 | Skill 注册机制 | 新增 Skill 不改 Agent 代码，tool 列表动态构建 | ✅ |
+| 1.2 | `generate_lecture` Skill | Agent 能从 KC + Wiki 生成结构化讲义（Markdown + 公式 + 引用） | ✅ |
+| 1.3 | `generate_quiz` Skill | Agent 能从 KC 生成练习题（选择/填空/证明）+ 答案 + 解析 | ✅ |
+| 1.4 | `generate_flashcards` Skill | Agent 能从 KC 生成闪卡（front/back） | ✅ |
+| 1.5 | `show_concept_graph` Skill | 返回概念的先修链路 + 相关概念，前端渲染为图谱 | ✅ |
+| 1.6 | 讲义生成前端 | 讲义渲染为可交互页面（公式、图谱、练习题入口） | ✅ |
+| 1.7 | 练习题前端 | 练习题渲染为交互式卡片（选择/填空 + 判分） | ✅ |
 
 ### Skill 架构
 
