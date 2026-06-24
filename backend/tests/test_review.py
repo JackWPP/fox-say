@@ -129,17 +129,10 @@ async def test_btw_interjection(client: AsyncClient):
     )
     store.create_review_plan(plan)
 
-    with patch("app.api.review.ask", new_callable=AsyncMock) as mock_ask:
-        from app.schemas.foxsay import CragAnswer, Citation
+    async def mock_agent_chat(*args, **kwargs):
+        yield {"type": "done", "answer": "极限是函数趋近的值。来自 notes.pdf · 第1部分", "citations": [{"file_name": "notes.pdf", "locator": "第1部分"}]}
 
-        mock_ask.return_value = CragAnswer(
-            course_id="review-test-1",
-            answer="极限是函数趋近的值。来自 notes.pdf · 第1部分",
-            citations=[Citation(file_name="notes.pdf", locator="第1部分")],
-            confidence_status="grounded",
-            relevance_score=0.85,
-        )
-
+    with patch("app.api.review.agent_chat", side_effect=mock_agent_chat):
         resp = await client.post("/courses/review-test-1/btw", json={"question": "什么是极限"})
         assert resp.status_code == 200
         data = resp.json()
@@ -154,17 +147,10 @@ async def test_btw_with_current_step_id(client: AsyncClient):
     store = client._transport.app.state.store
     _setup_course_with_skeleton(store)
 
-    with patch("app.api.review.ask", new_callable=AsyncMock) as mock_ask:
-        from app.schemas.foxsay import CragAnswer, Citation
+    async def mock_agent_chat(*args, **kwargs):
+        yield {"type": "done", "answer": "导数是变化率。来自 notes.pdf · 第2部分", "citations": [{"file_name": "notes.pdf", "locator": "第2部分"}]}
 
-        mock_ask.return_value = CragAnswer(
-            course_id="review-test-1",
-            answer="导数是变化率。来自 notes.pdf · 第2部分",
-            citations=[Citation(file_name="notes.pdf", locator="第2部分")],
-            confidence_status="grounded",
-            relevance_score=0.90,
-        )
-
+    with patch("app.api.review.agent_chat", side_effect=mock_agent_chat):
         resp = await client.post("/courses/review-test-1/btw", json={"question": "什么是导数", "current_step_id": "day-3"})
         assert resp.status_code == 200
         data = resp.json()

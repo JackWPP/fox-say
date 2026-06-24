@@ -5,7 +5,6 @@ from app.db.deps import get_store
 from app.db.sqlite_store import SqliteStore
 from app.schemas.foxsay import BtwInterjection, CragAnswer, Citation, ReviewPlan
 from app.services.agent import agent_chat
-from app.services.crag import ask
 from app.services.review import generate_review_plan
 
 router = APIRouter(prefix="/courses/{course_id}")
@@ -66,12 +65,6 @@ async def btw_interjection(course_id: str, body: BtwRequest, store: SqliteStore 
         if event["type"] == "done":
             full_answer = event.get("answer", "")
             all_citations = event.get("citations", [])
-
-    if not full_answer:
-        # Fallback to old CRAG
-        crag_answer: CragAnswer = await ask(course_id, course.title, body.question, store=store)
-        full_answer = crag_answer.answer
-        all_citations = [c.model_dump() for c in crag_answer.citations]
 
     returns_to_step_id = body.current_step_id or ""
     if plan and plan.daily_plan and not body.current_step_id:
