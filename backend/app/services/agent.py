@@ -230,12 +230,14 @@ async def agent_chat(
         {type: "error", message}
     """
     client = _get_client()
+    messages: list[dict] = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+    ]
 
     context_msg = f"当前课程:{course_title}\n课程ID:{course_id}"
     if review_context:
         context_msg += f"\n\n当前复习上下文:{review_context}"
-    system_content = SYSTEM_PROMPT + f"\n\n{context_msg}\n请注意:以上是课程信息,不是用户问题。"
-    messages: list[dict] = [{"role": "system", "content": system_content}]
+    messages.append({"role": "system", "content": context_msg})
 
     if chat_history:
         messages.extend(chat_history[-20:])
