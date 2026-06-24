@@ -6,7 +6,7 @@ EvalCase 从 app.schemas.foxsay import,本文件只追加 runner/judge
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -72,7 +72,7 @@ class PilotCase(BaseModel):
     """单条 pilot 用例 = EvalCase + 必备的生成元数据。"""
 
     eval_case: EvalCase
-    generated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    generated_at: str = Field(default_factory=lambda: datetime.now(tz=timezone.utc).replace(tzinfo=None).isoformat())
     generator_model: str = ""
 
 
@@ -81,7 +81,7 @@ class PilotSuite(BaseModel):
 
     course_id: str
     cases: list[PilotCase]
-    generated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    generated_at: str = Field(default_factory=lambda: datetime.now(tz=timezone.utc).replace(tzinfo=None).isoformat())
     generator_model: str = ""
 
     def by_type(self, qtype: QuestionType) -> list[PilotCase]:

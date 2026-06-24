@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -87,7 +87,7 @@ def run_pilot(
     if foxsay_call is None:
         foxsay_call = _default_mock_foxsay
 
-    iso = iso_timestamp or datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    iso = iso_timestamp or datetime.now(tz=timezone.utc).replace(tzinfo=None).strftime("%Y%m%dT%H%M%SZ")
     kc_lookup = _load_kc_lookup(store, course_id)
     kcs = list(kc_lookup.values())
 
