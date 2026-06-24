@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams } from "react-router-dom";
-import { ArrowLeft, FileText, GitBranch, MessageCircle, Network, Zap, X } from "lucide-react";
+import { ArrowLeft, FileText, GitBranch, MessageCircle, Network, Zap, X, BookOpen, HelpCircle } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useCourse } from "../bookshelf/useCourses";
 import MaterialsTab from "./MaterialsTab";
@@ -8,21 +8,26 @@ import SkeletonTab from "./SkeletonTab";
 import ChatTab from "./ChatTab";
 import ReviewTab from "./ReviewTab";
 import KnowledgeGraphTab from "./KnowledgeGraphTab";
+import LectureView from "./LectureView";
+import QuizView from "./QuizView";
+import { useSkeleton } from "./useSkeleton";
 import { API_BASE } from "../../shared/api";
 
 type StudyMode = "exam" | "study";
-type Tab = "materials" | "skeleton" | "qa" | "kg" | "review";
+type Tab = "materials" | "skeleton" | "qa" | "kg" | "review" | "lecture" | "quiz";
 
 const allTabs: { key: Tab; label: string; icon: typeof FileText }[] = [
   { key: "materials", label: "材料", icon: FileText },
   { key: "skeleton", label: "骨架", icon: GitBranch },
   { key: "qa", label: "问答", icon: MessageCircle },
   { key: "kg", label: "知识图谱", icon: Network },
+  { key: "lecture", label: "讲义", icon: BookOpen },
+  { key: "quiz", label: "练习", icon: HelpCircle },
   { key: "review", label: "备考", icon: Zap },
 ];
 
-const studyTabOrder: Tab[] = ["materials", "skeleton", "qa", "kg", "review"];
-const examTabOrder: Tab[] = ["review", "skeleton", "qa", "kg", "materials"];
+const studyTabOrder: Tab[] = ["materials", "skeleton", "qa", "kg", "lecture", "quiz", "review"];
+const examTabOrder: Tab[] = ["review", "skeleton", "qa", "kg", "lecture", "quiz", "materials"];
 
 export default function CourseDetailPage() {
   const { courseId } = useParams<{ courseId: string }>();
@@ -38,6 +43,8 @@ export default function CourseDetailPage() {
   const [prefillQuestion, setPrefillQuestion] = useState("");
 
   const { course } = useCourse(courseId ?? "");
+  const { skeleton } = useSkeleton(courseId ?? "");
+  const chapters = skeleton?.chapters ?? [];
 
   // 第一个惊喜:监听 course_ready 事件
   const [toast, setToast] = useState<{ message: string; weakAreas: string[]; coreConcepts: string[] } | null>(null);
@@ -152,6 +159,8 @@ export default function CourseDetailPage() {
       {activeTab === "skeleton" && <SkeletonTab courseId={courseId} onConceptClick={handleConceptClick} />}
       {activeTab === "qa" && <ChatTab courseId={courseId} prefillQuestion={prefillQuestion} onPrefillConsumed={() => setPrefillQuestion("")} />}
       {activeTab === "kg" && <KnowledgeGraphTab courseId={courseId} />}
+      {activeTab === "lecture" && <LectureView courseId={courseId} chapters={chapters} />}
+      {activeTab === "quiz" && <QuizView courseId={courseId} chapters={chapters} />}
       {activeTab === "review" && <ReviewTab courseId={courseId} course={course ?? undefined} />}
     </div>
   );
