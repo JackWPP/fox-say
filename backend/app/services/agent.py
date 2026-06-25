@@ -57,7 +57,13 @@ SYSTEM_PROMPT = (
     "   - 先修概念  → follow_prerequisite\n"
     "   - 原始引用  → get_source_content\n"
     "4. 复习相关问题才用 get_review_plan, 不要每轮都调。\n"
-    "5. 回答自然有结构(Markdown), 不要逐条罗列搜索结果。"
+    "5. 回答自然有结构(Markdown), 不要逐条罗列搜索结果。\n\n"
+    "生成类工具:\n"
+    "- 用户要求生成讲义/笔记 → generate_lecture(chapter_id, depth)\n"
+    "- 用户要求出练习题/测试 → generate_quiz(chapter_id, count, type)\n"
+    "- 用户要求生成闪卡/复习卡 → generate_flashcards(chapter_id, count)\n"
+    "- 用户要求查看概念关系图 → show_concept_graph(concept_id)\n"
+    "这些工具直接返回内容,不需要额外搜索。调用一次即可,不要重复调用。"
 )
 
 # ---------------------------------------------------------------------------
