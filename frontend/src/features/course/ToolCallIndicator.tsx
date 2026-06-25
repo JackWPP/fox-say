@@ -17,8 +17,8 @@ const toolLabels: Record<string, { label: string; icon: typeof Search; descripti
 
 interface ToolCallIndicatorProps {
   toolCalls: ToolCallState[];
-  /** 是否折叠(默认折叠,等有调用时再展开) */
   defaultCollapsed?: boolean;
+  light?: boolean;
 }
 
 function summarizeArgs(args: Record<string, unknown> | undefined): string {
@@ -31,7 +31,7 @@ function summarizeArgs(args: Record<string, unknown> | undefined): string {
   return parts.join(" · ");
 }
 
-export default function ToolCallIndicator({ toolCalls, defaultCollapsed = true }: ToolCallIndicatorProps) {
+export default function ToolCallIndicator({ toolCalls, defaultCollapsed = true, light = false }: ToolCallIndicatorProps) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
 
   if (toolCalls.length === 0) return null;
@@ -39,12 +39,20 @@ export default function ToolCallIndicator({ toolCalls, defaultCollapsed = true }
   const runningCount = toolCalls.filter((tc) => tc.status === "running").length;
   const allDone = runningCount === 0;
 
+  const textMuted = light ? "text-slate-400" : "text-warmWhite/45";
+  const textMain = light ? "text-slate-600" : "text-warmWhite/90";
+  const textLabel = light ? "text-slate-500 hover:text-foxAmber" : "text-warmWhite/70 hover:text-warmWhite";
+  const borderColor = light ? "border-slate-200" : "border-warmWhite/10";
+  const iconColor = light ? "text-slate-400" : "text-warmWhite/70";
+  const doneColor = light ? "text-emerald-500" : "text-emerald-400";
+  const doneDot = light ? "bg-emerald-500" : "bg-emerald-400/80";
+
   return (
     <div className="my-2 fox-fade-in">
       <button
         type="button"
         onClick={() => setCollapsed(!collapsed)}
-        className="inline-flex items-center gap-1.5 text-xs text-warmWhite/70 hover:text-warmWhite transition-colors group"
+        className={`inline-flex items-center gap-1.5 text-xs ${textLabel} transition-colors group`}
       >
         <Wrench className="w-3 h-3 text-foxAmber" />
         <span className="font-medium">
@@ -56,7 +64,7 @@ export default function ToolCallIndicator({ toolCalls, defaultCollapsed = true }
       </button>
 
       {!collapsed && (
-        <ol className="mt-2 space-y-1.5 pl-1 border-l border-warmWhite/10 ml-1.5">
+        <ol className={`mt-2 space-y-1.5 pl-1 border-l ${borderColor} ml-1.5`}>
           {toolCalls.map((tc, i) => {
             const info = toolLabels[tc.tool] || { label: tc.tool, icon: Search, description: "" };
             const Icon = info.icon;
@@ -71,19 +79,19 @@ export default function ToolCallIndicator({ toolCalls, defaultCollapsed = true }
                   className={`absolute left-[-5px] top-1.5 w-2 h-2 rounded-full ${
                     tc.status === "running"
                       ? "bg-foxAmber fox-breathe"
-                      : "bg-emerald-400/80"
+                      : doneDot
                   }`}
                 />
                 <div className="flex items-center gap-1.5 text-xs">
                   {tc.status === "running" ? (
                     <Loader2 className="w-3 h-3 animate-spin text-foxAmber" />
                   ) : (
-                    <Check className="w-3 h-3 text-emerald-400" />
+                    <Check className={`w-3 h-3 ${doneColor}`} />
                   )}
-                  <Icon className="w-3 h-3 text-warmWhite/70" />
-                  <span className="text-warmWhite/90 font-medium">{info.label}</span>
+                  <Icon className={`w-3 h-3 ${iconColor}`} />
+                  <span className={`${textMain} font-medium`}>{info.label}</span>
                   {argsSummary && (
-                    <span className="text-warmWhite/45 font-mono text-[0.7rem] truncate max-w-[16rem]" title={argsSummary}>
+                    <span className={`${textMuted} font-mono text-[0.7rem] truncate max-w-[16rem]`} title={argsSummary}>
                       {argsSummary}
                     </span>
                   )}

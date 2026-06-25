@@ -1,5 +1,46 @@
 @import "tailwindcss";
+@import "katex/dist/katex.min.css";
 @config "../tailwind.config.ts";
+
+/* ---------- Global base styles ---------- */
+
+:root {
+  --page-bg: #F8FAFC;
+  --card-bg: #FFFFFF;
+  --sidebar-bg: #F1F5F9;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--page-bg);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*:focus-visible {
+  outline: 2px solid #F59E0B;
+  outline-offset: 2px;
+}
+
+/* Global scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(17, 19, 23, 0.15);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(17, 19, 23, 0.28);
+}
 
 /* ---------- Animations & micro-interactions ---------- */
 
@@ -119,6 +160,56 @@
   background: #f3f4f6; padding: 0.1em 0.35em; border-radius: 4px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em; color: #be185d;
 }
+
+/* AI message white background prose style (NotebookLM style) */
+.fox-prose-ai {
+  color: #1e293b;
+  line-height: 1.7;
+  font-size: 0.9375rem;
+  word-break: break-word;
+}
+.fox-prose-ai p { margin: 0.5rem 0; }
+.fox-prose-ai p:first-child { margin-top: 0; }
+.fox-prose-ai p:last-child { margin-bottom: 0; }
+.fox-prose-ai strong { font-weight: 600; color: #0f172a; }
+.fox-prose-ai em { font-style: italic; color: #334155; }
+.fox-prose-ai a { color: #d97706; text-decoration: underline; text-underline-offset: 2px; }
+.fox-prose-ai a:hover { color: #b45309; }
+.fox-prose-ai ul { list-style: disc; padding-left: 1.5rem; margin: 0.6rem 0; }
+.fox-prose-ai ol { list-style: decimal; padding-left: 1.5rem; margin: 0.6rem 0; }
+.fox-prose-ai li { margin: 0.25rem 0; }
+.fox-prose-ai li::marker { color: #f59e0b; }
+.fox-prose-ai blockquote {
+  border-left: 3px solid #f59e0b;
+  padding-left: 1rem;
+  margin: 0.75rem 0;
+  font-style: italic;
+  color: #64748b;
+  background: #fffbeb;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+  padding-right: 0.75rem;
+  border-radius: 0 0.5rem 0.5rem 0;
+}
+.fox-prose-ai h1, .fox-prose-ai h2, .fox-prose-ai h3, .fox-prose-ai h4 {
+  font-weight: 700; color: #0f172a; margin: 1rem 0 0.5rem; line-height: 1.3;
+}
+.fox-prose-ai h1 { font-size: 1.25rem; }
+.fox-prose-ai h2 { font-size: 1.125rem; }
+.fox-prose-ai h3 { font-size: 1rem; }
+.fox-prose-ai h4 { font-size: 0.9375rem; }
+.fox-prose-ai hr { border: none; border-top: 1px solid #e2e8f0; margin: 1rem 0; }
+.fox-prose-ai table { border-collapse: collapse; margin: 0.75rem 0; width: 100%; font-size: 0.875rem; }
+.fox-prose-ai th, .fox-prose-ai td {
+  border: 1px solid #e2e8f0; padding: 0.5rem 0.75rem; text-align: left;
+}
+.fox-prose-ai th { background: #f8fafc; font-weight: 600; color: #0f172a; }
+.fox-prose-ai code {
+  background: #f1f5f9; padding: 0.15em 0.4em; border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.875em; color: #be185d;
+}
+.fox-prose-ai .katex { font-size: 1.05em; }
+.fox-prose-ai .katex-display { margin: 0.75rem 0; overflow-x: auto; overflow-y: hidden; }
 
 .fox-prose p { margin: 0.35rem 0; }
 .fox-prose p:first-child { margin-top: 0; }
@@ -279,6 +370,54 @@
 .fox-citation:hover {
   background: rgba(245, 158, 11, 0.22);
   transform: translateY(-1px);
+}
+
+.fox-citation-light {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.72rem;
+  border-radius: 999px;
+  background: #fff7ed;
+  color: #92400e;
+  border: 1px solid #fed7aa;
+  transition: all 150ms ease;
+  cursor: pointer;
+}
+.fox-citation-light:hover {
+  background: #ffedd5;
+  border-color: #fdba74;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px -2px rgba(245, 158, 11, 0.2);
+}
+
+/* Light code block for white backgrounds */
+.fox-code-block-light {
+  margin: 0.75rem 0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+.fox-code-block-light .fox-code-header {
+  background: linear-gradient(180deg, #f1f5f9, #f8fafc);
+  border-bottom: 1px solid #e2e8f0;
+  color: #64748b;
+}
+.fox-code-block-light .fox-code-copy {
+  background: #fff;
+  color: #64748b;
+  border: 1px solid #e2e8f0;
+}
+.fox-code-block-light .fox-code-copy:hover {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fcd34d;
+}
+.fox-code-block-light pre {
+  background: #f8fafc !important;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,7 +1,15 @@
 import uuid
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchAny,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
 
 from app.core.config import settings
 
@@ -82,6 +90,7 @@ class QdrantStore:
         course_id: str,
         query_embedding: list[float],
         limit: int = 5,
+        query_filter: Filter | None = None,
     ) -> list[dict]:
         name = _collection_name(course_id)
         client = _get_client()
@@ -92,6 +101,7 @@ class QdrantStore:
             query=query_embedding,
             limit=limit,
             with_payload=True,
+            query_filter=query_filter,
         )
         return [
             {
@@ -100,3 +110,96 @@ class QdrantStore:
             }
             for point in response.points
         ]
+
+    def upsert_note(
+        self,
+        course_id: str,
+        note_id: str,
+        title: str,
+        content: str,
+        embedding: list[float],
+    ) -> None:
+        name = _collection_name(course_id)
+        client = _get_client()
+        self.create_course_collection(course_id)
+        self.delete_note(course_id, note_id)
+        point_id = str(uuid.uuid4())
+        payload = {
+            "text": content,
+            "type": "note",
+            "note_id": note_id,
+            "title": title,
+            "file_name": "笔记",
+            "locator": title,
+        }
+        client.upsert(
+            collection_name=name,
+            points=[PointStruct(id=point_id, vector=embedding, payload=payload)],
+        )
+
+    def delete_note(self, course_id: str, note_id: str) -> None:
+        name = _collection_name(course_id)
+        client = _get_client()
+        if not client.collection_exists(name):
+            return
+        client.delete(
+            collection_name=name,
+            points_selector=Filter(
+                must=[
+                    FieldCondition(
+                        key="note_id",
+                        match=MatchValue(value=note_id),
+                    )
+                ]
+            ),
+        )
+
+    def build_filter(
+        self,
+        material_ids: list[str] | None = None,
+        note_ids: list[str] | None = None,
+    ) -> Filter | None:
+        must: list[FieldCondition] = []
+        if material_ids:
+            must.append(
+                FieldCondition(
+                    key="material_id",
+                    match=MatchAny(any=material_ids),
+                )
+            )
+        if note_ids:
+            must.append(
+                FieldCondition(
+                    key="note_id",
+                    match=MatchAny(any=note_ids),
+                )
+            )
+        if not must:
+            return None
+        return Filter(must=must)
+
+    def get_chunk_by_index(
+        self,
+        course_id: str,
+        material_id: str,
+        chunk_index: int,
+    ) -> dict | None:
+        name = _collection_name(course_id)
+        client = _get_client()
+        if not client.collection_exists(name):
+            return None
+        scroll_filter = Filter(
+            must=[
+                FieldCondition(key="material_id", match=MatchValue(value=material_id)),
+                FieldCondition(key="index", match=MatchValue(value=chunk_index)),
+            ]
+        )
+        points, _ = client.scroll(
+            collection_name=name,
+            scroll_filter=scroll_filter,
+            limit=1,
+            with_payload=True,
+        )
+        if not points:
+            return None
+        return points[0].payload or {}

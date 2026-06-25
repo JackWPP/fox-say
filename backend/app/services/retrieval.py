@@ -11,8 +11,6 @@ AMBIGUOUS_THRESHOLD = 0.55
 
 
 def tool_search_materials(course_id: str, query: str, top_k: int = 5) -> str:
-    """Tool: semantic search over course materials. Returns JSON string for LLM consumption.
-    No score thresholds — the LLM evaluates relevance itself."""
     embeddings = embed_texts([query])
     if not embeddings:
         return json.dumps({"results": [], "count": 0, "note": "embedding failed"}, ensure_ascii=False)
@@ -24,14 +22,21 @@ def tool_search_materials(course_id: str, query: str, top_k: int = 5) -> str:
     formatted = []
     for r in results:
         payload = r.get("payload", {})
-        file_name = payload.get("file_name", "")
-        locator = f"第{payload.get('index', 0) + 1}部分"
+        is_note = payload.get("type") == "note"
+        if is_note:
+            file_name = "笔记"
+            locator = payload.get("title", "")
+            source = f"笔记 · {locator}"
+        else:
+            file_name = payload.get("file_name", "")
+            locator = f"第{payload.get('index', 0) + 1}部分"
+            source = f"{file_name} · {locator}"
         formatted.append({
             "score": round(r.get("score", 0), 3),
             "text": payload.get("text", ""),
             "file_name": file_name,
             "locator": locator,
-            "source": f"{file_name} · {locator}",
+            "source": source,
         })
 
     return json.dumps({"results": formatted, "count": len(formatted)}, ensure_ascii=False)
@@ -42,23 +47,34 @@ def retrieve(
     query: str,
     limit: int = 5,
     store: Any = None,
+    selected_material_ids: list[str] | None = None,
+    selected_note_ids: list[str] | None = None,
 ) -> dict:
     query_embeddings = embed_texts([query])
     if not query_embeddings:
         return {"confidence": "out_of_scope", "top_score": 0.0, "results": []}
 
     query_embedding = query_embeddings[0]
-    results = _qdrant.search(course_id, query_embedding, limit=limit)
 
-    if not results:
+    all_results = _search_with_filters(
+        course_id, query_embedding, limit=max(limit, 10),
+        selected_material_ids=selected_material_ids,
+        selected_note_ids=selected_note_ids,
+    )
+
+    if not all_results:
         return {"confidence": "out_of_scope", "top_score": 0.0, "results": []}
 
-    top_score = results[0]["score"]
+    top_score = all_results[0]["score"]
 
     if top_score >= GROUND_THRESHOLD:
-        formatted = _format_results("grounded", top_score, results)
+        formatted = _format_results("grounded", top_score, all_results[:limit])
     elif top_score >= AMBIGUOUS_THRESHOLD:
-        expanded = _qdrant.search(course_id, query_embedding, limit=10)
+        expanded = _search_with_filters(
+            course_id, query_embedding, limit=10,
+            selected_material_ids=selected_material_ids,
+            selected_note_ids=selected_note_ids,
+        )
         formatted = _format_results("ambiguous", top_score, expanded)
     else:
         return {"confidence": "out_of_scope", "top_score": top_score, "results": []}
@@ -66,23 +82,83 @@ def retrieve(
     return formatted
 
 
+def _search_with_filters(
+    course_id: str,
+    query_embedding: list[float],
+    limit: int = 5,
+    selected_material_ids: list[str] | None = None,
+    selected_note_ids: list[str] | None = None,
+) -> list[dict]:
+    from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchValue
+
+    all_results: list[dict] = []
+
+    has_material_filter = bool(selected_material_ids)
+    has_note_filter = bool(selected_note_ids)
+
+    if not has_material_filter and not has_note_filter:
+        return _qdrant.search(course_id, query_embedding, limit=limit)
+
+    if has_material_filter:
+        material_filter = Filter(
+            must=[
+                FieldCondition(key="material_id", match=MatchAny(any=selected_material_ids)),
+            ]
+        )
+        material_results = _qdrant.search(
+            course_id, query_embedding, limit=limit, query_filter=material_filter
+        )
+        all_results.extend(material_results)
+
+    if has_note_filter:
+        note_filter = Filter(
+            must=[
+                FieldCondition(key="type", match=MatchValue(value="note")),
+                FieldCondition(key="note_id", match=MatchAny(any=selected_note_ids)),
+            ]
+        )
+        note_results = _qdrant.search(
+            course_id, query_embedding, limit=limit, query_filter=note_filter
+        )
+        all_results.extend(note_results)
+
+    all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
+
+    seen_texts: set[str] = set()
+    deduped: list[dict] = []
+    for r in all_results:
+        text = r.get("payload", {}).get("text", "")
+        if text not in seen_texts:
+            seen_texts.add(text)
+            deduped.append(r)
+    return deduped[:limit]
+
+
 def _format_results(confidence: str, top_score: float, results: list[dict]) -> dict:
     formatted: list[dict] = []
     for r in results:
         payload = r.get("payload", {})
+        is_note = payload.get("type") == "note"
+        if is_note:
+            file_name = "笔记"
+            locator = payload.get("title", "")
+        else:
+            file_name = payload.get("file_name", "")
+            locator = payload.get("locator", f"第{payload.get('index', 0) + 1}部分")
         formatted.append({
             "text": payload.get("text", ""),
             "score": r["score"],
             "metadata": {
-                "file_name": payload.get("file_name", ""),
-                "locator": payload.get("locator", f"第{payload.get('index', 0) + 1}部分"),
+                "file_name": file_name,
+                "locator": locator,
+                "is_note": is_note,
+                "note_id": payload.get("note_id", ""),
             },
         })
     return {"confidence": confidence, "top_score": top_score, "results": formatted}
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    """手算 cosine,避免依赖 numpy;空向量返回 0。"""
     dot = sum(x * y for x, y in zip(a, b))
     norm_a = sum(x * x for x in a) ** 0.5
     norm_b = sum(x * x for x in b) ** 0.5
@@ -92,11 +168,6 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 def _text_overlap_score(query: str, text: str) -> float:
-    """快速文本重叠评分(0~1),用于 macro/micro 层,避免逐条调 embedding API。
-
-    算法:query 字符集与 text 字符集的 Jaccard 相似度。
-    对中文效果好(单字即 token),零 API 调用。
-    """
     if not query or not text:
         return 0.0
     q_chars = set(query.lower())
@@ -114,23 +185,22 @@ def search_wiki_layer(
     layer: str = "all",
     top_k: int = 5,
     store: Any = None,
+    selected_material_ids: list[str] | None = None,
+    selected_note_ids: list[str] | None = None,
 ) -> list[dict]:
-    """三层混合检索统一入口(阶段 3 引入)。
-
-    layer:
-      - macro: 在 ChapterWiki 标题 + overview + key_concepts 里搜(文本匹配)
-      - micro: 在 KC 卡片 name + definition + formula 里搜(文本匹配)
-      - chunk: 在 Qdrant 向量库搜(向量检索)
-      - all:   三层合并排序去重
-
-    macro/micro 用文本匹配而非逐条 embed,避免 N 次 API 调用。
-    chunk 层用 Qdrant 已有向量,只 embed query 一次。
-    """
     results: list[dict] = []
     if store is None:
         return results
 
-    # Macro 层:章节级(文本匹配,零 API 调用)
+    q_emb = None
+    if query:
+        try:
+            embs = embed_texts([query])
+            if embs:
+                q_emb = embs[0]
+        except Exception:
+            q_emb = None
+
     if layer in ("macro", "all"):
         chapter_wikis = store.get_chapter_wikis_by_course(course_id)
         for cw in chapter_wikis:
@@ -148,10 +218,29 @@ def search_wiki_layer(
                     "locator": cw.title,
                 })
 
-    # Micro 层:KC 卡(文本匹配) + Qdrant chunks(向量检索)
     if layer in ("micro", "all"):
         kcs = store.get_kcs_by_course(course_id)
-        for kc in kcs:
+
+        kcs_with_emb = [kc for kc in kcs if kc.embedding is not None]
+        kcs_without_emb = [kc for kc in kcs if kc.embedding is None]
+
+        if q_emb is not None and kcs_with_emb:
+            for kc in kcs_with_emb:
+                score = _cosine_similarity(q_emb, kc.embedding)
+                results.append({
+                    "id": kc.id,
+                    "name": kc.name,
+                    "layer": kc.layer,
+                    "score": score,
+                    "content": kc.definition,
+                    "source_ref": kc.source_refs[0].file if kc.source_refs else "",
+                    "file_name": kc.source_refs[0].file if kc.source_refs else "",
+                    "locator": kc.chapter_id,
+                })
+        else:
+            kcs_without_emb = kcs
+
+        for kc in kcs_without_emb:
             text = f"{kc.name} {kc.definition} {kc.formula}"
             score = _text_overlap_score(query, text)
             if score > 0:
@@ -165,29 +254,40 @@ def search_wiki_layer(
                     "file_name": kc.source_refs[0].file if kc.source_refs else "",
                     "locator": kc.chapter_id,
                 })
-        # Chunk 层:Qdrant 向量检索(只 embed query 一次)
-        q_emb = embed_texts([query])[0] if query else None
-        if q_emb:
-            q_results = _qdrant.search(course_id, q_emb, limit=top_k)
+
+        if q_emb is not None:
+            q_results = _search_with_filters(
+                course_id, q_emb, limit=top_k,
+                selected_material_ids=selected_material_ids,
+                selected_note_ids=selected_note_ids,
+            )
             for r in q_results:
                 payload = r.get("payload", {})
-                idx = payload.get("index", 0)
-                loc = f"第{idx + 1}部分"
-                fname = payload.get("file_name", "")
+                is_note = payload.get("type") == "note"
+                if is_note:
+                    note_title = payload.get("title", "")
+                    fname = "笔记"
+                    loc = note_title
+                    source_ref = f"笔记 · {loc}"
+                else:
+                    idx = payload.get("index", 0)
+                    loc = f"第{idx + 1}部分"
+                    fname = payload.get("file_name", "")
+                    source_ref = f"{fname} · {loc}"
                 results.append({
-                    "id": "",
-                    "name": "",
-                    "layer": "chunk",
+                    "id": payload.get("note_id", "") if is_note else "",
+                    "name": note_title if is_note else "",
+                    "layer": "note" if is_note else "chunk",
                     "score": r.get("score", 0),
                     "content": payload.get("text", ""),
-                    "source_ref": f"{fname} · {loc}",
+                    "source_ref": source_ref,
                     "file_name": fname,
                     "locator": loc,
+                    "is_note": is_note,
                 })
 
     if layer == "all":
         results.sort(key=lambda x: x.get("score", 0), reverse=True)
-        # 去重 (同 id + 同 file_name + 同 locator 视为重复)
         seen: set[tuple] = set()
         deduped = []
         for r in results:

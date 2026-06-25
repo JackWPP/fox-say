@@ -2,24 +2,43 @@ import { useMemo, useState, useCallback } from "react";
 import { ReactFlow, Background, Controls, type Node, type Edge } from "reactflow";
 import "reactflow/dist/style.css";
 import dagre from "@dagrejs/dagre";
-import { GitBranch, RefreshCw, X, BookOpen, Link2 } from "lucide-react";
+import { GitBranch, RefreshCw, BookOpen, Link2, Lightbulb, AlertTriangle, FileText, MessageCircle } from "lucide-react";
 import { useKnowledgeGraph, type KGNode, type KGEdge } from "./useKnowledgeGraph";
 import { foxCopy } from "../../shared/fox-copy";
 import { api } from "../../shared/api";
 import type { KC } from "../../shared/types";
+import { Drawer } from "../../components/ui/Drawer";
+import { Spinner } from "../../components/ui/Spinner";
+import { Badge } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import MarkdownRenderer from "./MarkdownRenderer";
 
 interface KnowledgeGraphTabProps {
   courseId: string;
+  onAskAboutConcept?: (concept: string) => void;
 }
 
-const IMPORTANCE_COLOR: Record<KGNode["importance"], string> = {
-  high: "#ef4444",
-  medium: "#f59e0b",
-  low: "#94a3b8",
+const IMPORTANCE_BORDER: Record<KGNode["importance"], string> = {
+  high: "border-l-4 border-red-400",
+  medium: "border-l-4 border-foxAmber",
+  low: "border-l-4 border-slate-300",
 };
 
-const NODE_WIDTH = 180;
-const NODE_HEIGHT = 48;
+const IMPORTANCE_DOT: Record<KGNode["importance"], string> = {
+  high: "bg-red-400",
+  medium: "bg-foxAmber",
+  low: "bg-slate-300",
+};
+
+const IMPORTANCE_LABEL: Record<KGNode["importance"], string> = {
+  high: "高频考点",
+  medium: "中频",
+  low: "低频",
+};
+
+const NODE_WIDTH = 200;
+const NODE_HEIGHT = 56;
 
 function buildLayout(
   nodes: KGNode[],
@@ -27,7 +46,7 @@ function buildLayout(
 ): { nodes: Node[]; edges: Edge[] } {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: "LR", nodesep: 24, ranksep: 60 });
+  g.setGraph({ rankdir: "LR", nodesep: 28, ranksep: 70 });
 
   for (const n of nodes) {
     g.setNode(n.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
@@ -43,17 +62,19 @@ function buildLayout(
       id: n.id,
       type: "default",
       position: { x: pos.x - NODE_WIDTH / 2, y: pos.y - NODE_HEIGHT / 2 },
-      data: { label: `${n.label} · ${n.importance}` },
+      data: { label: n.label, importance: n.importance },
       style: {
-        background: IMPORTANCE_COLOR[n.importance],
-        color: "#fff",
-        border: "1px solid rgba(0,0,0,0.1)",
-        borderRadius: 8,
-        padding: "6px 10px",
-        fontSize: 12,
+        background: "#ffffff",
+        color: "#0f172a",
+        border: "1px solid #e2e8f0",
+        borderRadius: 12,
+        padding: "10px 14px",
+        fontSize: 13,
         fontWeight: 600,
         width: NODE_WIDTH,
+        boxShadow: "0 2px 8px -2px rgba(0,0,0,0.08)",
       },
+      className: `!bg-white !border-slate-200 hover:!shadow-md hover:!scale-[1.02] transition-all duration-200 ${IMPORTANCE_BORDER[n.importance]}`,
     };
   });
 
@@ -63,16 +84,15 @@ function buildLayout(
     target: e.target,
     type: "smoothstep",
     animated: false,
-    style: { stroke: "#94a3b8", strokeWidth: Math.max(1, e.strength * 2) },
+    style: { stroke: "#94a3b8", strokeWidth: Math.max(1.5, e.strength * 2.5) },
   }));
 
   return { nodes: positioned, edges: flowEdges };
 }
 
-export default function KnowledgeGraphTab({ courseId }: KnowledgeGraphTabProps) {
+export default function KnowledgeGraphTab({ courseId, onAskAboutConcept }: KnowledgeGraphTabProps) {
   const { data, loading, error, refetch } = useKnowledgeGraph(courseId);
 
-  // Drawer state
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [selectedKC, setSelectedKC] = useState<KC | null>(null);
   const [kcLoading, setKcLoading] = useState(false);
@@ -81,7 +101,6 @@ export default function KnowledgeGraphTab({ courseId }: KnowledgeGraphTabProps) 
     setKcLoading(true);
     setDrawerOpen(true);
     setSelectedKC(null);
-    // Fetch KC details from backend
     api.get<KC>(`/courses/${courseId}/knowledge-graph/nodes/${node.id}`)
       .then((kc) => setSelectedKC(kc))
       .catch(() => setSelectedKC(null))
@@ -93,140 +112,256 @@ export default function KnowledgeGraphTab({ courseId }: KnowledgeGraphTabProps) 
     setSelectedKC(null);
   }, []);
 
+  const handlePrereqClick = useCallback((prereqId: string) => {
+    setKcLoading(true);
+    setSelectedKC(null);
+    api.get<KC>(`/courses/${courseId}/knowledge-graph/nodes/${prereqId}`)
+      .then((kc) => setSelectedKC(kc))
+      .catch(() => setSelectedKC(null))
+      .finally(() => setKcLoading(false));
+  }, [courseId]);
+
+  const handleAskFox = useCallback(() => {
+    if (selectedKC && onAskAboutConcept) {
+      onAskAboutConcept(selectedKC.name);
+      closeDrawer();
+    }
+  }, [selectedKC, onAskAboutConcept, closeDrawer]);
+
   const { nodes, edges } = useMemo(() => {
     if (!data) return { nodes: [], edges: [] };
     return buildLayout(data.nodes, data.edges);
   }, [data]);
 
+  const bloomBadgeVariant = (bloom: string) => {
+    const b = bloom.toLowerCase();
+    if (["create", "evaluate"].includes(b)) return "error" as const;
+    if (["analyze", "apply"].includes(b)) return "amber" as const;
+    return "info" as const;
+  };
+
+  const renderFormula = (formula: string) => {
+    if (!formula) return null;
+    const hasMath = /\$[^$]+\$/.test(formula);
+    if (hasMath) {
+      return <MarkdownRenderer content={formula} light />;
+    }
+    return (
+      <code className="text-sm bg-slate-100 text-slate-700 px-3 py-2 rounded-lg block font-mono">
+        {formula}
+      </code>
+    );
+  };
+
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <div className="w-6 h-6 border-2 border-foxAmber border-t-transparent rounded-full animate-spin" />
+      <div className="flex items-center justify-center py-16">
+        <div className="flex flex-col items-center gap-3">
+          <Spinner size="lg" />
+          <p className="text-sm text-slate-500">加载知识图谱...</p>
+        </div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="text-center py-12">
-        <p className="text-red-500 text-sm mb-3">{foxCopy.errors.loadFailed}</p>
-        <button
-          onClick={refetch}
-          className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-red-500 border border-red-200 rounded-lg hover:bg-red-50 transition-colors"
-        >
+      <div className="text-center py-16">
+        <p className="text-red-500 text-sm mb-4">{foxCopy.errors.loadFailed}</p>
+        <Button variant="secondary" onClick={refetch}>
           <RefreshCw className="w-4 h-4" />
           {foxCopy.errors.retry}
-        </button>
+        </Button>
       </div>
     );
   }
 
   if (!data || data.nodes.length === 0) {
     return (
-      <div className="text-center py-16 text-gray-400">
-        <GitBranch className="w-12 h-12 mx-auto mb-3 opacity-40" />
-        <p className="text-lg">暂无知识图谱</p>
-        <p className="text-xs mt-2 text-gray-300">先上传材料并构建 Wiki 骨架</p>
+      <div className="text-center py-20">
+        <div className="inline-flex p-4 rounded-2xl bg-slate-100 mb-4">
+          <GitBranch className="w-12 h-12 text-slate-400" />
+        </div>
+        <p className="text-lg font-medium text-slate-600 mb-2">暂无知识图谱</p>
+        <p className="text-sm text-slate-400">先上传材料并构建 Wiki 骨架</p>
       </div>
     );
   }
 
   return (
-    <div className="flex gap-4">
-      {/* 知识图谱 */}
-      <div className="flex-1 space-y-3">
-        <div className="flex items-center gap-4 text-xs text-gray-600">
-          <span className="font-semibold text-midnightCharcoal">图例</span>
-          <span className="flex items-center gap-1">
-            <span className="inline-block w-3 h-3 rounded" style={{ background: IMPORTANCE_COLOR.high }} />
-            高频考点
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="inline-block w-3 h-3 rounded" style={{ background: IMPORTANCE_COLOR.medium }} />
-            中频
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="inline-block w-3 h-3 rounded" style={{ background: IMPORTANCE_COLOR.low }} />
-            低频
-          </span>
+    <div className="h-full p-4">
+      <Card padding="none" shadow="soft" className="h-full rounded-2xl overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+          <h3 className="font-semibold text-midnightCharcoal">知识图谱</h3>
+          <div className="flex items-center gap-4 text-xs">
+            <span className="font-medium text-slate-500">图例:</span>
+            {(["high", "medium", "low"] as const).map((level) => (
+              <span key={level} className="flex items-center gap-1.5">
+                <span className={`inline-block w-3 h-3 rounded ${IMPORTANCE_DOT[level]}`} />
+                <span className="text-slate-600">{IMPORTANCE_LABEL[level]}</span>
+              </span>
+            ))}
+          </div>
         </div>
-        <div className="border border-gray-200 rounded-xl bg-white" style={{ height: 520 }}>
+        <div className="bg-slate-50/50" style={{ height: "calc(100% - 65px)" }}>
           <ReactFlow
             nodes={nodes}
             edges={edges}
             onNodeClick={handleNodeClick}
             fitView
             proOptions={{ hideAttribution: true }}
+            nodesDraggable={false}
           >
-            <Background />
-            <Controls />
+            <Background color="#e2e8f0" gap={20} size={1} />
+            <Controls className="!bg-white !rounded-lg !shadow-soft !border-slate-200" />
           </ReactFlow>
         </div>
-      </div>
+      </Card>
 
-      {/* KC 详情 Drawer */}
-      {drawerOpen && (
-        <div className="w-80 shrink-0 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden fox-fade-in">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50">
-            <h3 className="text-sm font-bold text-midnightCharcoal">知识详情</h3>
-            <button onClick={closeDrawer} className="p-1 rounded hover:bg-gray-200 transition-colors text-gray-400">
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-          <div className="p-4 overflow-y-auto" style={{ maxHeight: 460 }}>
-            {kcLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <div className="w-5 h-5 border-2 border-foxAmber border-t-transparent rounded-full animate-spin" />
+      <Drawer
+        open={drawerOpen}
+        onClose={closeDrawer}
+        title="概念详情"
+        width={420}
+      >
+        <div className="p-5">
+          {kcLoading ? (
+            <div className="flex items-center justify-center py-16">
+              <Spinner size="lg" />
+            </div>
+          ) : selectedKC ? (
+            <div className="space-y-5">
+              <div>
+                <h2 className="text-xl font-bold text-midnightCharcoal leading-tight">
+                  {selectedKC.name}
+                </h2>
+                {selectedKC.bloom_level && (
+                  <div className="mt-2">
+                    <Badge variant={bloomBadgeVariant(selectedKC.bloom_level)} size="sm">
+                      认知维度: {selectedKC.bloom_level}
+                    </Badge>
+                  </div>
+                )}
               </div>
-            ) : selectedKC ? (
-              <div className="space-y-4">
+
+              {selectedKC.definition && (
                 <div>
-                  <h4 className="text-lg font-bold text-midnightCharcoal">{selectedKC.name}</h4>
-                  <p className="text-xs text-gray-400 mt-1">Bloom: {selectedKC.bloom_level}</p>
+                  <div className="flex items-center gap-2 mb-2">
+                    <BookOpen className="w-4 h-4 text-foxAmber" />
+                    <span className="text-sm font-semibold text-slate-700">定义</span>
+                  </div>
+                  <div className="pl-6">
+                    <p className="text-sm text-slate-600 leading-relaxed">
+                      {selectedKC.definition}
+                    </p>
+                  </div>
                 </div>
-                {selectedKC.definition && (
-                  <div>
-                    <p className="text-xs font-semibold text-gray-500 mb-1">定义</p>
-                    <p className="text-sm text-gray-700 leading-relaxed">{selectedKC.definition}</p>
+              )}
+
+              {selectedKC.formula && (
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-base">📐</span>
+                    <span className="text-sm font-semibold text-slate-700">公式</span>
                   </div>
-                )}
-                {selectedKC.formula && (
-                  <div>
-                    <p className="text-xs font-semibold text-gray-500 mb-1">公式</p>
-                    <p className="text-sm text-gray-700 font-mono bg-gray-50 rounded-lg px-3 py-2">{selectedKC.formula}</p>
+                  <div className="pl-6">
+                    {renderFormula(selectedKC.formula)}
                   </div>
-                )}
-                {selectedKC.prerequisites && selectedKC.prerequisites.length > 0 && (
-                  <div>
-                    <p className="text-xs font-semibold text-gray-500 mb-1 flex items-center gap-1">
-                      <Link2 className="w-3 h-3" /> 先修概念
+                </div>
+              )}
+
+              {selectedKC.intuition && (
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <Lightbulb className="w-4 h-4 text-amber-500" />
+                    <span className="text-sm font-semibold text-slate-700">直觉理解</span>
+                  </div>
+                  <div className="pl-6">
+                    <p className="text-sm text-slate-600 leading-relaxed bg-amber-50 rounded-lg p-3 border border-amber-100">
+                      {selectedKC.intuition}
                     </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {selectedKC.prerequisites.map((p, i) => (
-                        <span key={i} className="text-xs px-2 py-0.5 bg-foxAmber/10 text-foxAmber rounded-full">{typeof p === 'string' ? p : p.prerequisite_kc_id}</span>
-                      ))}
-                    </div>
                   </div>
-                )}
-                {selectedKC.examples && selectedKC.examples.length > 0 && (
-                  <div>
-                    <p className="text-xs font-semibold text-gray-500 mb-1 flex items-center gap-1">
-                      <BookOpen className="w-3 h-3" /> 例子
-                    </p>
-                    <ul className="space-y-1">
-                      {selectedKC.examples.map((ex, i) => (
-                        <li key={i} className="text-sm text-gray-600">• {ex}</li>
+                </div>
+              )}
+
+              {selectedKC.common_mistakes && selectedKC.common_mistakes.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <AlertTriangle className="w-4 h-4 text-red-500" />
+                    <span className="text-sm font-semibold text-red-600">常见错误</span>
+                  </div>
+                  <div className="pl-6">
+                    <ul className="space-y-1.5">
+                      {selectedKC.common_mistakes.map((m, i) => (
+                        <li key={i} className="text-sm text-red-600 flex items-start gap-2">
+                          <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
+                          {m}
+                        </li>
                       ))}
                     </ul>
                   </div>
-                )}
-              </div>
-            ) : (
-              <p className="text-sm text-gray-400 text-center py-8">无法加载详情</p>
-            )}
-          </div>
+                </div>
+              )}
+
+              {selectedKC.examples && selectedKC.examples.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <FileText className="w-4 h-4 text-blue-500" />
+                    <span className="text-sm font-semibold text-slate-700">例子</span>
+                  </div>
+                  <div className="pl-6">
+                    <ul className="space-y-1.5">
+                      {selectedKC.examples.map((ex, i) => (
+                        <li key={i} className="text-sm text-slate-600 flex items-start gap-2">
+                          <span className="text-foxAmber font-medium shrink-0">{i + 1}.</span>
+                          {ex}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+
+              {selectedKC.prerequisites && selectedKC.prerequisites.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <Link2 className="w-4 h-4 text-slate-500" />
+                    <span className="text-sm font-semibold text-slate-700">先修概念</span>
+                  </div>
+                  <div className="pl-6 flex flex-wrap gap-2">
+                    {selectedKC.prerequisites.map((p, i) => (
+                      <button
+                        key={i}
+                        onClick={() => handlePrereqClick(p.prerequisite_kc_id)}
+                        className="text-xs px-3 py-1.5 bg-slate-100 hover:bg-foxAmber/10 text-slate-700 hover:text-foxAmber rounded-full transition-colors border border-slate-200 hover:border-foxAmber/30"
+                      >
+                        {p.prerequisite_kc_id}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {onAskAboutConcept && (
+                <div className="pt-4 border-t border-slate-100">
+                  <Button
+                    onClick={handleAskFox}
+                    className="w-full rounded-xl"
+                    size="lg"
+                  >
+                    <MessageCircle className="w-4 h-4" />
+                    去问狐狸关于这个概念
+                  </Button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-center py-12">
+              <p className="text-sm text-slate-400">无法加载概念详情</p>
+            </div>
+          )}
         </div>
-      )}
+      </Drawer>
     </div>
   );
 }

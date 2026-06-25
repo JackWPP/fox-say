@@ -61,6 +61,35 @@ class Citation(BaseModel):
     locator: str
 
 
+class Note(BaseModel):
+    id: str
+    course_id: str
+    title: str
+    content: str
+    source_citations: list[Citation] = []
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class CreateNoteRequest(BaseModel):
+    title: str
+    content: str
+    source_citations: list[Citation] = []
+
+
+class UpdateNoteRequest(BaseModel):
+    title: str | None = None
+    content: str | None = None
+    source_citations: list[Citation] | None = None
+
+
+class SourcePreviewResponse(BaseModel):
+    text: str
+    page_ref: str
+    file_name: str
+    locator: str
+
+
 class CragAnswer(BaseModel):
     course_id: str
     answer: str
@@ -216,6 +245,9 @@ class KC(BaseModel):
     viewpoints: list[str] = []
     counter_arguments: list[str] = []
     classical_quotes: list[str] = []
+
+    # --- 向量检索预计算 ---
+    embedding: list[float] | None = None
 
     @model_validator(mode="before")
     @classmethod

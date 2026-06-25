@@ -255,7 +255,7 @@ def test_build_wiki_graph_returns_compiled_graph():
 
 
 def test_build_wiki_end_to_end_mocked(monkeypatch):
-    """端到端:build_wiki 用 mocked LLM 跑完 4 阶段,结果含 KCs + DMAP + merkle。"""
+    """端到端:build_wiki 用 mocked LLM 跑完 5 阶段,结果含 KCs + DMAP + merkle。"""
     # 1) supervisor
     supervisor_json = json.dumps(
         {
@@ -286,13 +286,29 @@ def test_build_wiki_end_to_end_mocked(monkeypatch):
         {"passed": True, "reasons": [], "failed_kc_ids": [], "fixes": []},
         ensure_ascii=False,
     )
+    # 4) summarizer
+    summarizer_json = json.dumps(
+        [{"chapter_id": "ch-1", "overview": "本章介绍了极限的基本概念，极限是微积分的基础，描述了函数在某点附近的趋近行为。"}],
+        ensure_ascii=False,
+    )
 
-    responses = iter([supervisor_json, worker_json, reviewer_json])
+    response_list = [supervisor_json, worker_json, reviewer_json, summarizer_json]
+    call_count = [0]
 
     def _fake_llm(*a, **k):
-        return next(responses)
+        idx = call_count[0]
+        call_count[0] += 1
+        if idx >= len(response_list):
+            raise AssertionError(f"Too many LLM calls: {idx + 1}, expected {len(response_list)}")
+        return response_list[idx]
 
     monkeypatch.setattr("app.services.wiki_builder._llm_call", _fake_llm)
+
+    def _fake_embed_texts(texts):
+        return [[0.1] * 1536 for _ in texts]
+
+    import app.services.wiki_builder as wb
+    monkeypatch.setattr(wb, "embed_texts", _fake_embed_texts)
 
     chunks = [
         {"text": "第一章 绪论", "heading": "第一章", "level": 1, "page": 1},
@@ -303,7 +319,9 @@ def test_build_wiki_end_to_end_mocked(monkeypatch):
     assert result.dmap is not None
     assert result.merkle_tree is not None
     assert result.course_index is not None
-    # KCs 由 worker 提取
     assert len(result.kcs) >= 1
     for kc in result.kcs:
         assert kc.course_id == "course-e2e"
+        assert kc.embedding is not None
+    for cw in result.chapter_wikis:
+        assert len(cw.overview) >= 20, f"overview too short: {cw.overview!r}"

@@ -17,6 +17,13 @@ def _get_client() -> OpenAI:
 EMBEDDING_BATCH_SIZE = 64
 
 
+def embed_text(text: str) -> list[float]:
+    if not text:
+        return []
+    embeddings = embed_texts([text])
+    return embeddings[0] if embeddings else []
+
+
 def embed_texts(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []

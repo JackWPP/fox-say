@@ -38,6 +38,7 @@ from app.schemas.foxsay import (
     WikiBuildResult,
 )
 from app.services.dmap import build_dmap
+from app.services.embedding import embed_texts
 from app.services.merkle import compute_merkle_tree, diff_merkle_trees
 
 logger = logging.getLogger(__name__)
@@ -687,12 +688,123 @@ def reviewer_node(state: WikiState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Stage 5: ChapterSummarizer (生成有意义的 chapter overview)
+# ---------------------------------------------------------------------------
+
+
+SUMMARIZER_SYSTEM = (
+    "你是一个课程章节摘要助手。给定每个章节的标题、核心知识点(KC)列表和文本片段，"
+    "为每个章节生成一段 2-4 句的中文概述，总结该章节的核心内容。\n\n"
+    "要求:\n"
+    "- 概述必须简洁、准确，概括该章节的主题和核心知识点\n"
+    "- 每段概述至少 50 个字符\n"
+    "- 使用中文\n"
+    "- 不要使用 markdown 格式\n\n"
+    "返回 JSON 数组，每个元素包含 chapter_id 和 overview:\n"
+    '[{"chapter_id": "ch-1", "overview": "本章介绍了..."}, ...]\n'
+    "只返回 JSON 数组，不要包含其他文字。"
+)
+
+
+def _collect_chapter_text(dmap: DMAP, chapter_id: str, max_len: int = 2000) -> str:
+    """从 DMAP 收集指定章节的文本片段。"""
+    for child in dmap.root.children:
+        if child.id == chapter_id and child.type == "chapter":
+            parts: list[str] = []
+            for el in child.elements:
+                if el.text_preview:
+                    parts.append(el.text_preview)
+            for sub in child.children:
+                if sub.title:
+                    parts.append(sub.title)
+                for el in sub.elements:
+                    if el.text_preview:
+                        parts.append(el.text_preview)
+            text = "\n".join(parts)
+            return text[:max_len]
+    return ""
+
+
+def _summarize_chapters(
+    course_id: str,
+    chapter_wikis: list[ChapterWiki],
+    kcs: list[KC],
+    dmap: DMAP,
+) -> list[ChapterWiki]:
+    """用 LLM 为所有章节生成有意义的 overview。失败抛异常(HEC-1)。"""
+    if not chapter_wikis:
+        return chapter_wikis
+
+    kcs_by_chapter: dict[str, list[KC]] = {}
+    for kc in kcs:
+        kcs_by_chapter.setdefault(kc.chapter_id, []).append(kc)
+
+    chapters_input = []
+    for cw in chapter_wikis:
+        chapter_kcs = kcs_by_chapter.get(cw.chapter_id, [])
+        chapter_text = _collect_chapter_text(dmap, cw.chapter_id)
+        chapters_input.append({
+            "chapter_id": cw.chapter_id,
+            "title": cw.title,
+            "key_concepts": [kc.name for kc in chapter_kcs][:10],
+            "text_preview": chapter_text[:1500],
+        })
+
+    user_content = json.dumps(
+        {"course_id": course_id, "chapters": chapters_input},
+        ensure_ascii=False,
+    )
+
+    raw = _llm_call(SUMMARIZER_SYSTEM, user_content, temperature=0.2, max_tokens=2000)
+    parsed = _parse_llm_json(raw)
+
+    if not isinstance(parsed, list):
+        raise RuntimeError(f"ChapterSummarizer: expected JSON list, got {type(parsed).__name__}")
+
+    overview_map: dict[str, str] = {}
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        cid = str(item.get("chapter_id", ""))
+        ov = str(item.get("overview", "")).strip()
+        if cid and ov and len(ov) >= 20:
+            overview_map[cid] = ov
+
+    updated_wikis: list[ChapterWiki] = []
+    for cw in chapter_wikis:
+        new_overview = overview_map.get(cw.chapter_id, "")
+        if new_overview and len(new_overview) >= 20:
+            updated_wikis.append(
+                cw.model_copy(update={"overview": new_overview})
+            )
+        else:
+            updated_wikis.append(cw)
+
+    return updated_wikis
+
+
+def summarizer_node(state: WikiState) -> dict[str, Any]:
+    """生成章节 overview。LLM 失败时抛异常(不静默吞错)。"""
+    try:
+        updated = _summarize_chapters(
+            state["course_id"],
+            state.get("chapter_wikis", []),
+            state.get("merged_kcs", []),
+            state["dmap"],
+        )
+        return {"chapter_wikis": updated}
+    except Exception as e:
+        logger.error("ChapterSummarizer failed: %s", e, exc_info=True)
+        raise RuntimeError(f"Chapter overview generation failed: {e}") from e
+
+
+# ---------------------------------------------------------------------------
 # LangGraph 图定义
 # ---------------------------------------------------------------------------
 
 
 def build_wiki_graph() -> Any:
-    """构造 4 阶段 LangGraph StateGraph(实际执行时 workers 用 asyncio.gather)。
+    """构造 5 阶段 LangGraph StateGraph(Supervisor → Workers → Reducer → Reviewer → Summarizer)。
 
     Send 派发的体现:supervisor_node 返回 {"tasks": [...]} 后,fanout 节点
     用 LangGraph 的 Send API 为每个 task 派发一次 worker_node,LangGraph 内部
@@ -722,7 +834,6 @@ def build_wiki_graph() -> Any:
 
     def _collect_workers(state: WikiState) -> dict[str, Any]:
         """把多个 worker 输出的 raw_kcs 合并(由 LangGraph 调度,这里只取 state 已有)。"""
-        # LangGraph 把每个 worker 的 partial return 累积在 state["raw_kcs"] 里(列表拼接)
         return {"raw_kcs": state.get("raw_kcs", [])}
 
     graph.add_node("supervisor", _supervisor_node)
@@ -730,13 +841,15 @@ def build_wiki_graph() -> Any:
     graph.add_node("_collect_workers", _collect_workers)
     graph.add_node("reducer", reducer_node)
     graph.add_node("reviewer", reviewer_node)
+    graph.add_node("summarizer", summarizer_node)
 
     graph.add_edge(START, "supervisor")
     graph.add_conditional_edges("supervisor", _fanout, ["_worker_single"])
     graph.add_edge("_worker_single", "_collect_workers")
     graph.add_edge("_collect_workers", "reducer")
     graph.add_edge("reducer", "reviewer")
-    graph.add_edge("reviewer", END)
+    graph.add_edge("reviewer", "summarizer")
+    graph.add_edge("summarizer", END)
 
     return graph.compile()
 
@@ -802,10 +915,19 @@ def build_wiki(
     # graph 是同步 invoke,内部 worker 通过 Send 派发
     # LangGraph 在条件边上以 Send 派发时,多个 worker 输出会被 reducer 节点之前的 _collect 合并
 
+    kcs = final_state.get("merged_kcs", [])
+    chapter_wikis = final_state.get("chapter_wikis", [])
+
+    try:
+        kcs = _embed_kcs(kcs)
+        logger.info("[build_wiki] Embedded %d KCs for course %s", len(kcs), course_id)
+    except Exception as e:
+        logger.warning("[build_wiki] KC embedding failed (non-fatal): %s", e, exc_info=True)
+
     result = WikiBuildResult(
         course_id=course_id,
-        kcs=final_state.get("merged_kcs", []),
-        chapter_wikis=final_state.get("chapter_wikis", []),
+        kcs=kcs,
+        chapter_wikis=chapter_wikis,
         course_index=final_state.get("course_index"),
         dmap=dmap,
         merkle_tree=new_merkle,
@@ -858,6 +980,39 @@ def _persist_to_store(
         store.save_course_index(
             result.course_id, result.course_index.model_dump_json()
         )
+
+
+# ---------------------------------------------------------------------------
+# KC Embedding 批量计算
+# ---------------------------------------------------------------------------
+
+
+def _embed_kcs(kcs: list[KC]) -> list[KC]:
+    """为所有 KC 批量计算 embedding 并附加到 KC 对象上。失败抛异常(HEC-1)。"""
+    if not kcs:
+        return kcs
+
+    texts = []
+    for kc in kcs:
+        parts = [kc.name]
+        if kc.definition:
+            parts.append(kc.definition)
+        if kc.formula:
+            parts.append(kc.formula)
+        texts.append(" ".join(parts))
+
+    embeddings = embed_texts(texts)
+
+    if len(embeddings) != len(kcs):
+        raise RuntimeError(
+            f"Embedding count mismatch: got {len(embeddings)}, expected {len(kcs)}"
+        )
+
+    updated_kcs: list[KC] = []
+    for kc, emb in zip(kcs, embeddings):
+        updated_kcs.append(kc.model_copy(update={"embedding": emb}))
+
+    return updated_kcs
 
 
 # ---------------------------------------------------------------------------

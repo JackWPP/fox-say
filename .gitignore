@@ -77,3 +77,8 @@ infra/qdrant/data/
 
 # Qdrant local mode (in-process file storage)
 backend/data/qdrant_storage/
+
+# Temp uploads and course material directories (user data)
+tmp_upload/
+classes/
+线性代数/

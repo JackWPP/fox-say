@@ -1,6 +1,9 @@
 import { useState, type FormEvent } from "react";
 import { X } from "lucide-react";
 import { useCreateCourse } from "./useCourses";
+import { Button } from "../../components/ui/Button";
+import { Input } from "../../components/ui/Input";
+import { Card } from "../../components/ui/Card";
 
 interface CreateCourseModalProps {
   open: boolean;
@@ -33,67 +36,68 @@ export default function CreateCourseModal({ open, onClose, onCreated }: CreateCo
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div
-        className="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 p-6"
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <Card
+        padding="lg"
+        shadow="lg"
+        className="w-full max-w-md mx-4 rounded-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between mb-5">
-          <h2 className="text-lg font-bold text-midnightCharcoal">创建课程</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-xl font-bold text-midnightCharcoal">创建课程</h2>
+          <Button variant="icon" onClick={onClose} className="h-8 w-8">
             <X className="w-5 h-5" />
-          </button>
+          </Button>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
               课程标题 <span className="text-red-500">*</span>
             </label>
-            <input
+            <Input
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               required
               placeholder="例如：高等数学 A"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-foxAmber focus:border-foxAmber outline-none transition-all text-midnightCharcoal"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">教师名</label>
-            <input
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">教师名</label>
+            <Input
               type="text"
               value={teacher}
               onChange={(e) => setTeacher(e.target.value)}
               placeholder="例如：张教授"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-foxAmber focus:border-foxAmber outline-none transition-all text-midnightCharcoal"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">考试日期</label>
-            <input
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">考试日期</label>
+            <Input
               type="date"
               value={examDate}
               onChange={(e) => setExamDate(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-foxAmber focus:border-foxAmber outline-none transition-all text-midnightCharcoal"
             />
           </div>
 
           {error && (
-            <p className="text-sm text-red-500">{error}</p>
+            <p className="text-sm text-red-500 bg-red-50 rounded-lg p-3">{error}</p>
           )}
 
-          <button
+          <Button
             type="submit"
             disabled={loading || !title.trim()}
-            className="w-full py-2.5 bg-foxAmber hover:bg-foxAmber/90 disabled:bg-gray-300 text-midnightCharcoal font-semibold rounded-lg transition-colors"
+            loading={loading}
+            className="w-full rounded-xl h-11 text-base"
+            size="lg"
           >
             {loading ? "创建中..." : "创建课程"}
-          </button>
+          </Button>
         </form>
-      </div>
+      </Card>
     </div>
   );
 }

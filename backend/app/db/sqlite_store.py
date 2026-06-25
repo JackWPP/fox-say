@@ -6,10 +6,12 @@ from app.schemas.foxsay import (
     ChapterWiki,
     Course,
     CourseSkeleton,
+    Citation,
     DMAP,
     KC,
     Material,
     MerkleTree,
+    Note,
     ReviewPlan,
 )
 
@@ -149,6 +151,18 @@ CREATE TABLE IF NOT EXISTS course_indices (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (course_id) REFERENCES courses(id)
 );
+
+CREATE TABLE IF NOT EXISTS notes (
+    id TEXT PRIMARY KEY,
+    course_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    source_citations_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id) REFERENCES courses(id)
+);
+CREATE INDEX IF NOT EXISTS idx_notes_course ON notes(course_id);
 """
 
 
@@ -662,3 +676,82 @@ class SqliteStore:
             "SELECT content FROM course_indices WHERE course_id = ?", (course_id,)
         ).fetchone()
         return row["content"] if row else None
+
+    # --- Notes ---
+
+    def create_note(self, note: Note) -> Note:
+        import json
+        citations_json = json.dumps([c.model_dump() for c in note.source_citations], ensure_ascii=False)
+        self._conn.execute(
+            """INSERT INTO notes (id, course_id, title, content, source_citations_json)
+               VALUES (?, ?, ?, ?, ?)""",
+            (note.id, note.course_id, note.title, note.content, citations_json),
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM notes WHERE id = ?", (note.id,)).fetchone()
+        return self._row_to_note(row)
+
+    def get_note(self, course_id: str, note_id: str) -> Note | None:
+        row = self._conn.execute(
+            "SELECT * FROM notes WHERE id = ? AND course_id = ?", (note_id, course_id)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_note(row)
+
+    def get_notes_by_course(self, course_id: str) -> list[Note]:
+        rows = self._conn.execute(
+            "SELECT * FROM notes WHERE course_id = ? ORDER BY created_at DESC", (course_id,)
+        ).fetchall()
+        return [self._row_to_note(r) for r in rows]
+
+    def update_note(self, course_id: str, note_id: str, **kwargs) -> Note | None:
+        existing = self.get_note(course_id, note_id)
+        if existing is None:
+            return None
+        import json
+        sets = []
+        values = []
+        if "title" in kwargs and kwargs["title"] is not None:
+            sets.append("title = ?")
+            values.append(kwargs["title"])
+        if "content" in kwargs and kwargs["content"] is not None:
+            sets.append("content = ?")
+            values.append(kwargs["content"])
+        if "source_citations" in kwargs and kwargs["source_citations"] is not None:
+            citations = kwargs["source_citations"]
+            citations_json = json.dumps([c.model_dump() for c in citations], ensure_ascii=False) if citations else "[]"
+            sets.append("source_citations_json = ?")
+            values.append(citations_json)
+        if not sets:
+            return existing
+        sets.append("updated_at = datetime('now')")
+        values.extend([note_id, course_id])
+        self._conn.execute(
+            f"UPDATE notes SET {', '.join(sets)} WHERE id = ? AND course_id = ?",
+            values,
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM notes WHERE id = ? AND course_id = ?", (note_id, course_id)).fetchone()
+        return self._row_to_note(row) if row else None
+
+    def delete_note(self, course_id: str, note_id: str) -> bool:
+        cursor = self._conn.execute(
+            "DELETE FROM notes WHERE id = ? AND course_id = ?", (note_id, course_id)
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def _row_to_note(self, row: sqlite3.Row) -> Note:
+        import json
+        citations_data = json.loads(row["source_citations_json"] or "[]")
+        citations = [Citation(**c) for c in citations_data]
+        return Note(
+            id=row["id"],
+            course_id=row["course_id"],
+            title=row["title"],
+            content=row["content"],
+            source_citations=citations,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )

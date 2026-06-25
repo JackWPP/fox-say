@@ -19,6 +19,8 @@ router = APIRouter(prefix="/courses/{course_id}/chat")
 class StreamRequest(BaseModel):
     question: str
     session_id: str | None = None
+    selected_source_ids: list[str] = []
+    selected_note_ids: list[str] = []
 
 
 class CreateSessionRequest(BaseModel):
@@ -60,6 +62,8 @@ async def chat_stream(course_id: str, body: StreamRequest, store: SqliteStore = 
             async for event in agent_chat(
                 course_id, course.title, body.question,
                 chat_history=history_msgs, store=store,
+                selected_source_ids=body.selected_source_ids or None,
+                selected_note_ids=body.selected_note_ids or None,
             ):
                 event_type = event.get("type", "message")
                 event_data = json.dumps(event, ensure_ascii=False)

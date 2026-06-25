@@ -1,8 +1,11 @@
 import { useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import oneLight from "react-syntax-highlighter/dist/esm/styles/prism/one-light";
 import js from "react-syntax-highlighter/dist/esm/languages/prism/javascript";
 import ts from "react-syntax-highlighter/dist/esm/languages/prism/typescript";
 import py from "react-syntax-highlighter/dist/esm/languages/prism/python";
@@ -35,6 +38,7 @@ interface CodeBlockProps {
   className?: string;
   children?: ReactNode;
   inline?: boolean;
+  light?: boolean;
 }
 
 function extractText(node: ReactNode): string {
@@ -47,7 +51,7 @@ function extractText(node: ReactNode): string {
   return "";
 }
 
-function CodeBlock({ className, children }: CodeBlockProps) {
+function CodeBlock({ className, children, light }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
   const raw = extractText(children);
   // react-markdown passes the language as `language-xyz`
@@ -71,8 +75,14 @@ function CodeBlock({ className, children }: CodeBlockProps) {
     }
   };
 
+  const wrapperClass = light ? "fox-code-block fox-code-block-light" : "fox-code-block";
+  const codeStyle = light ? (oneLight as Record<string, React.CSSProperties>) : (oneDark as Record<string, React.CSSProperties>);
+  const lineNumStyle = light
+    ? { color: "rgba(100,116,139,0.4)", fontSize: "0.7rem", minWidth: "1.8em" }
+    : { color: "rgba(255,247,237,0.25)", fontSize: "0.7rem", minWidth: "1.8em" };
+
   return (
-    <div className="fox-code-block">
+    <div className={wrapperClass}>
       <div className="fox-code-header">
         <span className="font-mono">{language}</span>
         <button
@@ -96,12 +106,12 @@ function CodeBlock({ className, children }: CodeBlockProps) {
       </div>
       <SyntaxHighlighter
         language={language}
-        style={oneDark as Record<string, React.CSSProperties>}
+        style={codeStyle}
         customStyle={{ margin: 0, background: "transparent" }}
         codeTagProps={{ style: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" } }}
         wrapLongLines={false}
         showLineNumbers={raw.split("\n").length > 4}
-        lineNumberStyle={{ color: "rgba(255,247,237,0.25)", fontSize: "0.7rem", minWidth: "1.8em" }}
+        lineNumberStyle={lineNumStyle}
       >
         {raw.replace(/\n$/, "")}
       </SyntaxHighlighter>
@@ -148,8 +158,12 @@ interface MarkdownRendererProps {
   content: string;
   /** When true, appends a blinking cursor at the end (for streaming output) */
   streaming?: boolean;
-  /** When true, uses light color scheme for white backgrounds */
+  /** Visual variant: 'default' (dark bg), 'light' (warm light bg), 'ai' (white bg prose) */
+  variant?: "default" | "light" | "ai";
+  /** @deprecated Use variant="light" instead */
   light?: boolean;
+  /** @deprecated Use variant="ai" instead */
+  ai?: boolean;
 }
 
 // Defense in depth: strip any residual DSML tool-call markup the backend
@@ -170,11 +184,25 @@ function stripDSML(text: string): string {
   return text.replace(DSML_BLOCK_RE, "").replace(DSML_TAG_RE, "").trim();
 }
 
-export default function MarkdownRenderer({ content, streaming, light }: MarkdownRendererProps) {
+export default function MarkdownRenderer({ content, streaming, variant, light, ai }: MarkdownRendererProps) {
   const safeContent = stripDSML(content);
+  const resolvedVariant: "default" | "light" | "ai" = variant || (ai ? "ai" : light ? "light" : "default");
+  const className = resolvedVariant === "ai" ? "fox-prose-ai" : resolvedVariant === "light" ? "fox-prose-light" : "fox-prose";
+  const codeLight = resolvedVariant === "ai" || resolvedVariant === "light";
+
+  const componentsWithLight: Components = {
+    ...components,
+    code: ({ className: codeCls, children }: { className?: string; children?: ReactNode }) => {
+      if (codeCls) {
+        return <CodeBlock className={codeCls} light={codeLight}>{children}</CodeBlock>;
+      }
+      return <code>{children}</code>;
+    },
+  };
+
   return (
-    <div className={light ? "fox-prose-light" : "fox-prose"}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+    <div className={className}>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={componentsWithLight}>
         {safeContent}
       </ReactMarkdown>
       {streaming && <span className="fox-typing-cursor" aria-hidden="true" />}

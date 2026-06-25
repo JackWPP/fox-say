@@ -46,16 +46,32 @@ def _get_client() -> OpenAI:
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = (
-    "你是 FoxSay, 一只聪明但贱贱的小狐狸, 也是这门课的 AI 助教。\n\n"
-    "核心规则:\n"
-    "1. 只能回答当前课程相关问题。超出范围时礼貌但欠揍地拒绝。\n"
-    "2. 引用材料时, 必须用格式 `来自 [文件名] · 第X部分`, 在正文中自然嵌入。\n"
-    "3. 工具使用:\n"
-    "   - 生成讲义/练习题/闪卡/概念图 → 直接调对应工具,不要先搜索\n"
-    "   - 回答问题 → search_wiki / get_concept / get_course_map\n"
-    "   - 先修概念  → follow_prerequisite\n"
-    "   - 复习计划  → get_review_plan\n"
-    "4. 回答自然有结构(Markdown), 不要逐条罗列搜索结果。"
+    "你是 FoxSay, 一只聪明但有点皮的小狐狸, 也是这门课的 AI 学习伙伴。\n\n"
+    "## 教学法原则\n"
+    "1. **费曼技巧优先**: 解释任何概念时，先用最简单直白的语言讲清楚核心直觉"
+    "（可以用生活类比、生动例子），然后再给出正式定义，最后举 1-2 个具体例子。\n"
+    "2. **预判误解**: 主动提醒学生容易搞混的点、常见陷阱、与相似概念的区别。\n"
+    "3. **公式推导**: 涉及公式时，先讲「这个公式在说什么、为什么合理」，"
+    "再给数学表达，最后说明每个符号的含义。\n"
+    "4. **小狐狸语气**: 语言生动活泼，可以偶尔带点小调皮，但不要油腻。"
+    "像一个聪明的学长/学姐在给你讲题。\n"
+    "5. **结尾延伸**: 每次回答完，主动提一个值得思考的延伸问题，引导深入思考。\n"
+    "6. **模糊追问**: 如果问题太模糊（比如只说「讲讲这个」），先礼貌追问具体想了解哪方面，"
+    "不要猜着答。\n\n"
+    "## 核心规则\n"
+    "1. 只能回答当前课程相关问题。超出范围时，必须回答：`这个问题超出了[课程名]的范围，不知道。`\n"
+    "2. 引用材料时，必须用格式 `来自 [文件名] · 第X部分`，在正文中自然嵌入。\n"
+    "   引用笔记时，必须用格式 `来自笔记 · [笔记标题]`。\n"
+    "3. 回答用 Markdown 排版，有清晰的结构（标题、列表、加粗重点），但不要过度分节。\n\n"
+    "## 工具使用策略\n"
+    "- **定义/是什么类问题**: 先用 `get_concept` 获取完整 KC 卡，再组织回答。\n"
+    "- **比较/对比类问题**: 先用 `search_wiki` 获取多个相关 KC，再对比分析。\n"
+    "- **为什么/原理类问题**: 先用 `follow_prerequisite` 追溯先修知识，建立逻辑链。\n"
+    "- **全局/课程结构问题**: 用 `get_course_map`。\n"
+    "- **具体章节内容**: 用 `get_chapter_outline` 或 `get_source_content`。\n"
+    "- **复习相关问题**: 用 `get_review_plan`。\n"
+    "- 如果 `search_wiki` 返回的 note 提示「检索结果与问题无关」，你必须直接返回拒答消息，"
+    "不要尝试用常识回答。\n"
 )
 
 # ---------------------------------------------------------------------------
@@ -225,6 +241,8 @@ async def agent_chat(
     chat_history: list[dict] | None = None,
     store: Any = None,
     review_context: str = "",
+    selected_source_ids: list[str] | None = None,
+    selected_note_ids: list[str] | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Agent ReAct 循环:SSE 事件流。
 
@@ -321,7 +339,11 @@ async def agent_chat(
             }
 
             try:
-                tool_result = await _execute_tool(tool_name, tool_args, course_id, store)
+                tool_result = await _execute_tool(
+                    tool_name, tool_args, course_id, store,
+                    selected_source_ids=selected_source_ids,
+                    selected_note_ids=selected_note_ids,
+                )
                 # 如果原始工具返回"未知工具",尝试作为 Skill 执行
                 if "未知工具" in tool_result:
                     tool_result = await _execute_skill(tool_name, tool_args, course_id, store)
@@ -446,19 +468,29 @@ async def agent_chat(
 # ---------------------------------------------------------------------------
 
 
-async def _execute_tool(name: str, args: dict, course_id: str, store: Any) -> str:
+async def _execute_tool(
+    name: str,
+    args: dict,
+    course_id: str,
+    store: Any,
+    selected_source_ids: list[str] | None = None,
+    selected_note_ids: list[str] | None = None,
+) -> str:
     """路由 7 个工具到对应实现。"""
     from app.services import query_tools
     from app.services.retrieval import search_wiki_layer
 
     if name == "search_wiki":
-        # 直接调底层 retrieval 函数,query_tools.search_wiki 是 agent 不用的包装
         query = args.get("query", "")
         layer = args.get("layer", "all")
         top_k = args.get("top_k", 5)
         if store is None:
             return json.dumps({"results": [], "count": 0, "note": "store not provided"}, ensure_ascii=False)
-        results = search_wiki_layer(course_id, query, layer, top_k, store)
+        results = search_wiki_layer(
+            course_id, query, layer, top_k, store,
+            selected_material_ids=selected_source_ids,
+            selected_note_ids=selected_note_ids,
+        )
 
         # CRAG 门控:检查检索结果的最高分,控制 LLM 回答边界
         max_score = max((r.get("score", 0) for r in results), default=0)
@@ -530,11 +562,17 @@ async def _execute_skill(name: str, args: dict, course_id: str, store: Any) -> s
 
 
 def _extract_citations(text: str) -> list[dict]:
-    """从回答文本中提取 `来自 [文件名] · 第X部分` 格式的内联引用。"""
+    """从回答文本中提取引用格式。
+
+    支持:
+    - `来自 [文件名] · 第X部分` (材料引用)
+    - `来自笔记 · [笔记标题]` (笔记引用)
+    """
     citations: list[dict] = []
     seen: set[str] = set()
 
     patterns = [
+        re.compile(r"来自笔记\s*·\s*(.+?)(?:[。，,。\n]|$)"),
         re.compile(r"来自\s*\[?(.+?)\]?\s*·\s*(第.+?部分)"),
         re.compile(r"\[(.+?)\]\s*·\s*(第.+?部分)"),
         re.compile(r"([\w一-鿿.-]+\.(?:pdf|ppt|txt|md))\s*·\s*(第.+?部分)"),
@@ -542,8 +580,15 @@ def _extract_citations(text: str) -> list[dict]:
 
     for pattern in patterns:
         for match in pattern.finditer(text):
-            file_name = match.group(1).strip()
-            locator = match.group(2).strip()
+            groups = match.groups()
+            if len(groups) == 1 and "笔记" in pattern.pattern:
+                file_name = "笔记"
+                locator = groups[0].strip()
+            elif len(groups) >= 2:
+                file_name = groups[0].strip()
+                locator = groups[1].strip()
+            else:
+                continue
             key = f"{file_name}|{locator}"
             if key not in seen:
                 citations.append({"file_name": file_name, "locator": locator})

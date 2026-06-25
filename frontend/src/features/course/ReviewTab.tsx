@@ -5,6 +5,10 @@ import BtwInput from "./BtwInput";
 import MarkdownRenderer from "./MarkdownRenderer";
 import type { Course } from "../../shared/types";
 import { foxCopy } from "../../shared/fox-copy";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { Badge } from "../../components/ui/Badge";
+import { Spinner } from "../../components/ui/Spinner";
 
 interface ReviewTabProps {
   courseId: string;
@@ -33,6 +37,12 @@ const stepLabels = {
   teach: "讲解",
   quiz: "练习",
   review: "总结",
+};
+
+const stepBadgeVariants = {
+  teach: "amber" as const,
+  quiz: "info" as const,
+  review: "success" as const,
 };
 
 export default function ReviewTab({ courseId, course }: ReviewTabProps) {
@@ -77,147 +87,154 @@ export default function ReviewTab({ courseId, course }: ReviewTabProps) {
   const active = sessionActive || hasSession;
 
   return (
-    <div className="flex flex-col h-[calc(100vh-14rem)]">
-      <div className="flex-1 overflow-y-auto px-1 py-2">
-        {/* Countdown banner */}
+    <div className="flex flex-col h-full">
+      <div className="flex-1 overflow-y-auto px-4 py-4">
         {countdown && (
-          <div className={`mb-4 flex items-center gap-2 border rounded-xl px-4 py-3 ${
-            countdown.urgent ? "bg-red-500/10 border-red-500/20" : "bg-foxAmber/10 border-foxAmber/20"
+          <div className={`mb-5 flex items-center gap-3 border rounded-2xl px-5 py-4 ${
+            countdown.urgent
+              ? "bg-gradient-to-r from-red-50 to-orange-50 border-red-200"
+              : "bg-gradient-to-r from-amber-50 to-orange-50 border-foxAmber/30"
           }`}>
-            <Calendar className={`w-4 h-4 shrink-0 ${countdown.urgent ? "text-red-500" : "text-foxAmber"}`} />
-            <span className={`text-sm font-medium ${countdown.urgent ? "text-red-500" : "text-midnightCharcoal"}`}>{countdown.text}</span>
+            <div className={`p-2 rounded-xl ${countdown.urgent ? "bg-red-100" : "bg-foxAmber/20"}`}>
+              <Calendar className={`w-5 h-5 shrink-0 ${countdown.urgent ? "text-red-500" : "text-foxAmber"}`} />
+            </div>
+            <span className={`text-sm font-semibold ${countdown.urgent ? "text-red-600" : "text-midnightCharcoal"}`}>
+              {countdown.text}
+            </span>
           </div>
         )}
 
-        {/* Pre-session: Not started */}
         {!active && !planLoading && (
-          <div className="flex flex-col items-center justify-center py-16 text-gray-400">
-            <Zap className="w-12 h-12 mb-3 opacity-40" />
-            <p className="text-lg mb-4">{plan ? foxCopy.review.prompt : foxCopy.review.noPlanPrompt}</p>
-            <button
+          <div className="flex flex-col items-center justify-center py-16">
+            <div className="p-4 rounded-2xl bg-foxAmber/10 mb-4">
+              <Zap className="w-12 h-12 text-foxAmber" />
+            </div>
+            <p className="text-lg font-medium text-midnightCharcoal mb-6">
+              {plan ? foxCopy.review.prompt : foxCopy.review.noPlanPrompt}
+            </p>
+            <Button
               onClick={handleStartReview}
               disabled={planLoading || sessionLoading}
-              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-foxAmber text-midnightCharcoal font-semibold hover:bg-foxAmber/90 transition-colors disabled:opacity-50 shadow-sm"
+              loading={planLoading || sessionLoading}
+              size="lg"
+              className="rounded-2xl px-8 py-6 text-base"
             >
               {foxCopy.review.startSessionBtn}
-            </button>
+            </Button>
             {error && (
-              <div className="mt-3 text-center">
-                <p className="text-sm text-red-500 mb-2">{error}</p>
-                <button
+              <div className="mt-4 text-center">
+                <p className="text-sm text-red-500 mb-3">{error}</p>
+                <Button
+                  variant="secondary"
+                  size="sm"
                   onClick={() => generatePlan(course?.exam_date)}
-                  className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-red-500 border border-red-200 rounded-lg hover:bg-red-50 transition-colors"
                 >
-                  <RefreshCw className="w-3 h-3" />
+                  <RefreshCw className="w-3.5 h-3.5" />
                   {foxCopy.errors.retry}
-                </button>
+                </Button>
               </div>
             )}
           </div>
         )}
 
-        {/* Loading plan */}
         {planLoading && (
           <div className="flex flex-col items-center justify-center py-16">
-            <div className="w-8 h-8 border-2 border-foxAmber border-t-transparent rounded-full animate-spin mb-3" />
-            <p className="text-sm text-gray-400">{foxCopy.review.generating}</p>
+            <Spinner size="lg" className="mb-4" />
+            <p className="text-sm text-slate-500">{foxCopy.review.generating}</p>
           </div>
         )}
 
-        {/* Completed */}
         {isComplete && (
-          <div className="text-center py-8">
-            <div className="text-4xl mb-3">🎉</div>
-            <p className="text-lg font-semibold text-midnightCharcoal">{foxCopy.review.allDone}</p>
+          <div className="text-center py-12">
+            <div className="text-5xl mb-4">🎉</div>
+            <p className="text-xl font-bold text-midnightCharcoal mb-2">{foxCopy.review.allDone}</p>
+            <p className="text-sm text-slate-500">恭喜你完成了全部复习计划！</p>
           </div>
         )}
 
-        {/* Active guided session */}
         {active && !isComplete && (
-          <div className="space-y-4">
-            {/* Day progress header */}
+          <div className="space-y-5">
             {plan && (
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="text-lg font-bold text-midnightCharcoal">
+                <div className="flex items-center gap-3">
+                  <span className="text-xl font-bold text-midnightCharcoal">
                     Day {currentDay} / {totalDays}
                   </span>
                   {stepContent && !stepLoading && (
-                    <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-foxAmber/10 text-foxAmber font-medium">
-                      {(() => { const Icon = stepIcons[stepType]; return <Icon className="w-3 h-3" />; })()}
+                    <Badge variant={stepBadgeVariants[stepType]} size="md">
+                      {(() => { const Icon = stepIcons[stepType]; return <Icon className="w-3.5 h-3.5 mr-1" />; })()}
                       {stepLabels[stepType]}
-                    </span>
+                    </Badge>
                   )}
                 </div>
-                <div className="bg-gray-100 rounded-full h-1.5 w-24">
+                <div className="bg-slate-100 rounded-full h-2 w-32 overflow-hidden">
                   <div
-                    className="bg-foxAmber h-1.5 rounded-full transition-all"
+                    className="h-2 rounded-full bg-gradient-to-r from-foxAmber to-amber-400 transition-all duration-500"
                     style={{ width: `${Math.min((currentDay / totalDays) * 100, 100)}%` }}
                   />
                 </div>
               </div>
             )}
 
-            {/* Step content area */}
-            <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm min-h-[200px]">
+            <Card padding="lg" shadow="soft" className="rounded-2xl min-h-[240px]">
               {stepLoading && (
-                <div className="flex items-center gap-3 py-8 justify-center">
-                  <div className="w-5 h-5 border-2 border-foxAmber border-t-transparent rounded-full animate-spin" />
-                  <span className="text-sm text-gray-400">{foxCopy.review.thinking}</span>
+                <div className="flex items-center gap-3 py-12 justify-center">
+                  <Spinner size="md" />
+                  <span className="text-sm text-slate-500">{foxCopy.review.thinking}</span>
                 </div>
               )}
 
               {!stepLoading && stepContent && (
-                <MarkdownRenderer content={stepContent} />
+                <MarkdownRenderer content={stepContent} ai />
               )}
 
               {!stepLoading && !stepContent && (
-                <div className="flex flex-col items-center justify-center py-8 text-gray-400">
-                  <BookOpen className="w-8 h-8 mb-2 opacity-40" />
+                <div className="flex flex-col items-center justify-center py-12 text-slate-400">
+                  <BookOpen className="w-10 h-10 mb-3 opacity-50" />
                   <p className="text-sm">点击下方按钮开始</p>
                 </div>
               )}
-            </div>
+            </Card>
           </div>
         )}
       </div>
 
-      {/* Action buttons + /btw */}
-      <div className="pt-3 border-t border-gray-100 space-y-3">
-        {/* Step action buttons */}
+      <div className="pt-4 border-t border-slate-100 space-y-4 px-4 pb-4 bg-white">
         {active && !isComplete && (
           <div className="flex gap-3 justify-center">
             {stepType === "teach" && stepContent && !stepLoading && (
-              <button
+              <Button
                 onClick={handleQuiz}
-                className="flex items-center gap-2 px-6 py-3 rounded-xl bg-foxAmber text-midnightCharcoal font-semibold hover:bg-foxAmber/90 transition-colors shadow-sm"
+                size="lg"
+                className="rounded-2xl px-8"
               >
                 <HelpCircle className="w-4 h-4" />
                 {foxCopy.review.nextQuizBtn}
-              </button>
+              </Button>
             )}
             {stepType === "quiz" && stepContent && !stepLoading && (
-              <button
+              <Button
                 onClick={handleReview}
-                className="flex items-center gap-2 px-6 py-3 rounded-xl bg-foxAmber text-midnightCharcoal font-semibold hover:bg-foxAmber/90 transition-colors shadow-sm"
+                size="lg"
+                className="rounded-2xl px-8"
               >
                 <CheckCircle className="w-4 h-4" />
                 {foxCopy.review.showAnswerBtn}
-              </button>
+              </Button>
             )}
             {stepType === "review" && stepContent && !stepLoading && (
-              <button
+              <Button
                 onClick={handleNextDay}
-                className="flex items-center gap-2 px-6 py-3 rounded-xl bg-green-500 text-white font-semibold hover:bg-green-600 transition-colors shadow-sm"
+                size="lg"
+                className="rounded-2xl px-8 bg-green-500 hover:bg-green-600 text-white"
               >
                 <CheckCircle className="w-4 h-4" />
                 {currentDay >= totalDays ? "完成全部复习" : foxCopy.review.doneDayBtn}
-              </button>
+              </Button>
             )}
           </div>
         )}
 
-        {/* /btw input */}
         {btwLoading && !btwAnswer && (
           <div className="flex justify-start">
             <div className="bg-midnightCharcoal text-warmWhite rounded-2xl rounded-bl-sm px-4 py-3 text-sm">

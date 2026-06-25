@@ -119,3 +119,25 @@ export interface KC {
   exam_patterns: string[];
 }
 
+export interface Note {
+  id: string;
+  course_id: string;
+  title: string;
+  content: string;
+  source_citations?: Citation[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ChapterWiki {
+  chapter_id: string;
+  title: string;
+  overview: string;
+}
+
+export interface SourcePreview {
+  text: string;
+  page?: number;
+  locator: string;
+}
+

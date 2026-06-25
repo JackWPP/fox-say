@@ -1,33 +1,33 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
-import { ArrowLeft, FileText, GitBranch, MessageCircle, Network, Zap, X, BookOpen, HelpCircle } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Zap, X, MessageCircle } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useCourse } from "../bookshelf/useCourses";
 import MaterialsTab from "./MaterialsTab";
 import SkeletonTab from "./SkeletonTab";
-import ChatTab from "./ChatTab";
-import ReviewTab from "./ReviewTab";
 import KnowledgeGraphTab from "./KnowledgeGraphTab";
 import LectureView from "./LectureView";
 import QuizView from "./QuizView";
+import ReviewTab from "./ReviewTab";
 import { useSkeleton } from "./useSkeleton";
+import { useMaterials } from "./useMaterials";
 import { API_BASE } from "../../shared/api";
+import SourcesPanel from "./SourcesPanel";
+import ChatWorkspace from "./ChatWorkspace";
+import StudioPanel from "./StudioPanel";
 
 type StudyMode = "exam" | "study";
-type Tab = "materials" | "skeleton" | "qa" | "kg" | "review" | "lecture" | "quiz";
+type ActiveView = "chat" | "skeleton" | "kg" | "lecture" | "quiz" | "review" | "materials";
 
-const allTabs: { key: Tab; label: string; icon: typeof FileText }[] = [
-  { key: "materials", label: "材料", icon: FileText },
-  { key: "skeleton", label: "骨架", icon: GitBranch },
-  { key: "qa", label: "问答", icon: MessageCircle },
-  { key: "kg", label: "知识图谱", icon: Network },
-  { key: "lecture", label: "讲义", icon: BookOpen },
-  { key: "quiz", label: "练习", icon: HelpCircle },
-  { key: "review", label: "备考", icon: Zap },
-];
-
-const studyTabOrder: Tab[] = ["materials", "skeleton", "qa", "kg", "lecture", "quiz", "review"];
-const examTabOrder: Tab[] = ["review", "skeleton", "qa", "kg", "lecture", "quiz", "materials"];
+function formatCountdown(examDate?: string): { text: string; days: number } | null {
+  if (!examDate) return null;
+  const exam = new Date(examDate);
+  const now = new Date();
+  const diffMs = exam.getTime() - now.getTime();
+  if (diffMs < 0) return { text: "已过期", days: -1 };
+  const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  return { text: `距考试还有 ${diffDays} 天`, days: diffDays };
+}
 
 export default function CourseDetailPage() {
   const { courseId } = useParams<{ courseId: string }>();
@@ -37,16 +37,32 @@ export default function CourseDetailPage() {
     return saved === "exam" ? "exam" : "study";
   });
 
-  const tabOrder = studyMode === "exam" ? examTabOrder : studyTabOrder;
-  const defaultTab = studyMode === "exam" ? "review" : "materials";
-  const [activeTab, setActiveTab] = useState<Tab>(defaultTab);
+  const [activeView, setActiveView] = useState<ActiveView>("chat");
   const [prefillQuestion, setPrefillQuestion] = useState("");
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(() => {
+    if (typeof window !== "undefined") {
+      return window.innerWidth < 1280;
+    }
+    return false;
+  });
+
+  const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
+  const [selectedNoteIds, setSelectedNoteIds] = useState<string[]>([]);
 
   const { course } = useCourse(courseId ?? "");
   const { skeleton } = useSkeleton(courseId ?? "");
+  const { materials, refetch: refetchMaterials } = useMaterials(courseId ?? "");
   const chapters = skeleton?.chapters ?? [];
 
-  // 第一个惊喜:监听 course_ready 事件
+  useEffect(() => {
+    setSelectedSourceIds(materials.map(m => m.id).filter(id => !selectedSourceIds.includes(id) || materials.some(m => m.id === id)));
+    const readyMaterialIds = materials.filter(m => m.status === "ready").map(m => m.id);
+    if (selectedSourceIds.length === 0 && readyMaterialIds.length > 0) {
+      setSelectedSourceIds(readyMaterialIds);
+    }
+  }, [materials]);
+
   const [toast, setToast] = useState<{ message: string; weakAreas: string[]; coreConcepts: string[] } | null>(null);
 
   useEffect(() => {
@@ -60,39 +76,87 @@ export default function CourseDetailPage() {
           weakAreas: data.weak_areas || [],
           coreConcepts: data.core_concepts || [],
         });
+        refetchMaterials();
       } catch { /* ignore */ }
     });
     return () => es.close();
-  }, [courseId]);
+  }, [courseId, refetchMaterials]);
 
   const handleConceptClick = (concept: string) => {
     setPrefillQuestion(`请解释"${concept}"`);
-    setActiveTab("qa");
+    setActiveView("chat");
   };
 
   useEffect(() => {
     localStorage.setItem("foxsay_mode", studyMode);
-    if (studyMode === "exam" && activeTab === "materials") {
-      setActiveTab("review");
-    }
   }, [studyMode]);
 
-  const toggleMode = () => {
-    setStudyMode((prev) => (prev === "exam" ? "study" : "exam"));
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth < 1280) {
+        setRightCollapsed(true);
+      }
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  const handleSelectionChange = (sourceIds: string[], noteIds: string[]) => {
+    setSelectedSourceIds(sourceIds);
+    setSelectedNoteIds(noteIds);
   };
 
   if (!courseId) return null;
 
+  const countdown = formatCountdown(course?.exam_date);
+  const isExamMode = studyMode === "exam";
+
+  const renderActiveView = () => {
+    switch (activeView) {
+      case "chat":
+        return (
+          <ChatWorkspace
+            courseId={courseId}
+            courseTitle={course?.title || "课程"}
+            sourceCount={materials.length}
+            selectedSourceIds={selectedSourceIds}
+            selectedNoteIds={selectedNoteIds}
+            prefillQuestion={prefillQuestion}
+            onPrefillConsumed={() => setPrefillQuestion("")}
+            onSwitchToMaterials={() => setActiveView("materials")}
+          />
+        );
+      case "skeleton":
+        return <SkeletonTab courseId={courseId} onConceptClick={handleConceptClick} />;
+      case "kg":
+        return (
+          <KnowledgeGraphTab
+            courseId={courseId}
+            onAskAboutConcept={handleConceptClick}
+          />
+        );
+      case "lecture":
+        return <LectureView courseId={courseId} chapters={chapters} />;
+      case "quiz":
+        return <QuizView courseId={courseId} chapters={chapters} />;
+      case "review":
+        return <ReviewTab courseId={courseId} course={course ?? undefined} />;
+      case "materials":
+        return <MaterialsTab courseId={courseId} />;
+      default:
+        return null;
+    }
+  };
+
   return (
-    <div className="p-6 md:p-8 max-w-4xl mx-auto">
-      {/* 第一个惊喜:课程就绪 toast */}
+    <div className="h-[calc(100vh-56px)] flex flex-col bg-slate-50 overflow-hidden">
       {toast && (
-        <div className="mb-4 bg-foxAmber/10 border border-foxAmber/30 rounded-xl px-5 py-4 shadow-sm fox-fade-in">
+        <div className="mx-4 mt-3 bg-foxAmber/10 border border-foxAmber/30 rounded-xl px-5 py-4 shadow-sm fox-fade-in shrink-0 z-20">
           <div className="flex items-start justify-between">
             <div className="flex-1">
               <p className="text-sm font-semibold text-midnightCharcoal mb-1">🦊 {toast.message}</p>
               {toast.coreConcepts.length > 0 && (
-                <p className="text-xs text-gray-600 mb-1">
+                <p className="text-xs text-slate-600 mb-1">
                   核心概念：{toast.coreConcepts.join("、")}
                 </p>
               )}
@@ -104,7 +168,7 @@ export default function CourseDetailPage() {
             </div>
             <button
               onClick={() => setToast(null)}
-              className="p-1 rounded-lg hover:bg-gray-100 transition-colors text-gray-400"
+              className="p-1 rounded-lg hover:bg-slate-100 transition-colors text-slate-400"
             >
               <X className="w-4 h-4" />
             </button>
@@ -112,56 +176,129 @@ export default function CourseDetailPage() {
         </div>
       )}
 
-      <div className="flex items-center gap-3 mb-6">
+      <div className="h-14 px-4 flex items-center gap-3 border-b border-slate-200 bg-white shrink-0">
         <button
           onClick={() => navigate("/")}
-          className="p-2 rounded-lg hover:bg-gray-100 transition-colors text-gray-500 hover:text-midnightCharcoal"
+          className="p-2 rounded-lg hover:bg-slate-100 transition-colors text-slate-500 hover:text-midnightCharcoal"
         >
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <h1 className="text-xl font-bold text-midnightCharcoal">课程详情</h1>
+        <h1 className="text-lg font-bold text-midnightCharcoal truncate">
+          {course?.title || "课程详情"}
+        </h1>
+
         <div className="flex-1" />
-        <button
-          onClick={toggleMode}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-            studyMode === "exam"
-              ? "bg-red-500/10 text-red-500 border border-red-500/20"
-              : "bg-foxAmber/10 text-foxAmber border border-foxAmber/20"
+
+        {countdown && (
+          <div className={`px-3 py-1 rounded-lg text-sm font-medium ${
+            isExamMode
+              ? "bg-foxAmber/15 text-foxAmber"
+              : countdown.days >= 0 && countdown.days <= 7
+              ? "bg-red-50 text-red-500"
+              : "bg-slate-100 text-slate-600"
+          }`}>
+            {countdown.text}
+          </div>
+        )}
+
+        <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-0.5">
+          <button
+            onClick={() => setStudyMode("study")}
+            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              studyMode === "study"
+                ? "bg-white text-midnightCharcoal shadow-sm"
+                : "text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            日常学习
+          </button>
+          <button
+            onClick={() => setStudyMode("exam")}
+            className={`flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              studyMode === "exam"
+                ? "bg-foxAmber text-midnightCharcoal shadow-sm"
+                : "text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            <Zap className="w-3.5 h-3.5" />
+            超级备考
+          </button>
+        </div>
+
+        <div className="flex items-center gap-1 ml-1">
+          <button
+            onClick={() => setLeftCollapsed(!leftCollapsed)}
+            className={`p-2 rounded-lg transition-colors ${
+              leftCollapsed
+                ? "bg-foxAmber/10 text-foxAmber"
+                : "hover:bg-slate-100 text-slate-500 hover:text-midnightCharcoal"
+            }`}
+            title={leftCollapsed ? "展开来源面板" : "折叠来源面板"}
+          >
+            {leftCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+          </button>
+          <button
+            onClick={() => setRightCollapsed(!rightCollapsed)}
+            className={`p-2 rounded-lg transition-colors ${
+              rightCollapsed
+                ? "hover:bg-slate-100 text-slate-500 hover:text-midnightCharcoal"
+                : "bg-slate-100 text-midnightCharcoal"
+            }`}
+            title={rightCollapsed ? "展开 Studio 面板" : "折叠 Studio 面板"}
+          >
+            {rightCollapsed ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          </button>
+        </div>
+      </div>
+
+      <div className="flex-1 flex overflow-hidden">
+        <div
+          className={`bg-slate-50 border-r border-slate-200 flex flex-col transition-all duration-200 ease-out overflow-hidden ${
+            leftCollapsed ? "w-12" : "w-64"
           }`}
         >
-          <Zap className="w-3.5 h-3.5" />
-          {studyMode === "exam" ? "超级备考" : "日常学习"}
-        </button>
-      </div>
+          <SourcesPanel
+            courseId={courseId}
+            collapsed={leftCollapsed}
+            selectedSourceIds={selectedSourceIds}
+            selectedNoteIds={selectedNoteIds}
+            onSelectionChange={handleSelectionChange}
+          />
+        </div>
 
-      <div className="flex gap-1 border-b border-gray-200 mb-6 overflow-x-auto">
-        {tabOrder.map((key) => {
-          const tab = allTabs.find((t) => t.key === key)!;
-          const Icon = tab.icon;
-          return (
-            <button
-              key={key}
-              onClick={() => setActiveTab(key)}
-              className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
-                activeTab === key
-                  ? "border-foxAmber text-foxAmber"
-                  : "border-transparent text-gray-500 hover:text-midnightCharcoal"
-              }`}
-            >
-              <Icon className="w-4 h-4" />
-              {tab.label}
-            </button>
-          );
-        })}
-      </div>
+        <div className="flex-1 flex flex-col bg-slate-50 overflow-hidden">
+          {activeView !== "chat" && (
+            <div className="h-10 px-4 flex items-center gap-2 border-b border-slate-100 bg-white shrink-0">
+              <button
+                onClick={() => setActiveView("chat")}
+                className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-foxAmber transition-colors"
+              >
+                <MessageCircle className="w-4 h-4" />
+                返回聊天
+              </button>
+            </div>
+          )}
+          <div className="flex-1 overflow-hidden">
+            {renderActiveView()}
+          </div>
+        </div>
 
-      {activeTab === "materials" && <MaterialsTab courseId={courseId} />}
-      {activeTab === "skeleton" && <SkeletonTab courseId={courseId} onConceptClick={handleConceptClick} />}
-      {activeTab === "qa" && <ChatTab courseId={courseId} prefillQuestion={prefillQuestion} onPrefillConsumed={() => setPrefillQuestion("")} />}
-      {activeTab === "kg" && <KnowledgeGraphTab courseId={courseId} />}
-      {activeTab === "lecture" && <LectureView courseId={courseId} chapters={chapters} />}
-      {activeTab === "quiz" && <QuizView courseId={courseId} chapters={chapters} />}
-      {activeTab === "review" && <ReviewTab courseId={courseId} course={course ?? undefined} />}
+        <div
+          className={`bg-white border-l border-slate-200 flex flex-col transition-all duration-200 ease-out overflow-hidden ${
+            rightCollapsed ? "w-0" : "w-72"
+          }`}
+        >
+          {!rightCollapsed && (
+            <StudioPanel
+              courseId={courseId}
+              activeView={activeView}
+              onViewChange={setActiveView}
+              selectedNoteIds={selectedNoteIds}
+              onNoteSelectionChange={(ids) => setSelectedNoteIds(ids)}
+            />
+          )}
+        </div>
+      </div>
     </div>
   );
 }

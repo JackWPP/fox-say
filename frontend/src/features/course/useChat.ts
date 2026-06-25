@@ -115,10 +115,12 @@ export function useChat(courseId: string) {
   }, [courseId, activeSessionId, loadSessions, sessions]);
 
   const sendQuestion = useCallback(
-    async (question: string) => {
-      if (!activeSessionId) {
+    async (question: string, selectedSourceIds?: string[], selectedNoteIds?: string[]) => {
+      let sessionId = activeSessionId;
+      if (!sessionId) {
         const sid = await createSession("New Chat");
         if (!sid) return;
+        sessionId = sid;
       }
 
       const userMsg: ChatMessage = {
@@ -132,10 +134,17 @@ export function useChat(courseId: string) {
       setActiveToolCalls([]);
 
       try {
+        const body: Record<string, unknown> = { question, session_id: sessionId };
+        if (selectedSourceIds && selectedSourceIds.length > 0) {
+          body.selected_source_ids = selectedSourceIds;
+        }
+        if (selectedNoteIds && selectedNoteIds.length > 0) {
+          body.selected_note_ids = selectedNoteIds;
+        }
         const res = await fetch(`${API_BASE}/courses/${courseId}/chat/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question, session_id: activeSessionId }),
+          body: JSON.stringify(body),
         });
 
         if (!res.ok) throw new Error(`Stream error: ${res.status}`);

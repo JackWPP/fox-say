@@ -2,13 +2,15 @@ import asyncio
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 
 from app.core.config import settings
 from app.db.deps import get_store
 from app.db.sqlite_store import SqliteStore
-from app.schemas.foxsay import Material, MaterialKind
+from app.schemas.foxsay import DMAP, Material, MaterialKind, SourcePreviewResponse
+from app.services.dmap import get_dmap_element_by_id, get_dmap_node_by_id
 from app.services.pipeline import process_material
+from app.services.vectorstore import QdrantStore
 
 router = APIRouter(prefix="/courses/{course_id}/materials")
 
@@ -122,3 +124,69 @@ async def get_material_progress(course_id: str, material_id: str, store: SqliteS
         elif last["status"] == "failed":
             current_step = "failed"
     return {"material_id": material_id, "current_step": current_step, "steps": tasks}
+
+
+@router.get("/{material_id}/source-preview", response_model=SourcePreviewResponse)
+async def get_source_preview(
+    course_id: str,
+    material_id: str,
+    dmap_id: str | None = Query(default=None),
+    chunk_index: int | None = Query(default=None),
+    store: SqliteStore = Depends(get_store),
+):
+    course = store.get_course(course_id)
+    if course is None:
+        raise HTTPException(status_code=404, detail="Course not found")
+    material = store.get_material(course_id, material_id)
+    if material is None:
+        raise HTTPException(status_code=404, detail="Material not found")
+
+    file_name = material.filename
+
+    if dmap_id is not None:
+        dmap_json = store.get_dmap(course_id)
+        if dmap_json:
+            try:
+                dmap = DMAP.model_validate_json(dmap_json)
+            except Exception:
+                dmap = None
+            if dmap is not None:
+                node = get_dmap_node_by_id(dmap, dmap_id)
+                if node:
+                    parts = [node.title] + [e.text_preview for e in node.elements]
+                    text = "\n".join(parts)
+                    page_ref = node.page_ref or ""
+                    locator = node.title or dmap_id
+                    return SourcePreviewResponse(
+                        text=text,
+                        page_ref=page_ref,
+                        file_name=file_name,
+                        locator=locator,
+                    )
+                elem = get_dmap_element_by_id(dmap, dmap_id)
+                if elem:
+                    text = elem.text_preview or elem.caption or elem.latex or ""
+                    page_ref = elem.page_ref or ""
+                    locator = f"元素 {dmap_id}"
+                    return SourcePreviewResponse(
+                        text=text,
+                        page_ref=page_ref,
+                        file_name=file_name,
+                        locator=locator,
+                    )
+
+    if chunk_index is not None:
+        _qdrant = QdrantStore()
+        chunk_payload = _qdrant.get_chunk_by_index(course_id, material_id, chunk_index)
+        if chunk_payload:
+            text = chunk_payload.get("text", "")
+            page_ref = str(chunk_payload.get("page", ""))
+            locator = f"第{chunk_index + 1}部分"
+            return SourcePreviewResponse(
+                text=text,
+                page_ref=page_ref,
+                file_name=file_name,
+                locator=locator,
+            )
+
+    raise HTTPException(status_code=404, detail="Source fragment not found")

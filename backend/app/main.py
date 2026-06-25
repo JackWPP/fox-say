@@ -8,6 +8,7 @@ from app.api.courses import router as courses_router
 from app.api.events import router as events_router
 from app.api.knowledge_graph import router as knowledge_graph_router
 from app.api.materials import router as materials_router
+from app.api.notes import router as notes_router
 from app.api.review import router as review_router
 from app.api.review_session import router as review_session_router
 from app.api.settings import router as settings_router
@@ -43,6 +44,7 @@ def health_check():
 def _register_routers() -> None:
     app.include_router(courses_router)
     app.include_router(materials_router)
+    app.include_router(notes_router)
     app.include_router(skeleton_router)
     app.include_router(chat_router)
     app.include_router(review_router)
