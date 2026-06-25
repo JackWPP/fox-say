@@ -281,7 +281,7 @@
   - `programmatic` TR-11.4: 所有现有测试通过，新增测试覆盖
 - **Notes**: 深度思考模式默认关闭，用户主动开启后才触发。不改变 CRAG 阈值。
 
-## [ ] Task 12: 集成测试 + 浏览器验证 + 文档更新
+## [x] Task 12: 集成测试 + 浏览器验证 + 文档更新
 - **Priority**: high
 - **Depends On**: All previous tasks
 - **Description**:
