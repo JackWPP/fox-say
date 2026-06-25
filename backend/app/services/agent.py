@@ -337,6 +337,26 @@ async def agent_chat(
                 logger.exception("Tool %s execution failed", tool_name)
                 tool_result = json.dumps({"error": str(exc)}, ensure_ascii=False)
 
+            # Skill 返回内容时直接作为最终回答,不再继续循环
+            from app.services.skills import get_skill
+            if get_skill(tool_name) is not None:
+                try:
+                    skill_data = json.loads(tool_result)
+                    if "error" not in skill_data:
+                        content = skill_data.get("content", "")
+                        if content:
+                            citations = _extract_citations(content)
+                            yield {
+                                "type": "done",
+                                "answer": content,
+                                "citations": citations,
+                                "in_scope": True,
+                                "guard_warning": None,
+                            }
+                            return
+                except (json.JSONDecodeError, KeyError):
+                    pass
+
             # 从 search_wiki 结果中收集 source 备用
             if tool_name == "search_wiki":
                 try:
