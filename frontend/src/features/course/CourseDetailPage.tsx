@@ -92,6 +92,12 @@ export default function CourseDetailPage() {
   }, [studyMode]);
 
   useEffect(() => {
+    if (activeView === "review" && studyMode !== "exam") {
+      setStudyMode("exam");
+    }
+  }, [activeView, studyMode]);
+
+  useEffect(() => {
     const handleResize = () => {
       if (window.innerWidth < 1280) {
         setRightCollapsed(true);
@@ -118,6 +124,7 @@ export default function CourseDetailPage() {
           <ChatWorkspace
             courseId={courseId}
             courseTitle={course?.title || "课程"}
+            course={course ?? undefined}
             sourceCount={materials.length}
             selectedSourceIds={selectedSourceIds}
             selectedNoteIds={selectedNoteIds}
@@ -213,7 +220,16 @@ export default function CourseDetailPage() {
             日常学习
           </button>
           <button
-            onClick={() => setStudyMode("exam")}
+            onClick={() => {
+              if (studyMode !== "exam") {
+                setStudyMode("exam");
+                if (activeView === "chat") {
+                  setActiveView("review");
+                }
+              } else {
+                setStudyMode("study");
+              }
+            }}
             className={`flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
               studyMode === "exam"
                 ? "bg-foxAmber text-midnightCharcoal shadow-sm"

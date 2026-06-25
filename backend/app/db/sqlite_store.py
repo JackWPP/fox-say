@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS courses (
     status TEXT NOT NULL DEFAULT 'empty',
     teacher TEXT,
     exam_date TEXT,
+    summary TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -182,6 +183,7 @@ class SqliteStore:
         """Add columns/tables that may be missing from older databases."""
         migrations = [
             "ALTER TABLE chat_messages ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE courses ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
         ]
         for sql in migrations:
             try:
@@ -197,8 +199,8 @@ class SqliteStore:
 
     def create_course(self, course: Course) -> Course:
         self._conn.execute(
-            "INSERT INTO courses (id, title, status, teacher, exam_date) VALUES (?, ?, ?, ?, ?)",
-            (course.id, course.title, course.status, course.teacher, course.exam_date),
+            "INSERT INTO courses (id, title, status, teacher, exam_date, summary) VALUES (?, ?, ?, ?, ?, ?)",
+            (course.id, course.title, course.status, course.teacher, course.exam_date, course.summary),
         )
         self._conn.commit()
         return course
@@ -207,22 +209,40 @@ class SqliteStore:
         row = self._conn.execute("SELECT * FROM courses WHERE id = ?", (course_id,)).fetchone()
         if row is None:
             return None
-        return Course(id=row["id"], title=row["title"], status=row["status"], teacher=row["teacher"], exam_date=row["exam_date"])
+        return Course(
+            id=row["id"], title=row["title"], status=row["status"],
+            teacher=row["teacher"], exam_date=row["exam_date"],
+            summary=row["summary"] if "summary" in row.keys() else "",
+        )
 
     def get_all_courses(self) -> list[Course]:
         rows = self._conn.execute("SELECT * FROM courses ORDER BY created_at DESC").fetchall()
-        return [Course(id=r["id"], title=r["title"], status=r["status"], teacher=r["teacher"], exam_date=r["exam_date"]) for r in rows]
+        return [
+            Course(
+                id=r["id"], title=r["title"], status=r["status"],
+                teacher=r["teacher"], exam_date=r["exam_date"],
+                summary=r["summary"] if "summary" in r.keys() else "",
+            )
+            for r in rows
+        ]
 
     def update_course(self, course_id: str, course: Course) -> Course | None:
         existing = self.get_course(course_id)
         if existing is None:
             return None
         self._conn.execute(
-            "UPDATE courses SET title=?, status=?, teacher=?, exam_date=? WHERE id=?",
-            (course.title, course.status, course.teacher, course.exam_date, course_id),
+            "UPDATE courses SET title=?, status=?, teacher=?, exam_date=?, summary=? WHERE id=?",
+            (course.title, course.status, course.teacher, course.exam_date, course.summary, course_id),
         )
         self._conn.commit()
         return course
+
+    def update_course_summary(self, course_id: str, summary: str) -> None:
+        self._conn.execute(
+            "UPDATE courses SET summary=? WHERE id=?",
+            (summary, course_id),
+        )
+        self._conn.commit()
 
     # --- Materials ---
 

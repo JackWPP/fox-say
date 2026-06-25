@@ -6,12 +6,12 @@ import NoteEditor from "./NoteEditor";
 
 type ActiveView = "chat" | "skeleton" | "kg" | "lecture" | "quiz" | "review" | "materials";
 
-const studioTools: { key: ActiveView; label: string; icon: typeof FileText; description: string; highlight?: boolean }[] = [
+const studioTools: { key: ActiveView; label: string; icon: typeof FileText; description: string }[] = [
   { key: "kg", label: "知识图谱", icon: Network, description: "概念关联图" },
   { key: "skeleton", label: "课程骨架", icon: GitBranch, description: "章节与核心概念" },
   { key: "lecture", label: "讲义视图", icon: BookOpen, description: "系统学习材料" },
   { key: "quiz", label: "练习模式", icon: HelpCircle, description: "测验与巩固" },
-  { key: "review", label: "超级备考", icon: Zap, description: "复习计划与陪伴", highlight: true },
+  { key: "review", label: "复习计划", icon: Zap, description: "复习计划与陪伴" },
   { key: "materials", label: "材料管理", icon: FileText, description: "上传与处理材料" },
 ];
 
@@ -65,28 +65,24 @@ export default function StudioPanel({ courseId, activeView, onViewChange, select
                 onClick={() => onViewChange(tool.key)}
                 className={`flex flex-col items-start gap-1.5 p-3 rounded-xl text-left transition-all ${
                   isActive
-                    ? tool.highlight
-                      ? "bg-foxAmber text-midnightCharcoal border-2 border-foxAmber shadow-md -translate-y-0.5"
-                      : "bg-foxAmber/10 border-2 border-foxAmber/40"
+                    ? "bg-foxAmber/10 border-2 border-foxAmber/40"
                     : "bg-slate-50 border border-transparent hover:bg-white hover:border-slate-200 hover:shadow-md hover:-translate-y-0.5"
                 }`}
               >
                 <div className={`p-1.5 rounded-lg ${
                   isActive
-                    ? tool.highlight
-                      ? "bg-white/30"
-                      : "bg-foxAmber/20 text-foxAmber"
+                    ? "bg-foxAmber/20 text-foxAmber"
                     : "bg-white text-slate-500"
                 }`}>
                   <Icon className="w-4 h-4" />
                 </div>
                 <p className={`text-xs font-semibold ${
-                  isActive ? (tool.highlight ? "text-midnightCharcoal" : "text-foxAmber") : "text-midnightCharcoal"
+                  isActive ? "text-foxAmber" : "text-midnightCharcoal"
                 }`}>
                   {tool.label}
                 </p>
                 <p className={`text-[0.65rem] leading-tight ${
-                  isActive ? (tool.highlight ? "text-midnightCharcoal/80" : "text-foxAmber/70") : "text-slate-500"
+                  isActive ? "text-foxAmber/70" : "text-slate-500"
                 }`}>
                   {tool.description}
                 </p>

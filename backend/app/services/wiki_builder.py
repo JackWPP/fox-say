@@ -180,6 +180,7 @@ class WikiState(TypedDict, total=False):
     changed_node_ids: list[str]
     old_merkle_tree: MerkleTree
     new_merkle_tree: MerkleTree
+    course_summary: str
     result: WikiBuildResult
 
 
@@ -799,12 +800,99 @@ def summarizer_node(state: WikiState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Stage 6: CourseSummarizer (生成课程全局概述)
+# ---------------------------------------------------------------------------
+
+
+COURSE_SUMMARIZER_SYSTEM = (
+    "你是一个课程介绍助手。给定整门课的章节摘要、核心主题列表，"
+    "为这门课生成一段 200-400 字的中文概述，帮助学生快速了解课程全貌。\n\n"
+    "要求:\n"
+    "- 开头一句话点明课程主题和定位\n"
+    "- 中间概括核心知识模块(按章节/主题分组)\n"
+    "- 结尾给出学习路径建议和重点/难点提示\n"
+    "- 语气像学长/学姐在给学弟学妹介绍这门课，生动不枯燥，不要太官方\n"
+    "- 纯文本，不要用 markdown 格式，不要分点列举\n"
+    "- 不要出现'本课程旨在'、'通过本课程学习'这类套话\n\n"
+    "只返回一段中文文本，不要包含其他文字。"
+)
+
+
+def _summarize_course(
+    course_id: str,
+    chapter_wikis: list[ChapterWiki],
+    course_index: CourseIndex | None,
+    kcs: list[KC],
+) -> str:
+    """用 LLM 生成课程全局概述。失败时返回 fallback 文本(不抛异常,不阻断流程)。"""
+    chapters_input = []
+    for cw in chapter_wikis:
+        chapters_input.append({
+            "title": cw.title,
+            "overview": cw.overview[:300],
+        })
+
+    core_topics = course_index.core_topics if course_index else []
+    if not core_topics:
+        kc_name_counts: dict[str, int] = {}
+        for kc in kcs:
+            kc_name_counts[kc.name] = kc_name_counts.get(kc.name, 0) + 1
+        core_topics = sorted(kc_name_counts.keys(), key=lambda n: -kc_name_counts[n])[:5]
+
+    user_content = json.dumps(
+        {
+            "course_name": course_index.course_name if course_index else "",
+            "core_topics": core_topics[:8],
+            "chapters": chapters_input,
+            "total_kcs": len(kcs),
+        },
+        ensure_ascii=False,
+    )
+
+    try:
+        raw = _llm_call(COURSE_SUMMARIZER_SYSTEM, user_content, temperature=0.3, max_tokens=1000)
+        summary = raw.strip()
+        if len(summary) >= 50:
+            return summary
+    except Exception as e:
+        logger.warning("CourseSummarizer LLM failed, using fallback: %s", e)
+
+    # Fallback: 拼接章节标题和核心主题生成简单概述
+    if course_index and course_index.course_name:
+        ch_titles = [cw.title for cw in chapter_wikis if cw.title and cw.title != "(未分章)"]
+        topics_str = "、".join(core_topics[:3]) if core_topics else "核心概念"
+        if ch_titles:
+            return (
+                f"这门课主要涵盖{len(ch_titles)}个知识模块，"
+                f"包括{'、'.join(ch_titles[:4])}等内容。"
+                f"核心主题围绕{topics_str}展开，"
+                f"建议按章节顺序循序渐进学习，重点关注各章节之间的关联。"
+            )
+    return ""
+
+
+def course_summarizer_node(state: WikiState) -> dict[str, Any]:
+    """生成课程全局概述。失败时使用 fallback,不阻断流程。"""
+    try:
+        summary = _summarize_course(
+            state["course_id"],
+            state.get("chapter_wikis", []),
+            state.get("course_index"),
+            state.get("merged_kcs", []),
+        )
+        return {"course_summary": summary}
+    except Exception as e:
+        logger.error("CourseSummarizer node failed: %s", e, exc_info=True)
+        return {"course_summary": ""}
+
+
+# ---------------------------------------------------------------------------
 # LangGraph 图定义
 # ---------------------------------------------------------------------------
 
 
 def build_wiki_graph() -> Any:
-    """构造 5 阶段 LangGraph StateGraph(Supervisor → Workers → Reducer → Reviewer → Summarizer)。
+    """构造 6 阶段 LangGraph StateGraph(Supervisor → Workers → Reducer → Reviewer → ChapterSummarizer → CourseSummarizer)。
 
     Send 派发的体现:supervisor_node 返回 {"tasks": [...]} 后,fanout 节点
     用 LangGraph 的 Send API 为每个 task 派发一次 worker_node,LangGraph 内部
@@ -842,6 +930,7 @@ def build_wiki_graph() -> Any:
     graph.add_node("reducer", reducer_node)
     graph.add_node("reviewer", reviewer_node)
     graph.add_node("summarizer", summarizer_node)
+    graph.add_node("course_summarizer", course_summarizer_node)
 
     graph.add_edge(START, "supervisor")
     graph.add_conditional_edges("supervisor", _fanout, ["_worker_single"])
@@ -849,7 +938,8 @@ def build_wiki_graph() -> Any:
     graph.add_edge("_collect_workers", "reducer")
     graph.add_edge("reducer", "reviewer")
     graph.add_edge("reviewer", "summarizer")
-    graph.add_edge("summarizer", END)
+    graph.add_edge("summarizer", "course_summarizer")
+    graph.add_edge("course_summarizer", END)
 
     return graph.compile()
 
@@ -917,6 +1007,7 @@ def build_wiki(
 
     kcs = final_state.get("merged_kcs", [])
     chapter_wikis = final_state.get("chapter_wikis", [])
+    course_summary = final_state.get("course_summary", "")
 
     try:
         kcs = _embed_kcs(kcs)
@@ -929,6 +1020,7 @@ def build_wiki(
         kcs=kcs,
         chapter_wikis=chapter_wikis,
         course_index=final_state.get("course_index"),
+        course_summary=course_summary,
         dmap=dmap,
         merkle_tree=new_merkle,
     )
@@ -980,6 +1072,8 @@ def _persist_to_store(
         store.save_course_index(
             result.course_id, result.course_index.model_dump_json()
         )
+    if result.course_summary:
+        store.update_course_summary(result.course_id, result.course_summary)
 
 
 # ---------------------------------------------------------------------------

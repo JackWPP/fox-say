@@ -9,6 +9,7 @@ export interface Course {
   teacher?: string;
   exam_date?: string;
   status: CourseStatus;
+  summary?: string;
 }
 
 export interface Material {

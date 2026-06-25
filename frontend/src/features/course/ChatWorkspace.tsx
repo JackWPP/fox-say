@@ -7,7 +7,7 @@ import { useChat } from "./useChat";
 import { api } from "../../shared/api";
 import MarkdownRenderer from "./MarkdownRenderer";
 import CitationCard from "./CitationCard";
-import type { ChapterWiki } from "../../shared/types";
+import type { ChapterWiki, Course } from "../../shared/types";
 
 const SUGGESTED_QUESTIONS = [
   { text: "这门课最核心的概念是什么？", icon: BookOpen },
@@ -18,6 +18,7 @@ const SUGGESTED_QUESTIONS = [
 interface ChatWorkspaceProps {
   courseId: string;
   courseTitle: string;
+  course?: Course;
   sourceCount: number;
   selectedSourceIds: string[];
   selectedNoteIds: string[];
@@ -26,7 +27,12 @@ interface ChatWorkspaceProps {
   onSwitchToMaterials?: () => void;
 }
 
-function CourseSummaryCard({ courseId, onSaveNote }: { courseId: string; onSaveNote: (title: string, content: string) => void }) {
+function CourseSummaryCard({ courseId, courseSummary, courseStatus, onSaveNote }: {
+  courseId: string;
+  courseSummary?: string;
+  courseStatus?: string;
+  onSaveNote: (title: string, content: string) => void;
+}) {
   const [wikis, setWikis] = useState<ChapterWiki[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
@@ -36,8 +42,8 @@ function CourseSummaryCard({ courseId, onSaveNote }: { courseId: string; onSaveN
     let cancelled = false;
     const fetchWikis = async () => {
       try {
-        const data = await api.get<ChapterWiki[]>(`/courses/${courseId}/chapter-wikis`);
-        if (!cancelled) setWikis(data);
+        const data = await api.get<{ chapter_wikis: ChapterWiki[] }>(`/courses/${courseId}/chapter-wikis`);
+        if (!cancelled) setWikis(data.chapter_wikis || []);
       } catch {
         if (!cancelled) setWikis([]);
       } finally {
@@ -48,25 +54,31 @@ function CourseSummaryCard({ courseId, onSaveNote }: { courseId: string; onSaveN
     return () => { cancelled = true; };
   }, [courseId]);
 
-  const summary = wikis && wikis.length > 0
-    ? wikis.map(w => w.overview).join(" ")
+  const wikiFallbackSummary = wikis && wikis.length > 0
+    ? wikis.map(w => w.overview).filter(Boolean).join(" ")
     : "";
 
+  const displaySummary = courseSummary || wikiFallbackSummary;
+
   const handleCopy = async () => {
+    if (!displaySummary) return;
     try {
-      await navigator.clipboard.writeText(summary);
+      await navigator.clipboard.writeText(displaySummary);
     } catch { /* ignore */ }
     setCopied(true);
     setTimeout(() => setCopied(false), 1400);
   };
 
   const handleSave = () => {
-    onSaveNote("课程概述", summary);
+    if (!displaySummary) return;
+    onSaveNote("课程概述", displaySummary);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
 
-  if (loading) {
+  const isProcessing = courseStatus === "processing" || (loading && !displaySummary);
+
+  if (isProcessing) {
     return (
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 mb-6">
         <div className="flex items-center gap-2 text-slate-400">
@@ -77,7 +89,7 @@ function CourseSummaryCard({ courseId, onSaveNote }: { courseId: string; onSaveN
     );
   }
 
-  if (!wikis || wikis.length === 0) {
+  if (!displaySummary) {
     return (
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 mb-6 border-l-4 border-l-foxAmber">
         <div className="flex items-start gap-3">
@@ -98,6 +110,9 @@ function CourseSummaryCard({ courseId, onSaveNote }: { courseId: string; onSaveN
         <div className="flex items-center gap-2">
           <Sparkles className="w-4 h-4 text-foxAmber" />
           <span className="text-sm font-semibold text-midnightCharcoal">课程概述</span>
+          {wikis && wikis.length > 0 && (
+            <span className="text-xs text-slate-400">· {wikis.length} 个章节</span>
+          )}
         </div>
         <div className="flex items-center gap-1">
           <button
@@ -116,7 +131,7 @@ function CourseSummaryCard({ courseId, onSaveNote }: { courseId: string; onSaveN
           </button>
         </div>
       </div>
-      <p className="text-sm text-slate-700 leading-relaxed">{summary}</p>
+      <p className="text-sm text-slate-700 leading-relaxed">{displaySummary}</p>
     </div>
   );
 }
@@ -134,7 +149,7 @@ function FoxAvatar({ streaming, error }: { streaming?: boolean; error?: boolean 
 }
 
 export default function ChatWorkspace({
-  courseId, courseTitle, sourceCount, selectedSourceIds, selectedNoteIds,
+  courseId, courseTitle, course, sourceCount, selectedSourceIds, selectedNoteIds,
   prefillQuestion, onPrefillConsumed, onSwitchToMaterials
 }: ChatWorkspaceProps) {
   const {
@@ -252,7 +267,12 @@ export default function ChatWorkspace({
               <h2 className="text-2xl font-bold text-midnightCharcoal mb-1">{courseTitle}</h2>
               <p className="text-sm text-slate-500 mb-6">{sourceCount} 个来源</p>
 
-              <CourseSummaryCard courseId={courseId} onSaveNote={handleSaveToNote} />
+              <CourseSummaryCard
+                courseId={courseId}
+                courseSummary={course?.summary}
+                courseStatus={course?.status}
+                onSaveNote={handleSaveToNote}
+              />
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full max-w-2xl mb-6">
                 {SUGGESTED_QUESTIONS.map((q, i) => {

@@ -29,6 +29,7 @@ class Course(BaseModel):
     status: CourseStatus
     teacher: str | None = None
     exam_date: str | None = None
+    summary: str = ""
 
 
 class Material(BaseModel):
@@ -372,6 +373,7 @@ class WikiBuildResult(BaseModel):
     kcs: list[KC] = []
     chapter_wikis: list[ChapterWiki] = []
     course_index: CourseIndex | None = None
+    course_summary: str = ""
     dmap: DMAP | None = None
     merkle_tree: MerkleTree | None = None
 

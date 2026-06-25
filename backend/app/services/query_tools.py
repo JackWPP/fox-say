@@ -54,6 +54,22 @@ def get_concept(course_id: str, concept_id: str, store: Any) -> str:
     return json.dumps(kc.model_dump(), ensure_ascii=False)
 
 
+def get_concept_by_name(course_id: str, concept_name: str, store: Any) -> str:
+    """按概念名称模糊查找 KC。LLM 不知道 concept_id 时使用。"""
+    if store is None:
+        return json.dumps({"note": "store not provided"}, ensure_ascii=False)
+    candidates = store.search_kcs_by_name(course_id, concept_name)
+    if not candidates:
+        return json.dumps({
+            "note": f"未找到名为「{concept_name}」的概念，请尝试用 search_wiki 搜索更精确的关键词。",
+        }, ensure_ascii=False)
+    best = candidates[0]
+    result = best.model_dump()
+    if len(candidates) > 1:
+        result["note"] = f"找到 {len(candidates)} 个匹配概念，返回最相关的：{best.name}。其他匹配：{', '.join(c.name for c in candidates[1:4])}"
+    return json.dumps(result, ensure_ascii=False)
+
+
 def get_chapter_outline(course_id: str, chapter_id: str, store: Any) -> str:
     """返回章节摘要。"""
     if store is None:
@@ -64,6 +80,29 @@ def get_chapter_outline(course_id: str, chapter_id: str, store: Any) -> str:
     if cw.course_id != course_id:
         return json.dumps({"note": f"章节 {chapter_id} 不属于课程 {course_id}"}, ensure_ascii=False)
     return json.dumps(cw.model_dump(), ensure_ascii=False)
+
+
+def get_chapter_by_title(course_id: str, chapter_title: str, store: Any) -> str:
+    """按章节标题模糊查找章节摘要。LLM 不知道 chapter_id 时使用。"""
+    if store is None:
+        return json.dumps({"note": "store not provided"}, ensure_ascii=False)
+    chapters = store.get_chapter_wikis_by_course(course_id)
+    if not chapters:
+        return json.dumps({"note": "该课程暂无章节信息"}, ensure_ascii=False)
+    best = None
+    best_score = 0
+    for cw in chapters:
+        if chapter_title in cw.title or cw.title in chapter_title:
+            score = len(set(chapter_title) & set(cw.title))
+            if score > best_score:
+                best_score = score
+                best = cw
+    if best is None:
+        titles = [cw.title for cw in chapters[:10]]
+        return json.dumps({
+            "note": f"未找到标题包含「{chapter_title}」的章节。可用章节：{', '.join(titles)}",
+        }, ensure_ascii=False)
+    return json.dumps(best.model_dump(), ensure_ascii=False)
 
 
 def follow_prerequisite(
