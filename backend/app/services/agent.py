@@ -50,19 +50,12 @@ SYSTEM_PROMPT = (
     "核心规则:\n"
     "1. 只能回答当前课程相关问题。超出范围时礼貌但欠揍地拒绝。\n"
     "2. 引用材料时, 必须用格式 `来自 [文件名] · 第X部分`, 在正文中自然嵌入。\n"
-    "3. 用户要求生成内容时,直接调对应工具,不要先搜索:\n"
-    "   - 生成讲义 → generate_lecture(chapter_id, depth)\n"
-    "   - 出练习题 → generate_quiz(chapter_id, count, type)\n"
-    "   - 生成闪卡 → generate_flashcards(chapter_id, count)\n"
-    "   - 概念关系图 → show_concept_graph(concept_id)\n"
-    "4. 回答问题时,先搜索再回答:\n"
-    "   - 事实性问题 → search_wiki(layer=micro)\n"
-    "   - 概念解释  → get_concept 拿完整 KC 卡\n"
-    "   - 章节概览  → get_course_map 或 get_chapter_outline\n"
+    "3. 工具使用:\n"
+    "   - 生成讲义/练习题/闪卡/概念图 → 直接调对应工具,不要先搜索\n"
+    "   - 回答问题 → search_wiki / get_concept / get_course_map\n"
     "   - 先修概念  → follow_prerequisite\n"
-    "   - 原始引用  → get_source_content\n"
-    "5. 复习相关问题才用 get_review_plan。\n"
-    "6. 回答自然有结构(Markdown), 不要逐条罗列搜索结果。"
+    "   - 复习计划  → get_review_plan\n"
+    "4. 回答自然有结构(Markdown), 不要逐条罗列搜索结果。"
 )
 
 # ---------------------------------------------------------------------------
@@ -337,19 +330,32 @@ async def agent_chat(
                 logger.exception("Tool %s execution failed", tool_name)
                 tool_result = json.dumps({"error": str(exc)}, ensure_ascii=False)
 
-            # Skill 返回内容时直接作为最终回答,不再继续循环
-            from app.services.skills import get_skill
-            if get_skill(tool_name) is not None:
+            # Skill 返回内容时直接作为最终回答,立即返回(不给 LLM 继续调工具的机会)
+            from app.services.skills import get_skill as _get_skill
+            if _get_skill(tool_name) is not None:
                 try:
                     skill_data = json.loads(tool_result)
                     if "error" not in skill_data:
                         content = skill_data.get("content", "")
                         if content:
+                            logger.info("Skill %s returned content (%d chars), stopping loop", tool_name, len(content))
                             citations = _extract_citations(content)
                             yield {
                                 "type": "done",
                                 "answer": content,
                                 "citations": citations,
+                                "in_scope": True,
+                                "guard_warning": None,
+                            }
+                            return
+                        else:
+                            # Skill 返回了数据但没有 content 字段(如 show_concept_graph)
+                            # 把结果作为最终回答
+                            logger.info("Skill %s returned data, using as answer", tool_name)
+                            yield {
+                                "type": "done",
+                                "answer": tool_result,
+                                "citations": [],
                                 "in_scope": True,
                                 "guard_warning": None,
                             }
