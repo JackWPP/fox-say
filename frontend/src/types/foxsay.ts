@@ -10,6 +10,7 @@ export interface Course {
   exam_date?: string;
   status: CourseStatus;
   summary?: string;
+  material_count?: number;
 }
 
 export interface Material {

@@ -209,22 +209,30 @@ class SqliteStore:
         row = self._conn.execute("SELECT * FROM courses WHERE id = ?", (course_id,)).fetchone()
         if row is None:
             return None
+        mat_count = self._conn.execute(
+            "SELECT COUNT(*) as cnt FROM materials WHERE course_id = ?", (course_id,)
+        ).fetchone()["cnt"]
         return Course(
             id=row["id"], title=row["title"], status=row["status"],
             teacher=row["teacher"], exam_date=row["exam_date"],
             summary=row["summary"] if "summary" in row.keys() else "",
+            material_count=mat_count,
         )
 
     def get_all_courses(self) -> list[Course]:
         rows = self._conn.execute("SELECT * FROM courses ORDER BY created_at DESC").fetchall()
-        return [
-            Course(
+        courses = []
+        for r in rows:
+            mat_count = self._conn.execute(
+                "SELECT COUNT(*) as cnt FROM materials WHERE course_id = ?", (r["id"],)
+            ).fetchone()["cnt"]
+            courses.append(Course(
                 id=r["id"], title=r["title"], status=r["status"],
                 teacher=r["teacher"], exam_date=r["exam_date"],
                 summary=r["summary"] if "summary" in r.keys() else "",
-            )
-            for r in rows
-        ]
+                material_count=mat_count,
+            ))
+        return courses
 
     def update_course(self, course_id: str, course: Course) -> Course | None:
         existing = self.get_course(course_id)

@@ -30,6 +30,7 @@ class Course(BaseModel):
     teacher: str | None = None
     exam_date: str | None = None
     summary: str = ""
+    material_count: int = 0
 
 
 class Material(BaseModel):
