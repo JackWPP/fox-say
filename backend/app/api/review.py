@@ -1,3 +1,5 @@
+from datetime import date, timedelta
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -27,7 +29,8 @@ async def create_review_plan(course_id: str, body: ReviewPlanRequest, store: Sql
 
     exam_date = body.exam_date or course.exam_date
     if not exam_date:
-        raise HTTPException(status_code=400, detail="Course has no exam date")
+        # 默认 30 天后
+        exam_date = (date.today() + timedelta(days=30)).isoformat()
 
     skeleton = store.get_skeleton(course_id)
     if skeleton is None:

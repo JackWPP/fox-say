@@ -187,7 +187,7 @@ def _get_tools() -> list[dict]:
 # 主循环
 # ---------------------------------------------------------------------------
 
-MAX_ROUNDS = 3
+MAX_ROUNDS = 5
 
 # ---------------------------------------------------------------------------
 # DSML defense layer
@@ -324,6 +324,9 @@ async def agent_chat(
 
             try:
                 tool_result = await _execute_tool(tool_name, tool_args, course_id, store)
+                # 如果原始工具返回"未知工具",尝试作为 Skill 执行
+                if "未知工具" in tool_result:
+                    tool_result = await _execute_skill(tool_name, tool_args, course_id, store)
             except Exception as exc:
                 # HEC-1:工具异常要让 LLM 看到,不要 return ""
                 logger.exception("Tool %s execution failed", tool_name)
@@ -474,6 +477,20 @@ async def _execute_tool(name: str, args: dict, course_id: str, store: Any) -> st
         )
 
     return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False)
+
+
+async def _execute_skill(name: str, args: dict, course_id: str, store: Any) -> str:
+    """路由注册的 Skills 到对应 handler。"""
+    from app.services.skills import get_skill
+    skill = get_skill(name)
+    if skill is None:
+        return json.dumps({"error": f"未知 Skill: {name}"}, ensure_ascii=False)
+    try:
+        result = await skill.handler(course_id=course_id, store=store, **args)
+        return result
+    except Exception as e:
+        logger.exception("Skill %s execution failed", name)
+        return json.dumps({"error": f"Skill {name} 执行失败: {e}"}, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------

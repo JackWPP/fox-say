@@ -110,7 +110,8 @@ async def test_review_plan_no_exam_date(client: AsyncClient):
     store.create_skeleton(skeleton)
 
     resp = await client.post("/courses/no-exam-1/review-plan", json={})
-    assert resp.status_code == 400
+    # No exam date → uses default (30 days from today)
+    assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
