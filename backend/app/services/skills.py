@@ -107,9 +107,10 @@ async def generate_lecture_skill(
     if store is None:
         return json.dumps({"error": "store not available"}, ensure_ascii=False)
 
-    # 获取章节 KC
+    # 获取章节 KC (支持 ch-2 和 ch2 两种格式)
     kcs = store.get_kcs_by_course(course_id, include_invalid=False)
-    chapter_kcs = [kc for kc in kcs if kc.chapter_id == chapter_id]
+    normalized_id = chapter_id.replace("-", "")
+    chapter_kcs = [kc for kc in kcs if kc.chapter_id == chapter_id or kc.chapter_id == normalized_id]
     if not chapter_kcs:
         return json.dumps({"error": f"章节 {chapter_id} 没有找到 KC"}, ensure_ascii=False)
 
@@ -181,7 +182,8 @@ async def generate_quiz_skill(
         return json.dumps({"error": "store not available"}, ensure_ascii=False)
 
     kcs = store.get_kcs_by_course(course_id, include_invalid=False)
-    chapter_kcs = [kc for kc in kcs if kc.chapter_id == chapter_id]
+    normalized_id = chapter_id.replace("-", "")
+    chapter_kcs = [kc for kc in kcs if kc.chapter_id == chapter_id or kc.chapter_id == normalized_id]
     if not chapter_kcs:
         return json.dumps({"error": f"章节 {chapter_id} 没有找到 KC"}, ensure_ascii=False)
 
@@ -247,7 +249,8 @@ async def generate_flashcards_skill(
         return json.dumps({"error": "store not available"}, ensure_ascii=False)
 
     kcs = store.get_kcs_by_course(course_id, include_invalid=False)
-    chapter_kcs = [kc for kc in kcs if kc.chapter_id == chapter_id]
+    normalized_id = chapter_id.replace("-", "")
+    chapter_kcs = [kc for kc in kcs if kc.chapter_id == chapter_id or kc.chapter_id == normalized_id]
     if not chapter_kcs:
         return json.dumps({"error": f"章节 {chapter_id} 没有找到 KC"}, ensure_ascii=False)
 
