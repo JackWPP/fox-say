@@ -16,6 +16,23 @@ const kindLabels: Record<MaterialKind, string> = {
   text_note: "文本",
 };
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(pdf|pptx?|txt|md)$/i;
+
+const KIND_DISPLAY_LABELS: Record<string, string> = {
+  pdf: "PDF 文档",
+  ppt: "PPT 课件",
+  text_note: "文本笔记",
+  image: "图片",
+};
+
+function formatMaterialName(filename: string, kind: string, index: number): string {
+  if (UUID_PATTERN.test(filename)) {
+    const label = KIND_DISPLAY_LABELS[kind] || "材料";
+    return `${label} ${index + 1}`;
+  }
+  return filename;
+}
+
 const stepLabels: Record<string, string> = {
   parsing: "正在解析",
   chunking: "正在分块",
@@ -71,7 +88,7 @@ export default function MaterialList({ courseId, materials, onRetry }: { courseI
 
   return (
     <div className="space-y-2">
-      {materials.map((m) => {
+      {materials.map((m, index) => {
         const Icon = kindIcons[m.kind] || FileText;
         return (
           <div
@@ -81,7 +98,7 @@ export default function MaterialList({ courseId, materials, onRetry }: { courseI
             <Icon className="w-5 h-5 text-foxAmber shrink-0" />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-midnightCharcoal truncate">
-                {m.filename}
+                {formatMaterialName(m.filename, m.kind, index)}
               </p>
               <div className="flex items-center gap-2">
                 <p className="text-xs text-gray-400">{kindLabels[m.kind]}</p>

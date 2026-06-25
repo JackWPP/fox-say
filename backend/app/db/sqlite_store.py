@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id TEXT PRIMARY KEY,
     course_id TEXT NOT NULL,
-    title TEXT NOT NULL DEFAULT 'New Chat',
+    title TEXT NOT NULL DEFAULT '新对话',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (course_id) REFERENCES courses(id)
@@ -190,6 +190,10 @@ class SqliteStore:
                 self._conn.execute(sql)
             except sqlite3.OperationalError:
                 pass  # column already exists
+        self._conn.execute(
+            "UPDATE chat_sessions SET title = ? WHERE title = ?",
+            ("新对话", "New Chat"),
+        )
         self._conn.commit()
 
     def close(self) -> None:
@@ -378,7 +382,7 @@ class SqliteStore:
 
     # --- Chat Sessions ---
 
-    def create_chat_session(self, session_id: str, course_id: str, title: str = "New Chat") -> None:
+    def create_chat_session(self, session_id: str, course_id: str, title: str = "新对话") -> None:
         self._conn.execute(
             "INSERT INTO chat_sessions (id, course_id, title) VALUES (?, ?, ?)",
             (session_id, course_id, title),

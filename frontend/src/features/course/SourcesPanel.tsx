@@ -46,6 +46,23 @@ function MaterialStatus({ status }: { status: string }) {
   return null;
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(pdf|pptx?|txt|md)$/i;
+
+const KIND_LABELS: Record<string, string> = {
+  pdf: "PDF 文档",
+  ppt: "PPT 课件",
+  text_note: "文本笔记",
+  image: "图片",
+};
+
+function formatMaterialName(filename: string, kind: string, index: number): string {
+  if (UUID_PATTERN.test(filename)) {
+    const label = KIND_LABELS[kind] || "材料";
+    return `${label} ${index + 1}`;
+  }
+  return filename;
+}
+
 function ProgressSteps({ materialId, courseId }: { materialId: string; courseId: string }) {
   const steps = [
     { key: "parse", label: "解析" },
@@ -182,7 +199,7 @@ export default function SourcesPanel({ courseId, collapsed, selectedSourceIds, s
           )}
 
           <div className="space-y-1">
-            {materials.map((m: Material) => {
+            {materials.map((m: Material, index: number) => {
               const isSelected = selectedSourceIds.includes(m.id);
               const isExpanded = expandedMaterial === m.id;
               return (
@@ -199,7 +216,7 @@ export default function SourcesPanel({ courseId, collapsed, selectedSourceIds, s
                     >
                       <MaterialIcon kind={m.kind} />
                       <span className="text-xs text-slate-700 truncate flex-1 text-left">
-                        {m.filename}
+                        {formatMaterialName(m.filename, m.kind, index)}
                       </span>
                       <MaterialStatus status={m.status} />
                       {isExpanded ? (

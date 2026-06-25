@@ -18,6 +18,18 @@ function truncateFileName(name: string, max = 22): string {
   return stem.slice(0, max - ext.length - 1) + "…" + ext;
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(pdf|pptx?|txt|md)$/i;
+
+function displayFileName(name: string): string {
+  if (UUID_PATTERN.test(name)) {
+    const ext = name.slice(name.lastIndexOf(".")).toLowerCase();
+    if (ext === ".pdf") return "PDF 文档";
+    if (ext === ".ppt" || ext === ".pptx") return "PPT 课件";
+    return "文档";
+  }
+  return name;
+}
+
 export default function CitationCard({ citation, index, courseId, materialId, light }: CitationCardProps) {
   const [copied, setCopied] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
@@ -25,7 +37,8 @@ export default function CitationCard({ citation, index, courseId, materialId, li
   const [preview, setPreview] = useState<SourcePreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
-  const ref = `来自 ${citation.file_name} · ${citation.locator}`;
+  const displayName = displayFileName(citation.file_name);
+  const ref = `来自 ${displayName} · ${citation.locator}`;
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -86,7 +99,7 @@ export default function CitationCard({ citation, index, courseId, materialId, li
       >
         <FileText className="w-3 h-3 shrink-0" />
         <span className="font-mono">[{index + 1}]</span>
-        <span className="truncate max-w-[10rem]">{truncateFileName(citation.file_name)}</span>
+        <span className="truncate max-w-[10rem]">{truncateFileName(displayName)}</span>
         <span className="opacity-60">· {citation.locator}</span>
         {copied ? (
           <Check className="w-3 h-3 shrink-0 text-emerald-400 fox-check" onClick={handleCopy} />
@@ -100,7 +113,7 @@ export default function CitationCard({ citation, index, courseId, materialId, li
           <div className="fixed inset-0 z-40" onClick={() => setShowPreview(false)} />
           <div className="absolute bottom-full left-0 z-50 mb-2 w-80 bg-white rounded-xl shadow-lg border border-slate-200 p-4 fox-fade-in">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-medium text-slate-700 truncate flex-1">{citation.file_name} · {citation.locator}</span>
+              <span className="text-xs font-medium text-slate-700 truncate flex-1">{displayName} · {citation.locator}</span>
               <button onClick={() => setShowPreview(false)} className="p-1 rounded hover:bg-slate-100 text-slate-400">
                 <X className="w-3.5 h-3.5" />
               </button>

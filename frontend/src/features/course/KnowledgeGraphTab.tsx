@@ -40,6 +40,9 @@ const IMPORTANCE_LABEL: Record<KGNode["importance"], string> = {
 const NODE_WIDTH = 200;
 const NODE_HEIGHT = 56;
 
+const EMPTY_NODE_TYPES = {};
+const EMPTY_EDGE_TYPES = {};
+
 function buildLayout(
   nodes: KGNode[],
   edges: KGEdge[],
@@ -211,6 +214,8 @@ export default function KnowledgeGraphTab({ courseId, onAskAboutConcept }: Knowl
             fitView
             proOptions={{ hideAttribution: true }}
             nodesDraggable={false}
+            nodeTypes={EMPTY_NODE_TYPES}
+            edgeTypes={EMPTY_EDGE_TYPES}
           >
             <Background color="#e2e8f0" gap={20} size={1} />
             <Controls className="!bg-white !rounded-lg !shadow-soft !border-slate-200" />

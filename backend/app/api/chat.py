@@ -24,7 +24,7 @@ class StreamRequest(BaseModel):
 
 
 class CreateSessionRequest(BaseModel):
-    title: str = "New Chat"
+    title: str = "新对话"
 
 
 @router.post("/stream")
@@ -42,7 +42,7 @@ async def chat_stream(course_id: str, body: StreamRequest, store: SqliteStore = 
             session_id = sessions[0]["id"]
         else:
             session_id = str(uuid.uuid4())
-            store.create_chat_session(session_id, course_id, "New Chat")
+            store.create_chat_session(session_id, course_id, "新对话")
     else:
         store.touch_chat_session(session_id)
 

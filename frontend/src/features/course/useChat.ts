@@ -118,7 +118,7 @@ export function useChat(courseId: string) {
     async (question: string, selectedSourceIds?: string[], selectedNoteIds?: string[]) => {
       let sessionId = activeSessionId;
       if (!sessionId) {
-        const sid = await createSession("New Chat");
+        const sid = await createSession("新对话");
         if (!sid) return;
         sessionId = sid;
       }

@@ -202,7 +202,7 @@ export default function MarkdownRenderer({ content, streaming, variant, light, a
 
   return (
     <div className={className}>
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={componentsWithLight}>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: "ignore", output: "htmlAndMathml", trust: true }]]} components={componentsWithLight}>
         {safeContent}
       </ReactMarkdown>
       {streaming && <span className="fox-typing-cursor" aria-hidden="true" />}
