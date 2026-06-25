@@ -22,7 +22,7 @@ class BtwRequest(BaseModel):
 
 
 @router.post("/review-plan", response_model=ReviewPlan)
-async def create_review_plan(course_id: str, body: ReviewPlanRequest, store: SqliteStore = Depends(get_store)):
+async def create_review_plan(course_id: str, body: ReviewPlanRequest = ReviewPlanRequest(), store: SqliteStore = Depends(get_store)):
     course = store.get_course(course_id)
     if course is None:
         raise HTTPException(status_code=404, detail="Course not found")
