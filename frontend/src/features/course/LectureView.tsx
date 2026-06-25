@@ -1,5 +1,5 @@
-import { useState, useCallback } from "react";
-import { BookOpen, Loader2, Sparkles } from "lucide-react";
+import { useState, useCallback, useEffect } from "react";
+import { BookOpen, Loader2, Sparkles, RotateCcw } from "lucide-react";
 import MarkdownRenderer from "./MarkdownRenderer";
 import CitationCard from "./CitationCard";
 import type { Citation, CourseSkeletonChapter } from "../../shared/types";
@@ -10,6 +10,20 @@ interface LectureViewProps {
 }
 
 const API_BASE = "/api";
+
+function getSavedLecture(courseId: string, chapterId: string): { content: string; citations: Citation[] } | null {
+  try {
+    const raw = localStorage.getItem(`foxsay_lecture_${courseId}_${chapterId}`);
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignore */ }
+  return null;
+}
+
+function saveLecture(courseId: string, chapterId: string, content: string, citations: Citation[]) {
+  try {
+    localStorage.setItem(`foxsay_lecture_${courseId}_${chapterId}`, JSON.stringify({ content, citations }));
+  } catch { /* ignore */ }
+}
 
 async function streamChat(
   courseId: string,
@@ -67,6 +81,20 @@ export default function LectureView({ courseId, chapters }: LectureViewProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  // Load saved lecture when chapter changes
+  useEffect(() => {
+    if (!selectedId) return;
+    const saved = getSavedLecture(courseId, selectedId);
+    if (saved) {
+      setContent(saved.content);
+      setCitations(saved.citations);
+    } else {
+      setContent("");
+      setCitations([]);
+    }
+    setError("");
+  }, [courseId, selectedId]);
+
   const handleGenerate = useCallback(async () => {
     if (!selectedId) return;
     const ch = chapters.find((c) => c.id === selectedId);
@@ -82,6 +110,7 @@ export default function LectureView({ courseId, chapters }: LectureViewProps) {
       (answer, cits) => {
         setContent(answer);
         setCitations(cits);
+        saveLecture(courseId, selectedId, answer, cits);
       },
       (msg) => setError(msg),
     );
@@ -109,10 +138,12 @@ export default function LectureView({ courseId, chapters }: LectureViewProps) {
         >
           {loading ? (
             <Loader2 className="w-4 h-4 animate-spin" />
+          ) : content ? (
+            <RotateCcw className="w-4 h-4" />
           ) : (
             <BookOpen className="w-4 h-4" />
           )}
-          生成讲义
+          {content ? "重新生成" : "生成讲义"}
         </button>
       </div>
 
@@ -130,7 +161,7 @@ export default function LectureView({ courseId, chapters }: LectureViewProps) {
               <span className="text-sm text-gray-400">小狐狸正在写讲义...</span>
             </div>
           )}
-          {content && <MarkdownRenderer content={content} streaming={loading} />}
+          {content && <MarkdownRenderer content={content} streaming={loading} light />}
         </div>
       )}
 

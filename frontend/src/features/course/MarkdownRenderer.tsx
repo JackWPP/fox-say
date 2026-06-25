@@ -148,6 +148,8 @@ interface MarkdownRendererProps {
   content: string;
   /** When true, appends a blinking cursor at the end (for streaming output) */
   streaming?: boolean;
+  /** When true, uses light color scheme for white backgrounds */
+  light?: boolean;
 }
 
 // Defense in depth: strip any residual DSML tool-call markup the backend
@@ -168,10 +170,10 @@ function stripDSML(text: string): string {
   return text.replace(DSML_BLOCK_RE, "").replace(DSML_TAG_RE, "").trim();
 }
 
-export default function MarkdownRenderer({ content, streaming }: MarkdownRendererProps) {
+export default function MarkdownRenderer({ content, streaming, light }: MarkdownRendererProps) {
   const safeContent = stripDSML(content);
   return (
-    <div className="fox-prose">
+    <div className={light ? "fox-prose-light" : "fox-prose"}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {safeContent}
       </ReactMarkdown>

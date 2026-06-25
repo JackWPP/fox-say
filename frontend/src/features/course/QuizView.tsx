@@ -231,7 +231,7 @@ export default function QuizView({ courseId, chapters }: QuizViewProps) {
 
       {streamingText && (
         <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
-          <MarkdownRenderer content={streamingText} streaming />
+          <MarkdownRenderer content={streamingText} streaming light />
         </div>
       )}
 
@@ -321,7 +321,7 @@ export default function QuizView({ courseId, chapters }: QuizViewProps) {
                 <div className="bg-midnightCharcoal/[0.03] rounded-xl px-4 py-3 border border-gray-100">
                   <p className="text-xs font-semibold text-gray-500 mb-1">解析</p>
                   <div className="text-sm text-gray-700 leading-relaxed">
-                    <MarkdownRenderer content={current.explanation} />
+                    <MarkdownRenderer content={current.explanation} light />
                   </div>
                 </div>
                 <button

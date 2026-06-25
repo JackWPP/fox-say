@@ -84,6 +84,42 @@
   word-break: break-word;
 }
 
+/* Light mode variant (for lecture/quiz views on white background) */
+.fox-prose-light {
+  color: #1a1a1a;
+  line-height: 1.65;
+  font-size: 0.9rem;
+  word-break: break-word;
+}
+.fox-prose-light p { margin: 0.35rem 0; }
+.fox-prose-light p:first-child { margin-top: 0; }
+.fox-prose-light p:last-child { margin-bottom: 0; }
+.fox-prose-light strong { font-weight: 700; color: #92400e; }
+.fox-prose-light em { font-style: italic; }
+.fox-prose-light a { color: #b45309; text-decoration: underline; }
+.fox-prose-light a:hover { color: #d97706; }
+.fox-prose-light ul { list-style: disc; padding-left: 1.4rem; margin: 0.5rem 0; }
+.fox-prose-light ol { list-style: decimal; padding-left: 1.4rem; margin: 0.5rem 0; }
+.fox-prose-light li { margin: 0.15rem 0; }
+.fox-prose-light li::marker { color: #b45309; }
+.fox-prose-light h1, .fox-prose-light h2, .fox-prose-light h3, .fox-prose-light h4 {
+  font-weight: 700; color: #1a1a1a; margin: 0.8rem 0 0.4rem;
+}
+.fox-prose-light h1 { font-size: 1.1rem; }
+.fox-prose-light h2 { font-size: 1.05rem; }
+.fox-prose-light h3 { font-size: 0.98rem; }
+.fox-prose-light h4 { font-size: 0.9rem; }
+.fox-prose-light hr { border: none; border-top: 1px solid #e5e7eb; margin: 0.8rem 0; }
+.fox-prose-light table { border-collapse: collapse; margin: 0.5rem 0; width: 100%; }
+.fox-prose-light th, .fox-prose-light td {
+  border: 1px solid #d1d5db; padding: 0.35rem 0.6rem; text-align: left; font-size: 0.85rem;
+}
+.fox-prose-light th { background: #f9fafb; font-weight: 600; }
+.fox-prose-light code {
+  background: #f3f4f6; padding: 0.1em 0.35em; border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em; color: #be185d;
+}
+
 .fox-prose p { margin: 0.35rem 0; }
 .fox-prose p:first-child { margin-top: 0; }
 .fox-prose p:last-child  { margin-bottom: 0; }
