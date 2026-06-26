@@ -84,11 +84,13 @@ async def process_material(
     if kind == "pdf":
         try:
             from app.services.mineru import parse_pdf_mineru
-            md_text = await asyncio.to_thread(parse_pdf_mineru, file_path)
+            md_text, mineru_err = await asyncio.to_thread(parse_pdf_mineru, file_path)
             if md_text and len(md_text) > 100:
                 logger.info("MinerU returned %d chars for %s", len(md_text), material_id)
                 text = md_text
                 docling_chunks = _markdown_to_chunks(md_text)
+            elif mineru_err:
+                logger.warning("MinerU fallback failed for %s: %s", material_id, mineru_err)
         except Exception as e:
             logger.warning("MinerU fallback failed for %s: %s", material_id, e)
 

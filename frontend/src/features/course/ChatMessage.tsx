@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Copy, RefreshCw, ThumbsDown, ThumbsUp, AlertTriangle, ShieldOff, Sparkles } from "lucide-react";
+import { Check, Copy, RefreshCw, ThumbsDown, ThumbsUp, AlertTriangle, ShieldOff, Sparkles, RotateCcw } from "lucide-react";
 import type { ConfidenceStatus } from "../../shared/types";
 import type { ChatMessage as ChatMessageType } from "./useChat";
 import MarkdownRenderer from "./MarkdownRenderer";
@@ -134,7 +134,18 @@ export default function ChatMessage({ message, onRegenerate, onFeedback }: ChatM
 
           {/* Body */}
           {isRefusal || isError ? (
-            <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
+            <div>
+              <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
+              {isError && onRegenerate && (
+                <button
+                  onClick={onRegenerate}
+                  className="mt-2 inline-flex items-center gap-1 text-xs text-foxAmber hover:text-amber-700 font-medium transition-colors"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  重新提问
+                </button>
+              )}
+            </div>
           ) : (
             <MarkdownRenderer content={message.content} streaming={isStreaming} variant="ai" />
           )}

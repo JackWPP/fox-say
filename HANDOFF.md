@@ -3,7 +3,7 @@
 > **写这份文档的人**:上一任 Claude(当前 session 的 main agent,已完成三线并行集成 + 全部验收)
 > **文档目的**:用户换电脑后,新 agent 无任何上下文,通过这份文档 **+ 仓库自身** 即可继续开发
 > **目标读者**:下一任 Claude agent(可能不同的模型/版本)
-> **最后更新**:HEAD = `80169f4add6a2cf8b0fb361ac20c4372db0abebb`
+> **最后更新**:HEAD = `13dc17b` (2026-06-26 工程纪律修复 + Agent 稳定性提升)
 
 ---
 
@@ -15,10 +15,10 @@
 人设:       贱贱的小狐狸
 技术栈:     FastAPI + React/Vite + SQLite + Qdrant + LangGraph + DeepSeek/Qwen
 当前分支:   feature/pr0-schema-contracts
-当前 HEAD:  80169f4
+当前 HEAD:  13dc17b
 工作树:     干净
-测试:       157 / 157 通过
-远端:       origin/main 已是 PR0 后(b83ebbe..9fae15e),本地领先 12 个 commit
+测试:       168 / 168 通过
+远端:       origin/main 已是 PR0 后(b83ebbe..9fae15e),本地领先 59 个 commit
 标杆课:     线性代数(中国本科生,期末抱佛脚)
 ```
 
@@ -48,7 +48,7 @@ v0 (mvp 初版):  PDF → 文本分块 → embedding → 向量库 → 聊天框
 v1 (当前):      PDF → docling → DMAP (文档结构图)
                           → LangGraph 4 阶段 Wiki 构建 (Supervisor→Workers→Reducer→Reviewer)
                           → KC (Knowledge Component) 抽取 + Merkle 增量合并
-                          → 7 工具 Agent + 三层检索
+                          → 11 工具 Agent (7静态+4动态Skill) + 三层检索
                           → 知识图谱可视化
 ```
 
@@ -215,7 +215,7 @@ app/
 ├── schemas/
 │   └── foxsay.py                    ★ PR0 433 行,核心 schema
 └── services/                        业务逻辑
-    ├── agent.py                     ★ 7 工具 Agent ReAct 主循环
+    ├── agent.py                     ★ 11 工具 Agent ReAct 主循环 (7静态+4动态Skill, max 8轮)
     ├── chunking.py                  文本分块
     ├── crag.py                      老 RAG (legacy, 待清理)
     ├── dmap.py                      文档结构图构建
@@ -224,7 +224,7 @@ app/
     ├── merkle.py                    Merkle Tree diff
     ├── parsing.py / parsing_docling.py  PDF 解析
     ├── pipeline.py                  ★ 7 步处理流水线
-    ├── query_tools.py               ★ 7 工具实现 (包括 follow_prerequisite 已修 PR0 兼容)
+    ├── query_tools.py               ★ 8 个查询函数实现 (dispatch 合并为 7 个工具)
     ├── retrieval.py                 ★ 三层混合检索 (含 search_wiki_layer)
     ├── review.py                    复习计划 LLM 生成
     ├── skeleton.py                  骨架图 LLM 生成 (legacy, 待清理)
@@ -243,7 +243,7 @@ scripts/                             ★ Line A + 转发层
 └── align_prerequisites.py           ★ Line A 主脚本(415 行)
 tests/                               ★ 157 测试
 ├── conftest.py                      共享 fixture
-├── test_agent_loop.py               Agent 7 工具测试
+├── test_agent_loop.py               Agent 11 工具测试
 ├── test_align_prerequisites.py      ★ 9 测试
 ├── test_courses.py / test_materials.py / test_merkle.py
 ├── test_crag.py                     CRAG 三档阈值
@@ -352,20 +352,28 @@ parsing → build_dmap → wiki_build → chunking → embedding → storing →
 每个 step 写到 `tasks` 表,SSE 通过 `push_event` 推前端。
 Wiki build 是 4 阶段 LangGraph(Supervisor→Workers[Send 并发]→Reducer→Reviewer)。
 
-### 7.3 Agent 7 工具 ReAct(3 轮 max)
+### 7.3 Agent 11 工具 ReAct(8 轮 max, round 5 软性强制)
 
 ```
-search_wiki        三层混合检索 (macro=章节, micro=KC, all=合并)
-get_course_map     拿课程索引全文
-get_concept        按 concept_id 拿完整 KC 卡
-get_chapter_outline  按 chapter_id 拿章节摘要
+# 7 静态工具
+search_wiki          三层混合检索 (macro=章节, micro=KC, all=合并)
+get_course_map       拿课程索引全文
+get_concept          按 concept_id 或 concept_name 拿完整 KC 卡
+get_chapter_outline  按 chapter_id 或 chapter_title 拿章节摘要
 follow_prerequisite  沿 prerequisites 链向上回溯
-get_source_content 按 dmap_id 拿原始材料片段
-get_review_plan    拿复习计划
+get_source_content   按 dmap_id 拿原始材料片段
+get_review_plan      拿复习计划
+
+# 4 动态 Skill (skills.py 注册)
+generate_lecture     生成章节讲义 (Markdown)
+generate_quiz        生成章节练习题 (含答案解析)
+generate_flashcards  生成章节闪卡 (front/back)
+show_concept_graph   显示概念先修图谱
 ```
 
 **DSML 防御**:DeepSeek V4 Flash 有时会输出 `<|DSML|...|>` 假装是 tool_call,需要 strip。
-**max_rounds=3**(原 5,降下来因为绝大多数问题 1 轮就解决)。
+**max_rounds=8**(原 5→3→8, round 5 软性强制回答, streak≥2 强制回答)。
+**CRAG 硬门控**:score < 0.55 时代码级直接拒答(不让 LLM 决策)。
 
 ### 7.4 API 端点
 
@@ -659,11 +667,11 @@ for prereq_name in kc.prerequisites_raw:
 |---|---|---|
 | `datetime.utcnow()` deprecation | 🟡 低 | 改 `datetime.now(datetime.UTC)`,2 处 |
 | 旧 `crag.py` 老 RAG 路径仍存在 | 🟡 中 | agent.py 已替代,删 `crag.py` + `app/api/chat.py` 的非 stream endpoint |
-| 旧 `skeleton.py` LLM 生成路径 | 🟡 中 | 改走 `generate_skeleton_from_wiki`(已存在但未调) |
+| 旧 `skeleton.py` LLM 生成路径 | ✅ 已修复 | `generate_skeleton_from_wiki` 已被 pipeline.py 调用,旧 LLM 路径仅作 fallback |
 | `search_wiki_layer` 实时 embed 所有 KC | 🟠 高 | 改成 batch embed 预存,每次只算 query(性能瓶颈) |
-| `ChapterWiki.overview` 是空字符串 | 🟠 高 | wiki_builder 没生成 overview,需要再起 LLM stage |
+| `ChapterWiki.overview` 是空字符串 | ✅ 已修复 | wiki_builder 新增 CourseSummarizer + summary/regenerate API |
 | `requirements` / CourseIndex `concept_totals` 是占位 | 🟢 低 | 数据真起来后填 |
-| 前端 `CitationCard` 不跳原文 | 🟠 高 | DMAP 已有 page,缺 endpoint + PDF preview |
+| 前端 `CitationCard` 不跳原文 | ✅ 已修复 | source-preview endpoint + CitationCard 浮动预览已实现 |
 | 前端 KG tab `nodes` 颜色不接 mastery | 🟡 中 | 需学情数据接入 |
 
 ### 12.3 Pre-existing untracked 文件(commit 80169f4 时已被 commit,但还要注意)

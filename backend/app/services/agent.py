@@ -87,6 +87,18 @@ SYSTEM_PROMPT = (
     "- 如果 `search_wiki` 返回的 note 提示「检索结果与问题无关」，你必须直接返回拒答消息，"
     "不要尝试用常识回答。\n"
     "- 获得足够信息后直接回答，不要做不必要的工具调用。\n"
+    "- **工具调用预算**: 你最多有 8 轮工具调用机会。绝大多数问题 1-3 轮即可解决，请高效使用。\n"
+    "- **动态能力(Skill)**: 除了上述查询工具，你还可以使用以下能力：\n"
+    "  - `generate_lecture`: 生成章节讲义(学生在请求「讲解」「讲义」时使用)\n"
+    "  - `generate_quiz`: 生成练习题(学生在请求「出题」「练习」时使用)\n"
+    "  - `generate_flashcards`: 生成闪卡(学生在请求「闪卡」「快速复习」时使用)\n"
+    "  - `show_concept_graph`: 显示概念先修图谱(学生在请求「知识图谱」「关系图」时使用)\n"
+    "  - Skill 会直接生成最终内容，调用后无需再调用其他工具。\n"
+    "  - **不要在 search_wiki 之前调用 Skill**——先搜索确认概念存在再生成内容。\n"
+    "- **follow_prerequisite vs show_concept_graph**: 需要文字追溯先修知识用 follow_prerequisite；"
+    "学生请求可视化图谱时用 show_concept_graph。不要同时调用两者。\n"
+    "- **get_chapter_outline vs generate_lecture**: 需要章节结构摘要用 get_chapter_outline；"
+    "学生请求完整讲义/讲解用 generate_lecture。不要连续调用两者。\n"
 )
 
 # ---------------------------------------------------------------------------
@@ -291,8 +303,6 @@ async def agent_chat(
                 ),
             })
             force_answer = True
-
-        if force_answer:
             break
 
         try:
@@ -490,6 +500,19 @@ async def agent_chat(
                         if src["file_name"]:
                             collected_sources.append(src)
                             new_sources += 1
+
+                    # CRAG 硬门控：score < 0.55 时代码级强制拒答 (AGENTS.md CRAG Policy)
+                    if data.get("_crag_reject"):
+                        max_score = data.get("_max_score", 0)
+                        yield {
+                            "type": "done",
+                            "answer": f"这个问题超出了{course_title}的范围，不知道。",
+                            "citations": [],
+                            "in_scope": False,
+                            "guard_warning": f"CRAG gate: max_score={max_score:.3f} < 0.55",
+                        }
+                        return
+
                     # 第一次search_wiki低分/空结果时立即引导
                     if _round == 0 and (new_sources == 0 or data.get("note")):
                         note_msg = data.get("note", "未找到相关内容")
@@ -542,26 +565,29 @@ async def agent_chat(
         break
 
     # 达到 max rounds 或被强制跳出 → 基于已有信息生成回答
+    if force_answer and not collected_sources:
+        final_prompt = (
+            "你已尝试多次工具调用但未找到相关材料。"
+            "如果问题确实超出课程范围，直接回答：`这个问题超出了[课程名]的范围，不知道。`"
+            "不要编造内容，不要继续调用工具。"
+        )
+    else:
+        final_prompt = (
+            "请基于已有的工具查询结果，给出你的最终回答。\n"
+            "要求：\n"
+            "1. 必须引用来源，使用 `来自 [文件名] · 第X部分` 格式。\n"
+            "2. 如果工具结果足以回答问题，完整回答。\n"
+            "3. 如果工具结果只能部分回答，先基于已有信息回答能确定的部分，"
+            "再明确说明哪些部分材料中没有覆盖，绝对不要编造内容。\n"
+            "4. 如果工具结果完全不足以回答（没有任何相关来源），"
+            "直接回答：`这个问题超出了[课程名]的范围，不知道。`（替换[课程名]）。\n"
+            "5. 不要继续调用任何工具，直接给出文字回答。"
+        )
+
     try:
         response = client.chat.completions.create(
             model=settings.deepseek_model,
-            messages=messages
-            + [
-                {
-                    "role": "system",
-                    "content": (
-                        "请基于已有的工具查询结果，给出你的最终回答。\n"
-                        "要求：\n"
-                        "1. 必须引用来源，使用 `来自 [文件名] · 第X部分` 格式。\n"
-                        "2. 如果工具结果足以回答问题，完整回答。\n"
-                        "3. 如果工具结果只能部分回答，先基于已有信息回答能确定的部分，"
-                        "再明确说明哪些部分材料中没有覆盖，绝对不要编造内容。\n"
-                        "4. 如果工具结果完全不足以回答（没有任何相关来源），"
-                        "直接回答：`这个问题超出了[课程名]的范围，不知道。`（替换[课程名]）。\n"
-                        "5. 不要继续调用任何工具，直接给出文字回答。"
-                    ),
-                }
-            ],
+            messages=messages + [{"role": "system", "content": final_prompt}],
             temperature=0.3,
             extra_body={"thinking": {"type": "disabled"}},
         )
@@ -570,24 +596,37 @@ async def agent_chat(
             raise RuntimeError("Empty or too short answer from forced LLM call")
     except Exception as e:
         logger.exception("LLM call failed at forced answer")
-        if collected_sources:
-            unique_sources: list[dict] = []
-            seen_keys: set[str] = set()
-            for s in collected_sources:
-                key = f"{s.get('file_name','')}|{s.get('locator','')}"
-                if key not in seen_keys and s.get("file_name"):
-                    seen_keys.add(key)
-                    unique_sources.append(s)
-            answer_text = (
-                "我查阅了课程材料，找到了一些相关内容，你可以看看这些来源：\n\n"
-                + "\n".join(f"- 来自 [{s['file_name']}] · {s['locator']}" for s in unique_sources[:5])
+        # 降级重试：用更简短的 prompt
+        try:
+            retry_response = client.chat.completions.create(
+                model=settings.deepseek_model,
+                messages=messages + [{"role": "system", "content": "请用一两句话简要回答上一个问题。"}],
+                temperature=0.5,
+                extra_body={"thinking": {"type": "disabled"}},
             )
-        else:
-            yield {
-                "type": "error",
-                "message": f"AI 回答生成失败，请换个问法再试试～（多次工具调用后仍无法生成有效回答）",
-            }
-            return
+            answer_text = _strip_dsml_blocks(retry_response.choices[0].message.content or "")
+        except Exception:
+            answer_text = ""
+
+        if not answer_text or len(answer_text.strip()) < 10:
+            if collected_sources:
+                unique_sources: list[dict] = []
+                seen_keys: set[str] = set()
+                for s in collected_sources:
+                    key = f"{s.get('file_name','')}|{s.get('locator','')}"
+                    if key not in seen_keys and s.get("file_name"):
+                        seen_keys.add(key)
+                        unique_sources.append(s)
+                answer_text = (
+                    "我查阅了课程材料，找到了一些相关内容，你可以看看这些来源：\n\n"
+                    + "\n".join(f"- 来自 [{s['file_name']}] · {s['locator']}" for s in unique_sources[:5])
+                )
+            else:
+                yield {
+                    "type": "error",
+                    "message": f"AI 回答生成失败，请换个问法再试试～（多次工具调用后仍无法生成有效回答）",
+                }
+                return
 
     citations = _extract_citations(answer_text)
     if not citations and collected_sources:
@@ -638,6 +677,8 @@ async def _execute_tool(
         payload: dict[str, Any] = {"results": results, "count": len(results)}
         if not results or max_score < 0.55:
             payload["note"] = "检索结果与问题无关，可能超出课程范围。请诚实拒答。"
+            payload["_crag_reject"] = True
+            payload["_max_score"] = max_score
         elif max_score < 0.72:
             payload["note"] = "检索结果相关性较低，请谨慎回答。"
         return json.dumps(payload, ensure_ascii=False)

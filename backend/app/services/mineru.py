@@ -24,16 +24,20 @@ MINERU_TIMEOUT = 120  # 轮询总超时(秒)
 MINERU_POLL_INTERVAL = 3  # 轮询间隔(秒)
 
 
-def parse_pdf_mineru(file_path: str, language: str = "ch") -> str:
-    """用 MinerU 解析 PDF,返回 Markdown 文本。失败返回空字符串。"""
+def parse_pdf_mineru(file_path: str, language: str = "ch") -> tuple[str | None, str | None]:
+    """用 MinerU 解析 PDF。
+
+    Returns:
+        (markdown_content, error_message)。成功时 error_message 为 None。
+        失败时 markdown_content 为 None，error_message 描述具体原因。
+    """
     import os
 
     file_name = os.path.basename(file_path)
     file_size = os.path.getsize(file_path)
 
     if file_size > 10 * 1024 * 1024:
-        logger.warning("MinerU: file too large (%d bytes), limit 10MB", file_size)
-        return ""
+        return None, f"文件过大 ({file_size} bytes), 超过 10MB 限制"
 
     # Step 1: 获取签名上传 URL + task_id
     try:
@@ -51,13 +55,11 @@ def parse_pdf_mineru(file_path: str, language: str = "ch") -> str:
         )
         resp = json.loads(urllib.request.urlopen(req, timeout=15).read().decode())
         if resp.get("code") != 0:
-            logger.error("MinerU: submit failed: %s", resp.get("msg"))
-            return ""
+            return None, f"submit 失败: {resp.get('msg')}"
         task_id = resp["data"]["task_id"]
         file_url = resp["data"]["file_url"]
     except Exception as e:
-        logger.error("MinerU: submit request failed: %s", e)
-        return ""
+        return None, f"submit 请求失败: {e}"
 
     # Step 2: PUT 上传文件到 OSS (重试 3 次)
     for attempt in range(3):
@@ -68,9 +70,7 @@ def parse_pdf_mineru(file_path: str, language: str = "ch") -> str:
             break
         except Exception as e:
             if attempt == 2:
-                logger.error("MinerU: file upload failed after 3 attempts: %s", e)
-                return ""
-            logger.warning("MinerU: upload attempt %d failed: %s, retrying...", attempt + 1, e)
+                return None, f"上传 OSS 失败 (重试 3 次): {e}"
             time.sleep(2)
 
     # Step 3: 轮询任务结果
@@ -86,20 +86,17 @@ def parse_pdf_mineru(file_path: str, language: str = "ch") -> str:
                 markdown_url = poll_resp["data"].get("markdown_url")
                 break
             elif state == "failed":
-                logger.error("MinerU: parse failed: %s", poll_resp["data"].get("err_msg"))
-                return ""
+                return None, f"解析失败: {poll_resp['data'].get('err_msg')}"
         except Exception as e:
             logger.warning("MinerU: poll error: %s", e)
             continue
 
     if not markdown_url:
-        logger.error("MinerU: timeout after %ds", MINERU_TIMEOUT)
-        return ""
+        return None, f"轮询超时 ({MINERU_TIMEOUT}s)"
 
     # Step 4: 下载 Markdown 结果
     try:
         md_resp = urllib.request.urlopen(markdown_url, timeout=30)
-        return md_resp.read().decode("utf-8")
+        return md_resp.read().decode("utf-8"), None
     except Exception as e:
-        logger.error("MinerU: download result failed: %s", e)
-        return ""
+        return None, f"下载结果失败: {e}"
