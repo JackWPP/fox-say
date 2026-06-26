@@ -805,7 +805,7 @@ def summarizer_node(state: WikiState) -> dict[str, Any]:
 
 
 COURSE_SUMMARIZER_SYSTEM = (
-    "你是一个课程介绍助手。给定整门课的章节摘要、核心主题列表，"
+    "你是一个课程介绍助手。给定整门课的章节信息、核心主题列表，"
     "为这门课生成一段 200-400 字的中文概述，帮助学生快速了解课程全貌。\n\n"
     "要求:\n"
     "- 开头一句话点明课程主题和定位\n"
@@ -816,6 +816,59 @@ COURSE_SUMMARIZER_SYSTEM = (
     "- 不要出现'本课程旨在'、'通过本课程学习'这类套话\n\n"
     "只返回一段中文文本，不要包含其他文字。"
 )
+
+
+def generate_course_summary_from_index(
+    course_id: str,
+    course_title: str,
+    course_index: CourseIndex,
+) -> str:
+    """从 CourseIndex 数据用 LLM 生成课程概述。失败时返回结构化 fallback 文本。"""
+    chapters_input = []
+    for ch in course_index.chapters:
+        chapters_input.append({
+            "title": ch.title,
+            "key_concepts": ch.key_concepts[:6],
+            "importance": ch.importance,
+        })
+
+    core_topics = course_index.core_topics if course_index.core_topics else []
+    if not core_topics:
+        all_kcs: list[str] = []
+        for ch in course_index.chapters:
+            all_kcs.extend(ch.key_concepts)
+        core_topics = list(dict.fromkeys(all_kcs))[:8]
+
+    user_content = json.dumps(
+        {
+            "course_name": course_index.course_name or course_title,
+            "core_topics": core_topics[:8],
+            "chapters": chapters_input,
+            "total_chapters": len(course_index.chapters),
+        },
+        ensure_ascii=False,
+    )
+
+    try:
+        raw = _llm_call(COURSE_SUMMARIZER_SYSTEM, user_content, temperature=0.3, max_tokens=1000)
+        summary = raw.strip()
+        if len(summary) >= 50:
+            return summary
+    except Exception as e:
+        logger.warning("generate_course_summary_from_index LLM failed, using fallback: %s", e)
+
+    ch_titles = [ch.title for ch in course_index.chapters if ch.title and ch.title != "(未分章)"]
+    topics_str = "、".join(core_topics[:3]) if core_topics else "核心概念"
+    if ch_titles:
+        return (
+            f"这门课主要涵盖{len(ch_titles)}个知识模块，"
+            f"包括{'、'.join(ch_titles[:4])}等内容。"
+            f"核心主题围绕{topics_str}展开，"
+            f"建议按章节顺序循序渐进学习，重点关注各章节之间的关联。"
+        )
+    if core_topics:
+        return f"这门课的核心主题包括{topics_str}等，建议结合材料逐步深入学习。"
+    return ""
 
 
 def _summarize_course(

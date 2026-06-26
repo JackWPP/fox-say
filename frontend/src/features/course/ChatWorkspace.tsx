@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from "react";
 import {
   MessageCircle, Plus, Trash2, ChevronDown, History, Sparkles, BookOpen, HelpCircle, ListChecks,
-  Send, RefreshCw, ThumbsDown, ThumbsUp, Check, Copy, AlertTriangle, FileText, Loader2, RotateCcw, Bookmark
+  Send, RefreshCw, ThumbsDown, ThumbsUp, Check, Copy, AlertTriangle, FileText, Loader2, RotateCcw, Bookmark, Zap
 } from "lucide-react";
 import { useChat } from "./useChat";
 import { api } from "../../shared/api";
@@ -15,6 +15,20 @@ const SUGGESTED_QUESTIONS = [
   { text: "出一道题考我", icon: HelpCircle },
 ];
 
+interface CourseIndexChapter {
+  id: string;
+  title: string;
+  key_concepts: string[];
+  importance: string;
+}
+
+interface CourseIndexData {
+  course_id: string;
+  course_name: string;
+  core_topics: string[];
+  chapters: CourseIndexChapter[];
+}
+
 interface ChatWorkspaceProps {
   courseId: string;
   courseTitle: string;
@@ -27,56 +41,106 @@ interface ChatWorkspaceProps {
   onSwitchToMaterials?: () => void;
 }
 
-function CourseSummaryCard({ courseId, courseSummary, courseStatus, onSaveNote }: {
+function CourseSummaryCard({ courseId, courseSummary, courseStatus, courseTitle, onSaveNote }: {
   courseId: string;
   courseSummary?: string;
   courseStatus?: string;
+  courseTitle: string;
   onSaveNote: (title: string, content: string) => void;
 }) {
   const [wikis, setWikis] = useState<ChapterWiki[] | null>(null);
+  const [courseIndex, setCourseIndex] = useState<CourseIndexData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [regenerating, setRegenerating] = useState(false);
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [liveSummary, setLiveSummary] = useState<string>("");
 
   useEffect(() => {
     let cancelled = false;
-    const fetchWikis = async () => {
+    const fetchData = async () => {
       try {
-        const data = await api.get<{ chapter_wikis: ChapterWiki[] }>(`/courses/${courseId}/chapter-wikis`);
-        if (!cancelled) setWikis(data.chapter_wikis || []);
-      } catch {
-        if (!cancelled) setWikis([]);
+        const [wikiData, indexData] = await Promise.allSettled([
+          api.get<{ chapter_wikis: ChapterWiki[] }>(`/courses/${courseId}/chapter-wikis`),
+          api.get<{ content: string }>(`/courses/${courseId}/course-index`),
+        ]);
+        if (cancelled) return;
+        if (wikiData.status === "fulfilled") {
+          setWikis(wikiData.value.chapter_wikis || []);
+        } else {
+          setWikis([]);
+        }
+        if (indexData.status === "fulfilled") {
+          try {
+            setCourseIndex(JSON.parse(indexData.value.content));
+          } catch {
+            setCourseIndex(null);
+          }
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
     };
-    fetchWikis();
+    fetchData();
     return () => { cancelled = true; };
   }, [courseId]);
+
+  useEffect(() => {
+    setLiveSummary(courseSummary || "");
+  }, [courseSummary]);
 
   const wikiFallbackSummary = wikis && wikis.length > 0
     ? wikis.map(w => w.overview).filter(Boolean).join(" ")
     : "";
 
-  const displaySummary = courseSummary || wikiFallbackSummary;
+  const displaySummary = liveSummary || wikiFallbackSummary;
+
+  const handleRegenerate = async () => {
+    setRegenerating(true);
+    try {
+      const data = await api.post<{ summary: string }>(`/courses/${courseId}/summary/regenerate`, {});
+      setLiveSummary(data.summary);
+    } catch {
+      // error will be visible via network; keep UI graceful
+    } finally {
+      setRegenerating(false);
+    }
+  };
 
   const handleCopy = async () => {
-    if (!displaySummary) return;
+    const text = displaySummary || buildStructuredSummary();
+    if (!text) return;
     try {
-      await navigator.clipboard.writeText(displaySummary);
+      await navigator.clipboard.writeText(text);
     } catch { /* ignore */ }
     setCopied(true);
     setTimeout(() => setCopied(false), 1400);
   };
 
   const handleSave = () => {
-    if (!displaySummary) return;
-    onSaveNote("课程概述", displaySummary);
+    const text = displaySummary || buildStructuredSummary();
+    if (!text) return;
+    onSaveNote("课程概述", text);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
 
-  const isProcessing = courseStatus === "processing" || (loading && !displaySummary);
+  function buildStructuredSummary(): string {
+    if (!courseIndex) return "";
+    const name = courseIndex.course_name || courseTitle;
+    const chapters = courseIndex.chapters.filter(c => c.title && c.title !== "(未分章)");
+    const topics = courseIndex.core_topics.slice(0, 5);
+    const parts: string[] = [];
+    parts.push(`${name}共包含${chapters.length}个主要章节：${chapters.map(c => c.title).join("、")}。`);
+    if (topics.length > 0) {
+      parts.push(`核心主题围绕${topics.join("、")}展开。`);
+    }
+    parts.push("建议按章节顺序循序渐进学习，重点关注各章节之间的关联。");
+    return parts.join("");
+  }
+
+  const hasContent = displaySummary || courseIndex;
+  const isProcessing = courseStatus === "processing" || (loading && !hasContent);
 
   if (isProcessing) {
     return (
@@ -89,7 +153,7 @@ function CourseSummaryCard({ courseId, courseSummary, courseStatus, onSaveNote }
     );
   }
 
-  if (!displaySummary) {
+  if (!hasContent) {
     return (
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 mb-6 border-l-4 border-l-foxAmber">
         <div className="flex items-start gap-3">
@@ -104,17 +168,32 @@ function CourseSummaryCard({ courseId, courseSummary, courseStatus, onSaveNote }
     );
   }
 
+  const chapters = courseIndex?.chapters.filter(c => c.title && c.title !== "(未分章)") || [];
+  const coreTopics = courseIndex?.core_topics || [];
+  const showStructuredFallback = !displaySummary && courseIndex;
+
   return (
     <div className="bg-white rounded-2xl shadow-soft border border-slate-100 p-5 mb-6 border-l-4 border-l-foxAmber fox-fade-in">
       <div className="flex items-start justify-between mb-2">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Sparkles className="w-4 h-4 text-foxAmber" />
           <span className="text-sm font-semibold text-midnightCharcoal">课程概述</span>
-          {wikis && wikis.length > 0 && (
-            <span className="text-xs text-slate-400">· {wikis.length} 个章节</span>
+          {chapters.length > 0 && (
+            <span className="text-xs text-slate-400">· {chapters.length} 个章节</span>
+          )}
+          {coreTopics.length > 0 && (
+            <span className="text-xs text-slate-400">· {coreTopics.length} 个核心主题</span>
           )}
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 shrink-0 ml-2">
+          <button
+            onClick={handleRegenerate}
+            disabled={regenerating || !courseIndex}
+            className="p-1.5 rounded-md text-slate-400 hover:text-foxAmber hover:bg-amber-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title="重新生成概述"
+          >
+            {regenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+          </button>
           <button
             onClick={handleSave}
             className="p-1.5 rounded-md text-slate-400 hover:text-foxAmber hover:bg-amber-50 transition-colors"
@@ -131,7 +210,49 @@ function CourseSummaryCard({ courseId, courseSummary, courseStatus, onSaveNote }
           </button>
         </div>
       </div>
-      <p className="text-sm text-slate-700 leading-relaxed">{displaySummary}</p>
+
+      {displaySummary ? (
+        <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{displaySummary}</p>
+      ) : showStructuredFallback ? (
+        <div className="space-y-3">
+          <p className="text-sm text-slate-700 leading-relaxed">{buildStructuredSummary()}</p>
+          <div className="pt-2 border-t border-slate-100">
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {coreTopics.slice(0, 6).map((topic) => (
+                <span key={topic} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-foxAmber/10 text-foxAmber font-medium">
+                  {topic}
+                </span>
+              ))}
+            </div>
+            <div className="space-y-1 mt-2">
+              {chapters.slice(0, 5).map((ch, i) => (
+                <div key={ch.id} className="flex items-start gap-2 text-xs text-slate-600">
+                  <span className={`shrink-0 w-4 h-4 rounded flex items-center justify-center text-[10px] font-bold mt-0.5 ${
+                    ch.importance === "high" ? "bg-red-100 text-red-600" : ch.importance === "medium" ? "bg-foxAmber/15 text-foxAmber" : "bg-slate-100 text-slate-500"
+                  }`}>{i + 1}</span>
+                  <div>
+                    <span className="font-medium text-slate-700">{ch.title}</span>
+                    {ch.key_concepts.length > 0 && (
+                      <span className="text-slate-400 ml-1">— {ch.key_concepts.slice(0, 3).join("、")}{ch.key_concepts.length > 3 ? "..." : ""}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {chapters.length > 5 && (
+                <p className="text-xs text-slate-400 pl-6">还有 {chapters.length - 5} 个章节...</p>
+              )}
+            </div>
+          </div>
+          <button
+            onClick={handleRegenerate}
+            disabled={regenerating}
+            className="inline-flex items-center gap-1.5 text-xs text-foxAmber hover:text-amber-700 font-medium transition-colors disabled:opacity-50"
+          >
+            <Zap className="w-3 h-3" />
+            {regenerating ? "AI 正在生成概述..." : "让 AI 生成更详细的课程概述"}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -271,6 +392,7 @@ export default function ChatWorkspace({
                 courseId={courseId}
                 courseSummary={course?.summary}
                 courseStatus={course?.status}
+                courseTitle={courseTitle}
                 onSaveNote={handleSaveToNote}
               />
 

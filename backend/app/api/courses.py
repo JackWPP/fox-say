@@ -177,3 +177,36 @@ async def get_course_index(course_id: str, store: SqliteStore = Depends(get_stor
     if not content:
         raise HTTPException(status_code=404, detail="No course index yet")
     return {"content": content}
+
+
+@router.post("/{course_id}/summary/regenerate")
+async def regenerate_course_summary(course_id: str, store: SqliteStore = Depends(get_store)):
+    """用 LLM 从 course_index 重新生成课程概述并保存。"""
+    import asyncio
+    course = store.get_course(course_id)
+    if course is None:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    from app.schemas.foxsay import CourseIndex
+    index_json = store.get_course_index(course_id)
+    if not index_json:
+        raise HTTPException(status_code=400, detail="No course index available. Upload and process materials first.")
+
+    try:
+        course_index = CourseIndex.model_validate_json(index_json)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Invalid course index: {exc}")
+
+    from app.services.wiki_builder import generate_course_summary_from_index
+    try:
+        summary = await asyncio.to_thread(
+            generate_course_summary_from_index, course_id, course.title, course_index
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"LLM summary generation failed: {exc}")
+
+    if not summary:
+        raise HTTPException(status_code=500, detail="Failed to generate summary")
+
+    store.update_course_summary(course_id, summary)
+    return {"summary": summary, "length": len(summary)}
