@@ -3,6 +3,7 @@
 > 日期：2026-06
 > 同伴文档：`FoxSay-Architecture-Review.md`（深度报告 399 行）/ `docs/gap-analysis.md`
 > 本文件目标：**5 分钟读完，知道这个项目当前在哪、接下来该往哪走**
+> ⚠️ 部分内容已过时 — 2026-06-29 更新，HEAD e437ab3。以下核心矛盾多数已修复。
 
 ---
 
@@ -25,7 +26,7 @@
 
 ### 结论 2：产品价值传递的断层比功能缺口更严重
 
-后端做的最重的一块工程（Wiki 构建 LangGraph 4 阶段 + Merkle 增量 + 7 工具 Agent），用户**完全感知不到**：
+后端做的最重的一块工程（Wiki 构建 LangGraph 4 阶段 + Merkle 增量 + 7 工具 Agent（✅ 已更新：实际 11 工具，新增 4 个动态 Skill，MAX_ROUNDS 3→8）），用户**完全感知不到**：
 
 | 后端已经做出来 | 用户能看到吗 |
 |---|---|
@@ -53,8 +54,8 @@
 | # | 矛盾 | 后果 | 修复成本 |
 |---|---|---|---|
 | ① | **Wiki 检索没有向量索引** — `search_wiki_layer` 每次提问对所有 KC + ChapterWiki 实时 embed，O(N) 调 embedding API | 课程稍大就慢炸 + 烧钱 | 80-120 行 |
-| ② | **ChapterWiki 是空壳** — `_build_chapter_wikis` 输出 overview="", exam_weight=0，但 agent 工具 `get_chapter_outline` 承诺返回这些字段 → LLM 拿到空字段会乱编 | Agent 工具失效 | 1 个 LLM stage |
-| ③ | **CitationCard 不能跳原文** — DMAP 里已经记了 page，差最后一公里 | 用户感知不到引用闭环 | 1 个 endpoint + 1 个组件 |
+| ② | **ChapterWiki 是空壳**（✅ 已修复：wiki_builder 新增 CourseSummarizer + summary/regenerate API） — `_build_chapter_wikis` 输出 overview="", exam_weight=0，但 agent 工具 `get_chapter_outline` 承诺返回这些字段 → LLM 拿到空字段会乱编 | Agent 工具失效 | 1 个 LLM stage |
+| ③ | **CitationCard 不能跳原文**（✅ 已修复：source-preview endpoint + CitationCard 浮动预览已实现） — DMAP 里已经记了 page，差最后一公里 | 用户感知不到引用闭环 | 1 个 endpoint + 1 个组件 |
 
 修这 3 件事，**用户感知会有质变**，工程负担反而下降。
 
@@ -64,17 +65,17 @@
 
 ### 🔴 P0（1-2 周内，纯收口，0 风险）
 
-- [ ] **删 `crag.py` 路径**，把 CRAG 三档阈值整合进 agent 的 `search_wiki` 工具
+- [ ] **删 `crag.py` 路径**，把 CRAG 三档阈值整合进 agent 的 `search_wiki` 工具（✅ 部分修复：CRAG 已由软门控改为硬门控，score<0.55 代码级强制拒答；路径收口另议）
 - [ ] **`_generate_and_store_skeleton` 改走 `generate_skeleton_from_wiki`**
 - [ ] **Wiki 数据建向量索引**：build 阶段把 KC/ChapterWiki 文本批量 embed 进 Qdrant，检索改为一次向量搜索 + layer 过滤
-- [ ] **补 `_build_chapter_wikis` 的 overview / exam_weight**：再起一个 LLM 小 stage 或从 KC 摘要本地派生
+- [x] ✅ 已修复 **补 `_build_chapter_wikis` 的 overview / exam_weight**：wiki_builder 新增 CourseSummarizer + summary/regenerate API
 - [ ] **重写 `docs/roadmap-to-prd.md`**：旧路线图已严重过时
-- [ ] **补 `docs/postmortem/verified.md`**：AGENTS.md 的 HEC-5 强制要求，自己破自己规矩
+- [x] ✅ 已修复 **补 `docs/postmortem/verified.md`**：已创建，HEC-5 修复（networkx 也已从 pyproject.toml 移除，HEC-7 修复）
 
 ### 🟡 P1（1-2 月内，产品价值传递）
 
 - [ ] **前端消费 SSE 事件** — 实现 PRD"第一个惊喜"的最小可行版（"我读完了，来看看我发现了什么 👀"）
-- [ ] **CitationCard 引用闭环** — 点击跳原 PDF 高亮页（DMAP 已有 page，差 endpoint）
+- [x] ✅ 已修复 **CitationCard 引用闭环** — source-preview endpoint + CitationCard 浮动预览已实现
 - [ ] **知识图谱可视化** — react-flow 把 KC + prerequisites 画出来，点节点弹 KC 卡 → 直接发起 Chat。**这是 FoxSay 对外的差异化王牌**
 - [ ] **备考状态机执行引擎** — `review_session` 表和 API 都建好了，前端 `ReviewTab` 把它用起来
 - [ ] **错误文案人格化** — `fox-copy.ts` 框架已有，补全所有错误场景

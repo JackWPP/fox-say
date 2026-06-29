@@ -9,7 +9,6 @@ dependencies = [
   "pydantic-settings",
   "python-multipart",
   "qdrant-client",
-  "networkx",
   "openai",
   "pdfplumber",
   "openpyxl",

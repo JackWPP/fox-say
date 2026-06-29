@@ -5,6 +5,34 @@
 > 状态: 待批准
 > 范围: 5 阶段,1 周,每阶段独立可交付
 
+---
+
+## 📊 进度总结 (2026-06-29 更新, HEAD `e437ab3`)
+
+> 本段为执行后回填的进度总结，原计划内容（§0 起）保持不变，仅在顶部追加。当前测试 168/168 通过，API 端点 39 个。
+
+| 阶段 | 状态 | 说明 |
+|------|------|------|
+| **阶段 0** — 工作树复位 | ✅ 已完成 | working tree 复位、venv 修复、postmortem 固化、AGENTS.md 替换均落地 |
+| **阶段 1** — 知识图谱切除 | ⚠️ 部分完成 | NetworkX KnowledgeGraph 已切除（符合计划）；**但后来重新引入了 KG 可视化**（`reactflow` + `dagre`，非 Neo4j，不违反 §3 非目标）。详见原计划 §3 "不引入 Neo4j" 仍成立 |
+| **阶段 2** — 多阶段 Wiki Pipeline | ✅ 已完成 | LangGraph 4 阶段（Supervisor → Worker → Reducer → Reviewer）在用，`dmap.py` / `merkle.py` / `wiki_builder.py` 均落地，`generate_skeleton_from_wiki` 已替换 KG 副产品路径 |
+| **阶段 3** — Agent + 工具集重写 | ✅ 已完成（超原计划） | 实际 11 工具（7 静态 + 4 动态 Skill）/ max 8 轮，**超出原计划的 6 工具 / 3 轮**。错误可见性（SSE 推 error）、`rewrite_query` 死代码修复、`course_id` 显式入参均已落地 |
+| **阶段 4** — 前端对齐 | ✅ 已完成 | NotebookLM 三栏布局落地，工具标签对齐，错误 toast 已接入 |
+
+### 已完成的额外工作（计划外）
+- 工程纪律修复：HEC-1（错误可见）/ HEC-5（不杜撰）/ HEC-8（文档与代码对齐）
+- `mineru.py` 修复（PDF 解析路径稳定）
+- CRAG 硬门控（score < 0.55 强制拒答，符合 AGENTS.md `CRAG Policy`）
+- 课程概述自动生成（ChapterWiki.overview）
+- 422 错误修复（上传异常不再吞错）
+- CitationCard 跳原文定位
+
+### 已知未完成
+- 真实材料端到端验证（合成数据测试 168/168 通过，但真实 PDF/PPT 流程未跑通）
+- `search_wiki_layer` 性能优化
+
+---
+
 ## 0. 背景与起因
 
 2026-05 期间,项目所有者未盯盘的状态下,一个自动 agent 在 `feature-LLM-wiki` 分支上
