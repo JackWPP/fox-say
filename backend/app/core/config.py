@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     sqlite_path: str = str(_PROJECT_ROOT / "data" / "foxsay.db")
     foxsay_env: str = "development"
     pdf_parser: str = "pdfplumber"  # docling 太慢(CPU OCR >5min/页),pdfplumber 快但不支持扫描件
+    # 批量上传与并发控制
+    max_batch_upload: int = 15  # 单次 /materials/batch 最多文件数
+    max_concurrent_parsing: int = 3  # 同时解析的文件数(asyncio.Semaphore 上限)
 
     # PR0 新增:解耦 Judge 模型 (评测端 / 轻量分类端使用)
     # 必须跟 deepseek_model 不同家族,否则 self-preference bias (调研结论)。

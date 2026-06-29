@@ -1,8 +1,9 @@
 import asyncio
+import logging
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
 from app.core.config import settings
 from app.db.deps import get_store
@@ -12,6 +13,8 @@ from app.services.dmap import get_dmap_element_by_id, get_dmap_node_by_id
 from app.services.pipeline import process_material
 from app.services.vectorstore import QdrantStore
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/courses/{course_id}/materials")
 
 _KIND_MAP: dict[str, MaterialKind] = {
@@ -20,9 +23,14 @@ _KIND_MAP: dict[str, MaterialKind] = {
     ".pptx": "ppt",
     ".txt": "text_note",
     ".md": "text_note",
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".docx": "text_note",  # markitdown 支持,归类为 text_note 走 markdown 解析
+    ".html": "text_note",
 }
 
-_VALID_KINDS = {"pdf", "ppt", "text_note"}
+_VALID_KINDS = {"pdf", "ppt", "text_note", "image"}
 
 
 def _infer_kind(filename: str) -> MaterialKind:
@@ -69,6 +77,73 @@ async def upload_material(
     asyncio.create_task(process_material(course_id, material_id, file_path, resolved_kind, file.filename or "unknown", store))
 
     return material
+
+
+@router.post("/batch", response_model=list[Material])
+async def upload_materials_batch(
+    course_id: str,
+    files: list[UploadFile] = File(...),
+    store: SqliteStore = Depends(get_store),
+):
+    """批量上传材料,单次最多 max_batch_upload 个文件(默认 15)。
+
+    后端 asyncio.Semaphore 控制实际解析并发(默认 3),避免压垮 LLM/Qdrant/MinerU。
+    不支持的文件类型会被跳过并记录日志(HEC-1),不阻塞其他文件。
+    """
+    course = store.get_course(course_id)
+    if course is None:
+        raise HTTPException(status_code=404, detail="Course not found")
+    if len(files) > settings.max_batch_upload:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Too many files: {len(files)} > max {settings.max_batch_upload}",
+        )
+
+    upload_dir = os.path.join(settings.upload_root, course_id)
+    os.makedirs(upload_dir, exist_ok=True)
+
+    created: list[Material] = []
+    for file in files:
+        material_id = str(uuid.uuid4())
+        file_path = os.path.join(upload_dir, f"{material_id}_{file.filename}")
+        try:
+            content = await file.read()
+            with open(file_path, "wb") as f:
+                f.write(content)
+        except Exception as e:
+            # 写文件失败:记录日志并跳过(HEC-1,不静默吞错)
+            logger.warning("Failed to save uploaded file %s: %s", file.filename, e)
+            continue
+
+        resolved_kind = _infer_kind(file.filename or "")
+        if resolved_kind not in _VALID_KINDS:
+            logger.warning("Skipping unsupported file type: %s (kind=%s)", file.filename, resolved_kind)
+            # 删除已写入的文件避免残留
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+            continue
+
+        material = Material(
+            id=material_id,
+            course_id=course_id,
+            filename=file.filename or "unknown",
+            kind=resolved_kind,
+            status="processing",
+        )
+        store.create_material(material, file_path=file_path)
+        asyncio.create_task(
+            process_material(course_id, material_id, file_path, resolved_kind, file.filename or "unknown", store)
+        )
+        created.append(material)
+
+    if not created:
+        raise HTTPException(
+            status_code=415,
+            detail="No files were accepted (all unsupported or failed to save)",
+        )
+    return created
 
 
 @router.get("/{material_id}/status", response_model=Material)

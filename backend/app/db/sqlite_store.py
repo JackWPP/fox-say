@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS materials (
     status TEXT NOT NULL DEFAULT 'processing',
     file_path TEXT,
     degraded INTEGER NOT NULL DEFAULT 0,
+    parsed_text TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (course_id) REFERENCES courses(id)
 );
@@ -184,6 +185,7 @@ class SqliteStore:
         migrations = [
             "ALTER TABLE chat_messages ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE courses ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE materials ADD COLUMN parsed_text TEXT",
         ]
         for sql in migrations:
             try:
@@ -276,9 +278,16 @@ class SqliteStore:
 
     def get_all_materials(self, course_id: str) -> list[Material]:
         rows = self._conn.execute(
-            "SELECT * FROM materials WHERE course_id = ? ORDER BY created_at DESC", (course_id,)
+            "SELECT id, course_id, filename, kind, status, degraded FROM materials WHERE course_id = ? ORDER BY created_at DESC",
+            (course_id,),
         ).fetchall()
-        return [Material(id=r["id"], course_id=r["course_id"], filename=r["filename"], kind=r["kind"], status=r["status"]) for r in rows]
+        return [
+            Material(
+                id=r["id"], course_id=r["course_id"], filename=r["filename"],
+                kind=r["kind"], status=r["status"], degraded=bool(r["degraded"]),
+            )
+            for r in rows
+        ]
 
     def update_material(self, course_id: str, material_id: str, material: Material) -> Material | None:
         existing = self.get_material(course_id, material_id)
@@ -309,6 +318,32 @@ class SqliteStore:
             "SELECT file_path FROM materials WHERE id=? AND course_id=?", (material_id, course_id)
         ).fetchone()
         return row["file_path"] if row else None
+
+    def save_parsed_text(self, course_id: str, material_id: str, text: str) -> None:
+        """持久化材料解析文本,替代 pipeline.py 的进程内 dict 缓存。
+
+        解决进程重启导致 course-level wiki/skeleton 永不生成的隐患。
+        """
+        self._conn.execute(
+            "UPDATE materials SET parsed_text = ? WHERE id = ? AND course_id = ?",
+            (text, material_id, course_id),
+        )
+        self._conn.commit()
+
+    def get_parsed_text(self, course_id: str, material_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT parsed_text FROM materials WHERE id = ? AND course_id = ?",
+            (material_id, course_id),
+        ).fetchone()
+        return row["parsed_text"] if row else None
+
+    def get_all_parsed_texts(self, course_id: str) -> dict[str, str]:
+        """返回 {material_id: parsed_text},供 course-level wiki build 使用。"""
+        rows = self._conn.execute(
+            "SELECT id, parsed_text FROM materials WHERE course_id = ? AND parsed_text IS NOT NULL",
+            (course_id,),
+        ).fetchall()
+        return {r["id"]: r["parsed_text"] for r in rows if r["parsed_text"]}
 
     # --- Skeletons ---
 

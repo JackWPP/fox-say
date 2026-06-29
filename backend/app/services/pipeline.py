@@ -3,6 +3,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from app.core.config import settings
 from app.db.sqlite_store import SqliteStore
 from app.services.chunking import chunk_text
 from app.services.embedding import embed_texts
@@ -18,7 +19,8 @@ logger = logging.getLogger(__name__)
 
 _qdrant = QdrantStore()
 
-_material_texts: dict[str, dict[str, str]] = {}
+# 并发限制:同时解析的文件数,避免批量上传时打垮 LLM/Qdrant/MinerU 配额
+_parsing_semaphore = asyncio.Semaphore(settings.max_concurrent_parsing)
 
 PIPELINE_STEPS = [
     "parsing", "build_dmap", "wiki_build",
@@ -44,9 +46,12 @@ async def process_material(
         store.create_task(tid, course_id, material_id, step, status="pending")
 
     try:
-        store.update_task(task_ids["parsing"], "running")
-        text = await asyncio.to_thread(parse_document, file_path, kind)
+        async with _parsing_semaphore:
+            store.update_task(task_ids["parsing"], "running")
+            text = await asyncio.to_thread(parse_document, file_path, kind)
         store.update_task(task_ids["parsing"], "done")
+        # 持久化解析文本到 DB(替代模块级 dict,进程重启不丢失)
+        store.save_parsed_text(course_id, material_id, text)
     except ValueError as exc:
         logger.warning("Unsupported material kind for %s: %s", material_id, exc)
         store.update_task(task_ids["parsing"], "failed", detail=str(exc))
@@ -58,11 +63,12 @@ async def process_material(
         logger.warning("Full parsing failed for %s, attempting degraded extraction: %s", material_id, exc)
         store.update_task(task_ids["parsing"], "done", detail="degraded")
         try:
-            text = await asyncio.to_thread(_degraded_extract, file_path, kind)
+            async with _parsing_semaphore:
+                text = await asyncio.to_thread(_degraded_extract, file_path, kind)
             if text.strip():
+                store.save_parsed_text(course_id, material_id, text)
                 store.update_material_status(course_id, material_id, "ready", degraded=True)
                 _update_course_if_ready(course_id, store)
-                _material_texts.setdefault(course_id, {})[material_id] = text
                 asyncio.create_task(_generate_and_store_skeleton(course_id, store))
                 for remaining_step in ["build_dmap", "wiki_build", "chunking", "embedding", "storing"]:
                     store.update_task(task_ids[remaining_step], "skipped")
@@ -79,15 +85,17 @@ async def process_material(
                 store.update_task(task_ids[remaining_step], "skipped")
             return
 
-    # 尝试从 MinerU 获取带 heading 的结构化输出
+    # MinerU 真正 fallback:仅当解析内容过薄(可能是扫描件未被 markitdown/pdfplumber 抽出)时调用
+    # 之前是在 pdfplumber 成功后无条件"增强",语义偏差,已修正
     docling_chunks: list[dict] = []
-    if kind == "pdf":
+    if kind == "pdf" and len(text.strip()) < 200:
         try:
             from app.services.mineru import parse_pdf_mineru
             md_text, mineru_err = await asyncio.to_thread(parse_pdf_mineru, file_path)
-            if md_text and len(md_text) > 100:
-                logger.info("MinerU returned %d chars for %s", len(md_text), material_id)
+            if md_text and len(md_text) > len(text):
+                logger.info("MinerU fallback returned %d chars for %s (was %d)", len(md_text), material_id, len(text))
                 text = md_text
+                store.save_parsed_text(course_id, material_id, text)
                 docling_chunks = _markdown_to_chunks(md_text)
             elif mineru_err:
                 logger.warning("MinerU fallback failed for %s: %s", material_id, mineru_err)
@@ -97,11 +105,6 @@ async def process_material(
     if not docling_chunks:
         # Flat fallback: treat entire text as a paragraph element (no heading/level)
         docling_chunks = [{"text": text, "heading": "", "level": 0, "page": 0}]
-
-    # 存储 docling_chunks 供后续 course-level wiki_build 使用
-    if course_id not in _material_texts:
-        _material_texts[course_id] = {}
-    _material_texts[course_id][material_id] = text
 
     # build_dmap + wiki_build 不再逐材料执行,标记为 pending 等 course-level 处理
     store.update_task(task_ids["build_dmap"], "skipped", detail="deferred to course-level")
@@ -176,13 +179,14 @@ def _update_course_if_ready(course_id: str, store: SqliteStore) -> bool:
 
 
 def _timeout_stuck_materials(course_id: str, store: SqliteStore) -> None:
-    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+    # 批量上传时单文件排队等待会更久,阈值从 5 分钟提到 15 分钟
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
     rows = store._conn.execute(
         "SELECT id FROM materials WHERE course_id = ? AND status = 'processing' AND created_at < ?",
         (course_id, cutoff),
     ).fetchall()
     for row in rows:
-        logger.warning("Material %s stuck in processing for >5min, marking as failed", row["id"])
+        logger.warning("Material %s stuck in processing for >15min, marking as failed", row["id"])
         store.update_material_status(course_id, row["id"], "failed")
 
 
@@ -191,7 +195,7 @@ async def _generate_and_store_skeleton(course_id: str, store: SqliteStore, task_
         course = store.get_course(course_id)
         if course is None:
             return
-        texts_dict = _material_texts.get(course_id, {})
+        texts_dict = store.get_all_parsed_texts(course_id)
         combined_text = "\n\n".join(texts_dict.values())
         skeleton = await generate_skeleton(course_id, course.title, combined_text)
         store.create_skeleton(skeleton)
@@ -211,8 +215,8 @@ async def _build_course_wiki(course_id: str, store: SqliteStore) -> None:
     """
     logger.info("All materials ready for %s, building course wiki", course_id)
 
-    # 1. 合并所有材料文本
-    texts_dict = _material_texts.get(course_id, {})
+    # 1. 合并所有材料文本(从 DB 读,进程重启不丢失)
+    texts_dict = store.get_all_parsed_texts(course_id)
     if not texts_dict:
         logger.warning("No material texts for %s, skipping wiki build", course_id)
         return

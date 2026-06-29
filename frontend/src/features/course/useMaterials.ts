@@ -95,6 +95,42 @@ export function useUploadMaterial(courseId: string) {
   return { upload, uploading, progress, error };
 }
 
+export function useUploadMaterials(courseId: string) {
+  const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  const upload = useCallback(
+    async (files: File[], onProgress?: (progress: number) => void) => {
+      setUploading(true);
+      setProgress(0);
+      setError(null);
+      try {
+        const formData = new FormData();
+        files.forEach((f) => formData.append("files", f));
+        const materials = await api.uploadWithProgress<Material[]>(
+          `/courses/${courseId}/materials/batch`,
+          formData,
+          (p) => {
+            setProgress(p);
+            onProgress?.(p);
+          },
+        );
+        return materials;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Failed to upload materials";
+        setError(msg);
+        throw e;
+      } finally {
+        setUploading(false);
+      }
+    },
+    [courseId]
+  );
+
+  return { upload, uploading, progress, error };
+}
+
 export function useRetryMaterial(courseId: string) {
   const retry = useCallback(
     async (materialId: string) => {

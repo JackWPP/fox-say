@@ -33,3 +33,9 @@
 
 - [已验证] `https://mineru.net/api/v1/agent` — MinerU Agent 轻量解析 API（无需 token，IP 限频），通过 pipeline.py fallback 路径验证 — 2026-06
   - 注意：mineru.py 存在 HEC-1 静默吞错问题，已于本次修复改为返回 `(content, error)` tuple
+
+## 文档解析统一入口
+
+- [已验证] `markitdown[all]` 0.1.5 — 微软开源的统一文档转 Markdown 工具，支持 PDF/PPT/Word/HTML/图片等格式。通过 `uv sync` 安装并 `python -c "from markitdown import MarkItDown"` 实际导入验证 — 2026-06
+  - 用途：作为 parsing.py 的统一解析入口（Layer 1），失败时回退到 pdfplumber/python-pptx（Layer 2），PDF/图片最后走 MinerU 云端 OCR（Layer 3）
+- [未验证] MinerU API 对图片（PNG/JPG）的 OCR 支持 — mineru.py 现有实现针对 PDF，图片走 MinerU 需实测。若不支持则 image kind 暂走 markitdown 的图片描述能力（质量较低）— 2026-06
