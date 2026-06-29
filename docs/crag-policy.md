@@ -1,39 +1,38 @@
-# CRAG Boundary Policy
+# CRAG 边界策略
 
-CRAG is FoxSay's core differentiation: the assistant answers only when retrieved course materials justify an answer.
+CRAG 是 FoxSay 的核心差异化机制:仅当检索到的课程材料足以支撑回答时,助手才给出回答。
 
-## Thresholds
-| Retrieval score | Behavior | Requirement |
+## 阈值
+| 检索分数 | 行为 | 要求 |
 | --- | --- | --- |
-| `score >= 0.72` | Normal answer | Include citations from course materials. |
-| `0.55 <= score < 0.72` | Cautious answer | Expand retrieval, mark confidence as `ambiguous`, and avoid unsupported claims. |
-| `score < 0.55` | Refusal | Do not answer. Return a course-scoped refusal. |
+| `score >= 0.72` | 正常回答 | 必须包含来自课程材料的引用。 |
+| `0.55 <= score < 0.72` | 谨慎回答 | 扩大检索,把置信状态标为 `ambiguous`,避免无支撑的论断。 |
+| `score < 0.55` | 拒答 | 不回答。返回课程范围内的拒答消息。 |
 
-## Refusal Shape
-Use this semantic shape:
+## 拒答文案形态
+使用以下语义形态:
 
 ```text
-这个问题超出了[课程名]的范围，我不知道。
+这个问题超出了[课程名]的范围,我不知道。
 ```
 
-The exact UI copy may vary with the fox persona, but it must preserve the meaning: out of course scope, no answer.
+UI 文案可以随狐狸人设变化,但语义必须保留:超出课程范围,不予回答。
 
-## Citation Requirements
-Every non-refusal answer must include citations that identify source material and position:
+## 引用要求
+每条非拒答回答都必须包含能定位到来源材料和位置的引用:
 
 ```text
 来自 [文件名] · 第X部分
 ```
 
-If the source position is not yet known, the system should expose the best available locator and mark the answer as incomplete for debugging rather than inventing a locator.
+如果来源位置尚未可知,系统应暴露最佳的可用定位信息,并把回答标记为不完整以供调试,而不是编造一个定位。
 
-## Debug Metadata
-Backend responses should preserve:
+## 调试元数据
+后端响应应保留:
 - `course_id`
-- relevance score
-- confidence status
-- retrieval source identifiers
-- refusal reason when refused
+- relevance score(相关性分数)
+- confidence status(置信状态)
+- retrieval source identifiers(检索来源标识)
+- 拒答时的拒答原因
 
-Production UI may hide debug fields, but tests should assert that the metadata exists.
-
+生产 UI 可以隐藏调试字段,但测试必须断言这些元数据存在。

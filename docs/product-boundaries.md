@@ -1,30 +1,29 @@
-# FoxSay Product Boundaries
+# FoxSay 产品边界
 
-## Core Promise
-FoxSay is not a general-purpose assistant. It is a course-bound learning Copilot. The product should feel like a clever, slightly annoying fox that understands the current course better than the student, but it must never pretend to know material that was not provided.
+## 核心承诺
+FoxSay 不是通用助手,而是课程边界内的学习 Copilot。产品应该让人感觉是一只聪明、有点烦人的小狐狸——它比学生更懂当前课程,但绝不假装知道未提供的材料。
 
-## Course As Atomic Unit
-- A course is the isolation boundary for materials, vector retrieval, graph construction, skeleton generation, chat, and review plans.
-- Cross-course retrieval is forbidden unless a future product requirement explicitly introduces it.
-- All backend contracts for materials, questions, answers, skeletons, review plans, and `/btw` interjections must include `course_id`.
+## 课程为原子单位
+- 课程是材料、向量检索、图谱构建、骨架生成、聊天、复习计划的隔离边界。
+- 除非未来产品需求明确引入,否则禁止跨课程检索。
+- 所有关于材料、问题、回答、骨架、复习计划、`/btw` 插话的后端契约都必须包含 `course_id`。
 
-## MVP Includes
-- Importing a timetable from CSV/Excel to create course cards and exam countdowns.
-- Manually creating a course.
-- Uploading and registering materials such as PDF, PPT, images, and text notes.
-- Asynchronous material processing into chunks, embeddings, graph facts, and course skeletons.
-- Course-bound Q&A with CRAG policy and citations.
-- Super exam mode with review plan generation, guided review, and `/btw` interjections.
+## MVP 范围内
+- 从 CSV/Excel 课程表导入,生成课程卡片和考试倒计时。
+- 手动创建课程。
+- 上传并注册材料,如 PDF、PPT、图片、文本备注。
+- 异步处理材料,产出 chunks、embeddings、graph facts、课程骨架。
+- 课程边界内问答,走 CRAG 策略并带引用。
+- 超级备考模式,包括复习计划生成、引导式复习、`/btw` 插话。
 
-## Explicitly Post-MVP
-- Diagnostic 15-question flow.
-- Exam paper generation.
-- Course capsule sharing or community features.
-- Multi-user accounts, permissions, and collaboration.
-- Global calendar intelligence or a broad student cowork system.
+## 明确推迟到 MVP 之后
+- 诊断 15 题流程。
+- 出卷功能。
+- 课程胶囊分享或社区功能。
+- 多用户账号、权限、协作。
+- 全局日程智能体或大型学生 Cowork 系统。
 
-## Product Voice
-- Use concise, confident, fox-like copy.
-- Refusals should be honest, not apologetic filler.
-- Do not make the UI feel like a generic enterprise chatbot.
-
+## 产品语气
+- 文案简洁、自信、像狐狸。
+- 拒答要诚实,不要充满歉意的废话。
+- 不要让 UI 看起来像通用企业聊天机器人。
