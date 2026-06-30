@@ -82,3 +82,6 @@ backend/data/qdrant_storage/
 tmp_upload/
 classes/
 线性代数/
+
+# Trae IDE working directory (plans, specs, temporary documents)
+.trae/
