@@ -87,7 +87,7 @@ export default function ChatMessage({ message, onRegenerate, onFeedback }: ChatM
               <Copy className="w-3.5 h-3.5" />
             </button>
           </div>
-          <div className="bg-slate-100 text-slate-800 rounded-2xl rounded-br-sm px-4 py-2.5 text-sm shadow-sm whitespace-pre-wrap break-words leading-relaxed">
+          <div className="bg-gradient-to-br from-foxAmber to-orange-400 text-white rounded-2xl rounded-br-sm px-4 py-2.5 text-sm shadow-[0_2px_12px_-2px_rgba(245,158,11,0.35)] whitespace-pre-wrap break-words leading-relaxed">
             {message.content}
           </div>
         </div>

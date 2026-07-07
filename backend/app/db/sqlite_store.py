@@ -186,6 +186,7 @@ class SqliteStore:
             "ALTER TABLE chat_messages ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE courses ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE materials ADD COLUMN parsed_text TEXT",
+            "ALTER TABLE courses ADD COLUMN icon TEXT NOT NULL DEFAULT '📚'",
         ]
         for sql in migrations:
             try:
@@ -205,8 +206,8 @@ class SqliteStore:
 
     def create_course(self, course: Course) -> Course:
         self._conn.execute(
-            "INSERT INTO courses (id, title, status, teacher, exam_date, summary) VALUES (?, ?, ?, ?, ?, ?)",
-            (course.id, course.title, course.status, course.teacher, course.exam_date, course.summary),
+            "INSERT INTO courses (id, title, status, teacher, exam_date, summary, icon) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (course.id, course.title, course.status, course.teacher, course.exam_date, course.summary, course.icon),
         )
         self._conn.commit()
         return course
@@ -222,6 +223,7 @@ class SqliteStore:
             id=row["id"], title=row["title"], status=row["status"],
             teacher=row["teacher"], exam_date=row["exam_date"],
             summary=row["summary"] if "summary" in row.keys() else "",
+            icon=row["icon"] if "icon" in row.keys() else "📚",
             material_count=mat_count,
         )
 
@@ -236,6 +238,7 @@ class SqliteStore:
                 id=r["id"], title=r["title"], status=r["status"],
                 teacher=r["teacher"], exam_date=r["exam_date"],
                 summary=r["summary"] if "summary" in r.keys() else "",
+                icon=r["icon"] if "icon" in r.keys() else "📚",
                 material_count=mat_count,
             ))
         return courses
@@ -245,8 +248,8 @@ class SqliteStore:
         if existing is None:
             return None
         self._conn.execute(
-            "UPDATE courses SET title=?, status=?, teacher=?, exam_date=?, summary=? WHERE id=?",
-            (course.title, course.status, course.teacher, course.exam_date, course.summary, course_id),
+            "UPDATE courses SET title=?, status=?, teacher=?, exam_date=?, summary=?, icon=? WHERE id=?",
+            (course.title, course.status, course.teacher, course.exam_date, course.summary, course.icon, course_id),
         )
         self._conn.commit()
         return course

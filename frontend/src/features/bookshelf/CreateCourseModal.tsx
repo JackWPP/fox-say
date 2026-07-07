@@ -4,6 +4,7 @@ import { useCreateCourse } from "./useCourses";
 import { Button } from "../../components/ui/Button";
 import { Input } from "../../components/ui/Input";
 import { Card } from "../../components/ui/Card";
+import EmojiPicker from "../../components/ui/EmojiPicker";
 
 interface CreateCourseModalProps {
   open: boolean;
@@ -15,6 +16,7 @@ export default function CreateCourseModal({ open, onClose, onCreated }: CreateCo
   const [title, setTitle] = useState("");
   const [teacher, setTeacher] = useState("");
   const [examDate, setExamDate] = useState("");
+  const [icon, setIcon] = useState("📚");
   const { createCourse, loading, error } = useCreateCourse();
 
   if (!open) return null;
@@ -26,10 +28,12 @@ export default function CreateCourseModal({ open, onClose, onCreated }: CreateCo
         title,
         teacher: teacher || undefined,
         exam_date: examDate || undefined,
+        icon,
       });
       setTitle("");
       setTeacher("");
       setExamDate("");
+      setIcon("📚");
       if (course) onCreated(course.id);
       onClose();
     } catch {}
@@ -43,7 +47,7 @@ export default function CreateCourseModal({ open, onClose, onCreated }: CreateCo
         className="w-full max-w-md mx-4 rounded-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center justify-between mb-5">
           <h2 className="text-xl font-bold text-midnightCharcoal">创建课程</h2>
           <Button variant="icon" onClick={onClose} className="h-8 w-8">
             <X className="w-5 h-5" />
@@ -51,6 +55,12 @@ export default function CreateCourseModal({ open, onClose, onCreated }: CreateCo
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Emoji picker */}
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-2">课程图标</label>
+            <EmojiPicker value={icon} onChange={setIcon} />
+          </div>
+
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">
               课程标题 <span className="text-red-500">*</span>

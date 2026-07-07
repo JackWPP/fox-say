@@ -9,7 +9,7 @@ from app.services.chunking import chunk_text
 from app.services.embedding import embed_texts
 from app.services.parsing import parse_document
 from app.services.skeleton import generate_skeleton
-from app.services.vectorstore import QdrantStore
+from app.services.vectorstore import QdrantStore, _write_lock
 from app.api.events import push_event
 from app.services.dmap import build_dmap
 from app.services.merkle import compute_merkle_tree, diff_merkle_trees
@@ -126,8 +126,9 @@ async def process_material(
             "file_name": file_name,
         }
         store.update_task(task_ids["storing"], "running")
-        await asyncio.to_thread(_qdrant.delete_by_material, course_id, material_id)
-        await asyncio.to_thread(_qdrant.upsert_chunks, course_id, chunks, embeddings, metadata)
+        async with _write_lock:
+            await asyncio.to_thread(_qdrant.delete_by_material, course_id, material_id)
+            await asyncio.to_thread(_qdrant.upsert_chunks, course_id, chunks, embeddings, metadata)
         store.update_task(task_ids["storing"], "done")
 
         store.update_material_status(course_id, material_id, "ready")

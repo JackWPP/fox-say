@@ -11,6 +11,7 @@ export interface Course {
   status: CourseStatus;
   summary?: string;
   material_count?: number;
+  icon?: string;
 }
 
 export interface Material {

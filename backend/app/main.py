@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.chat import router as chat_router
 from app.api.courses import router as courses_router
+from app.api.dashboard import router as dashboard_router
 from app.api.events import router as events_router
 from app.api.knowledge_graph import router as knowledge_graph_router
 from app.api.materials import router as materials_router
@@ -52,6 +53,7 @@ def _register_routers() -> None:
     app.include_router(review_session_router)
     app.include_router(settings_router)
     app.include_router(knowledge_graph_router)
+    app.include_router(dashboard_router)
 
 
 _register_routers()

@@ -13,7 +13,6 @@ dependencies = [
   "pdfplumber",
   "openpyxl",
   "python-pptx",
-  "docling",
   "langgraph",
   "markitdown[all]",
 ]

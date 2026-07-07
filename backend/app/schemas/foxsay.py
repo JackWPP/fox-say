@@ -31,6 +31,7 @@ class Course(BaseModel):
     exam_date: str | None = None
     summary: str = ""
     material_count: int = 0
+    icon: str = "📚"
 
 
 class Material(BaseModel):
@@ -132,6 +133,14 @@ class CreateCourseRequest(BaseModel):
     title: str
     teacher: str | None = None
     exam_date: str | None = None
+    icon: str = "📚"
+
+
+class UpdateCourseRequest(BaseModel):
+    title: str | None = None
+    teacher: str | None = None
+    exam_date: str | None = None
+    icon: str | None = None
 
 
 # =============================================================================
