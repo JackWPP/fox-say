@@ -67,7 +67,10 @@ active / review → blocked → active; complete → reopened → active
 | V2-00 | `complete` | ADR-0001 | `AGENTS.md`、本台账、实施蓝图中的命名一致性 | 两条持久化链路和调度规则已写明；链接可读；文档 commit。 |
 | V2-A | `complete` | ADR-0001 | 证据对象、revision 防护、持久 job schema/store 与 lease 基础 | `262bd37`、`5079c50`、`647670f`、`bf98b74` 及对应 source fragment/vector/revision/job tests。 |
 | V2-B | `complete` | V2-A | `index_material` 受控 worker、材料上传 enqueue、持久进度与重试入口 | `f794f44`；31 个 V2 窄测试、Ruff 与前端 typecheck 通过。旧 revision 不能写回 fragment、向量或 parser assets。 |
-| V2-C | `ready` | V2-B | fragment preview、`EvidenceRef`、`KnowledgeStatus`、精确/向量/Outline 邻域检索与前端真实状态 | 两门合成课程不跨 `course_id`；每个 citation 以 fragment ID 打开正确位置；重连后状态来自 API 而非 SSE。先统一计划目标与现有 queue 状态词汇，再暴露公共 API。 |
+| V2-C | `active` | V2-B | fragment preview、`EvidenceRef`、`KnowledgeStatus`、精确/向量/Outline 邻域检索与前端真实状态 | 两门合成课程不跨 `course_id`；每个 citation 以 fragment ID 打开正确位置；重连后状态来自 API 而非 SSE。由 C1～C3 串行交付。 |
+| V2-C1 | `active` | V2-B | 后端 `KnowledgeStatus`、当前 revision fragment preview 和公共证据 DTO；仅修改 schema/store/API/tests | 状态由持久材料/job/fragment 计算；跨课程、旧 revision、未知 fragment 均不能预览；不调用模型。 |
+| V2-C2 | `ready` | V2-C1 | fragment-first 混合检索、CRAG 结果与服务器侧 `AnswerEnvelope`；仅修改 retrieval/service/query tests | 只检索当前 course/current revision 的 `source_fragment`；无效 Qdrant payload 丢弃；模型不能伪造 citation。 |
+| V2-C3 | `ready` | V2-C1, V2-C2 | 前端 public types、CitationCard、SourcesPanel/Chat 状态呈现 | 引用按 `fragment_id` 打开；`supplementary` 不被展示为拒答；状态重连来自 API。 |
 | V2-D | `ready` | V2-C | 课程级 `compile_course`、Outline、SemanticAtom、Term、KC、关系及 revision 依赖 | 模型输出的 fragment ID 均经代码校验；坏引用只丢弃该候选并留下 warning；增量与全量重建决策可审计。 |
 | V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
@@ -82,6 +85,13 @@ active / review → blocked → active; complete → reopened → active
 当前 job 只持久化预算上限，尚未持久化每次模型调用的 model、输入/输出 token、elapsed、`max_attempts`、`not_before` 或取消原因；这些不是“已经有预算审计”的同义词。V2-C/D/E 在开放相应能力前必须把需要的字段、迁移和 UI 映射一起落地并测试。
 
 `extracted_assets` 仍是 legacy 解析资产表，尚无独立 revision 历史。它在 V2-E 形成 revision-aware `VisualAtom`/资产证据契约前只能作为当前材料的可失效缓存，不能单独进入课程结论、Term、KC 或引用。
+
+### 3.2 活动任务包：V2-C1
+
+- **目标**：公开一个只读、无模型调用的证据状态边界。`KnowledgeStatus` 必须从 SQLite 的当前材料 revision、持久 job 和可验证 fragment 计算，而不是由 SSE 或前端猜测；fragment 预览必须以 `course_id + fragment_id` 解析并拒绝旧 revision。
+- **依赖与范围**：依赖 `f794f44` 的 V2-B；允许修改 `backend/app/schemas/`、`backend/app/db/sqlite_store.py`、`backend/app/services/knowledge_status.py`、`backend/app/api/`、对应 backend tests 和实际架构文档。不得改 `agent.py`、legacy retrieval、课程编译、VLM 或前端。
+- **验收**：empty/processing/partial/failed 的状态映射有确定性测试；两个课程中相同/伪造 fragment ID 不越界；当前 revision 的 preview 有 material/file/locator，旧 revision 只可在以后显式历史接口开放，当前接口返回 404；HTTP 断线后重新请求仍得出同一状态。
+- **成本与时延**：只读 SQLite 查询，不新增模型调用或 embedding；列表/状态接口应是常数次或按材料数线性的小查询，不能扫描原始 Markdown。
 
 ## 4. 成本、等待和“自然生长”的调度门槛
 
@@ -101,6 +111,7 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-B | `ready → active` | 受控 worker、上传 enqueue、持久进度的实现正在由对应测试验证；完成态等待实际 commit。 | pending |
 | 2026-07-11 | V2-B | `active → complete` | `f794f44`；持久 worker、上传 enqueue、revision publication fence、fragment preview/progress 与合成材料测试完成。 | `f794f44` |
 | 2026-07-11 | V2-00 | `active → complete` | 统一调度规则、任务台账、实际 job 名称与交接协议已落盘。 | this commit |
+| 2026-07-11 | V2-C / V2-C1 | `ready → active` | 领取只读证据状态与当前 revision fragment preview；范围、非目标、验收和成本限制见 §3.2。 | pending |
 
 ## 6. 交接检查
 
