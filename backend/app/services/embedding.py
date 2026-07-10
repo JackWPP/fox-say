@@ -34,6 +34,7 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
         response = client.embeddings.create(
             model=settings.embedding_model,
             input=batch,
+            dimensions=1024,
         )
         all_embeddings.extend(item.embedding for item in response.data)
     return all_embeddings

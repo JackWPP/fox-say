@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 
 from qdrant_client import QdrantClient
@@ -14,6 +15,7 @@ from qdrant_client.models import (
 from app.core.config import settings
 
 _client: QdrantClient | None = None
+_write_lock = asyncio.Lock()
 
 
 def _get_client() -> QdrantClient:

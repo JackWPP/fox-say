@@ -4,6 +4,7 @@ import Layout from "./app/Layout";
 import BookshelfPage from "./features/bookshelf/BookshelfPage";
 import CourseDetailPage from "./features/course/CourseDetailPage";
 import OnboardingPage from "./features/onboarding/OnboardingPage";
+import DisplayScreen from "./features/display/DisplayScreen";
 import { api } from "./shared/api";
 
 function OnboardingGuard({ children }: { children: React.ReactNode }) {
@@ -47,6 +48,9 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
+        {/* Standalone route — no sidebar layout */}
+        <Route path="/display" element={<DisplayScreen />} />
+
         <Route element={<Layout />}>
           <Route
             path="/"

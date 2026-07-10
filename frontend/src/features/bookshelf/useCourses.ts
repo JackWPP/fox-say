@@ -32,7 +32,7 @@ export function useCreateCourse() {
   const [error, setError] = useState<string | null>(null);
 
   const createCourse = useCallback(
-    async (data: { title: string; teacher?: string; exam_date?: string }) => {
+    async (data: { title: string; teacher?: string; exam_date?: string; icon?: string }) => {
       setLoading(true);
       setError(null);
       try {
@@ -50,6 +50,31 @@ export function useCreateCourse() {
   );
 
   return { createCourse, loading, error };
+}
+
+export function useUpdateCourse() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const updateCourse = useCallback(
+    async (courseId: string, data: { title?: string; teacher?: string; exam_date?: string; icon?: string }) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const course = await api.patch<import("../../shared/types").Course>(`/courses/${courseId}`, data);
+        return course;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Failed to update course";
+        setError(msg);
+        throw e;
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
+
+  return { updateCourse, loading, error };
 }
 
 export function useCourse(courseId: string) {

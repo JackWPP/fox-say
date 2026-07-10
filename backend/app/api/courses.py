@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 
 from app.db.deps import get_store
 from app.db.sqlite_store import SqliteStore
-from app.schemas.foxsay import Course, CreateCourseRequest, DMAP, ImportTimetableResponse
+from app.schemas.foxsay import Course, CreateCourseRequest, UpdateCourseRequest, DMAP, ImportTimetableResponse
 from app.services.timetable import parse_csv, parse_excel
 
 logger = logging.getLogger(__name__)
@@ -45,14 +45,74 @@ async def create_course(body: CreateCourseRequest, store: SqliteStore = Depends(
         status="empty",
         teacher=body.teacher,
         exam_date=body.exam_date,
+        icon=body.icon,
     )
     store.create_course(course)
     return course
 
 
+@router.patch("/{course_id}", response_model=Course)
+async def update_course(course_id: str, body: UpdateCourseRequest, store: SqliteStore = Depends(get_store)):
+    existing = store.get_course(course_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Course not found")
+    if body.title is not None:
+        existing.title = body.title
+    if body.teacher is not None:
+        existing.teacher = body.teacher
+    if body.exam_date is not None:
+        existing.exam_date = body.exam_date
+    if body.icon is not None:
+        existing.icon = body.icon
+    updated = store.update_course(course_id, existing)
+    return updated
+
+
 @router.get("", response_model=list[Course])
 async def list_courses(store: SqliteStore = Depends(get_store)):
     return store.get_all_courses()
+
+
+@router.post("/{course_id}/quiz")
+async def generate_quiz(
+    course_id: str,
+    body: dict,
+    store: SqliteStore = Depends(get_store),
+):
+    """Generate quiz questions from KC data via LLM.
+
+    Body params:
+      chapter_id (optional): only use KCs from this chapter
+      count (default 5): number of questions
+      type (default "mixed"): "choice" | "fill" | "proof" | "mixed"
+    """
+    import asyncio
+    from app.services.quiz import generate_quiz as _gen
+
+    course = store.get_course(course_id)
+    if course is None:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    chapter_id: str | None = body.get("chapter_id")
+    count: int = int(body.get("count", 5))
+    q_type: str = body.get("type", "mixed")
+
+    all_kcs = store.get_kcs_by_course(course_id, include_invalid=False)
+    if chapter_id:
+        kcs = [kc for kc in all_kcs if kc.chapter_id == chapter_id]
+    else:
+        kcs = all_kcs
+
+    if not kcs:
+        raise HTTPException(status_code=400, detail="No knowledge components found. Upload and process materials first.")
+
+    questions = await asyncio.to_thread(_gen, kcs, count, q_type)
+    return {
+        "course_id": course_id,
+        "chapter_id": chapter_id,
+        "count": len(questions),
+        "questions": questions,
+    }
 
 
 @router.get("/{course_id}", response_model=Course)
