@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from app.schemas.foxsay import (
     Note,
     ReviewPlan,
 )
+from app.schemas.knowledge_jobs import KnowledgeJob, KnowledgeJobCreate
 
 _DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "foxsay.db"
 
@@ -182,6 +184,46 @@ CREATE TABLE IF NOT EXISTS extracted_assets (
 );
 CREATE INDEX IF NOT EXISTS idx_asset_material ON extracted_assets(material_id);
 CREATE INDEX IF NOT EXISTS idx_asset_course ON extracted_assets(course_id);
+
+-- ===== Knowledge System V2: persistent, recoverable job queue =====
+
+CREATE TABLE IF NOT EXISTS knowledge_jobs (
+    job_id TEXT PRIMARY KEY,
+    course_id TEXT NOT NULL,
+    material_id TEXT,
+    job_type TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    scope TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    attempt INTEGER NOT NULL DEFAULT 0,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    token_budget INTEGER,
+    lease_owner TEXT,
+    lease_expires_at TEXT,
+    error_code TEXT,
+    error_detail TEXT,
+    error_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    started_at TEXT,
+    finished_at TEXT,
+    FOREIGN KEY (course_id) REFERENCES courses(id),
+    FOREIGN KEY (material_id) REFERENCES materials(id),
+    CHECK (job_type IN ('index_material', 'compile_course')),
+    CHECK (scope IN ('material', 'course')),
+    CHECK (status IN ('queued', 'running', 'succeeded', 'retryable', 'failed')),
+    CHECK (revision >= 0),
+    CHECK (attempt >= 0),
+    CHECK (token_budget IS NULL OR token_budget > 0),
+    CHECK (
+        (scope = 'material' AND material_id IS NOT NULL)
+        OR (scope = 'course' AND material_id IS NULL)
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_jobs_claim
+    ON knowledge_jobs(status, lease_expires_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_knowledge_jobs_course
+    ON knowledge_jobs(course_id, revision, created_at);
 """
 
 
@@ -191,6 +233,9 @@ class SqliteStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # The current SQLite queue is intentionally single-process.  This lock
+        # prevents two in-process workers from interleaving BEGIN IMMEDIATE.
+        self._knowledge_job_lock = threading.RLock()
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
@@ -435,6 +480,267 @@ class SqliteStore:
         )
         self._conn.commit()
 
+    # --- Knowledge jobs (V2 persistent queue; no worker loop here) ---
+
+    def enqueue_knowledge_job(self, job: KnowledgeJobCreate) -> KnowledgeJob:
+        """Insert a job once per stable idempotency key.
+
+        A reused key is valid only for the exact same course-scoped immutable
+        identity.  This prevents an accidental caller-side key collision from
+        returning another course's job.
+        """
+        if self.get_course(job.course_id) is None:
+            raise ValueError(f"Cannot enqueue knowledge job: course {job.course_id!r} not found")
+        if job.material_id is not None and self.get_material(job.course_id, job.material_id) is None:
+            raise ValueError(
+                "Cannot enqueue material knowledge job: material does not belong to course"
+            )
+
+        with self._knowledge_job_lock:
+            self._conn.execute(
+                """
+                INSERT INTO knowledge_jobs
+                    (job_id, course_id, material_id, job_type, revision, scope,
+                     status, attempt, idempotency_key, token_budget)
+                VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)
+                ON CONFLICT(idempotency_key) DO NOTHING
+                """,
+                (
+                    job.job_id,
+                    job.course_id,
+                    job.material_id,
+                    job.job_type,
+                    job.revision,
+                    job.scope,
+                    job.idempotency_key,
+                    job.token_budget,
+                ),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT * FROM knowledge_jobs WHERE idempotency_key = ?",
+                (job.idempotency_key,),
+            ).fetchone()
+
+        if row is None:  # Defensive: the UNIQUE conflict target must always return a row.
+            raise RuntimeError("Knowledge job enqueue did not persist a job")
+        persisted = self._row_to_knowledge_job(row)
+        immutable_identity = (
+            persisted.course_id,
+            persisted.material_id,
+            persisted.job_type,
+            persisted.revision,
+            persisted.scope,
+        )
+        requested_identity = (
+            job.course_id,
+            job.material_id,
+            job.job_type,
+            job.revision,
+            job.scope,
+        )
+        if immutable_identity != requested_identity:
+            raise ValueError("Knowledge job idempotency key is already bound to another job identity")
+        return persisted
+
+    def get_knowledge_job(self, course_id: str, job_id: str) -> KnowledgeJob | None:
+        row = self._conn.execute(
+            "SELECT * FROM knowledge_jobs WHERE job_id = ? AND course_id = ?",
+            (job_id, course_id),
+        ).fetchone()
+        return self._row_to_knowledge_job(row) if row is not None else None
+
+    def list_knowledge_jobs(
+        self, course_id: str, status: str | None = None
+    ) -> list[KnowledgeJob]:
+        if status is None:
+            rows = self._conn.execute(
+                "SELECT * FROM knowledge_jobs WHERE course_id = ? ORDER BY created_at, job_id",
+                (course_id,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM knowledge_jobs WHERE course_id = ? AND status = ? ORDER BY created_at, job_id",
+                (course_id, status),
+            ).fetchall()
+        return [self._row_to_knowledge_job(row) for row in rows]
+
+    def claim_next_knowledge_job(
+        self, lease_owner: str, lease_seconds: int
+    ) -> KnowledgeJob | None:
+        """Atomically claim one queued or expired-running job.
+
+        The queue currently supports one SQLite database and guarded
+        in-process concurrency.  `BEGIN IMMEDIATE` also serializes claims from
+        separate SQLite connections sharing that database file.
+        """
+        if not lease_owner.strip():
+            raise ValueError("lease_owner is required to claim a knowledge job")
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+
+        lease_modifier = f"+{lease_seconds} seconds"
+        with self._knowledge_job_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    """
+                    SELECT job_id FROM knowledge_jobs
+                    WHERE status = 'queued'
+                       OR (status = 'running'
+                           AND lease_expires_at IS NOT NULL
+                           AND lease_expires_at <= datetime('now'))
+                    ORDER BY CASE status WHEN 'queued' THEN 0 ELSE 1 END, created_at, job_id
+                    LIMIT 1
+                    """
+                ).fetchone()
+                if row is None:
+                    self._conn.commit()
+                    return None
+
+                job_id = row["job_id"]
+                updated = self._conn.execute(
+                    """
+                    UPDATE knowledge_jobs
+                    SET status = 'running',
+                        attempt = attempt + 1,
+                        lease_owner = ?,
+                        lease_expires_at = datetime('now', ?),
+                        started_at = COALESCE(started_at, datetime('now')),
+                        finished_at = NULL,
+                        updated_at = datetime('now')
+                    WHERE job_id = ?
+                    """,
+                    (lease_owner, lease_modifier, job_id),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError("Knowledge job claim lost its selected row")
+                claimed = self._conn.execute(
+                    "SELECT * FROM knowledge_jobs WHERE job_id = ?", (job_id,)
+                ).fetchone()
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+        if claimed is None:
+            raise RuntimeError("Knowledge job claim did not return the claimed job")
+        return self._row_to_knowledge_job(claimed)
+
+    def complete_knowledge_job(
+        self, course_id: str, job_id: str, lease_owner: str
+    ) -> KnowledgeJob:
+        """Mark a currently leased job successful; stale workers cannot complete it."""
+        with self._knowledge_job_lock:
+            updated = self._conn.execute(
+                """
+                UPDATE knowledge_jobs
+                SET status = 'succeeded',
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    error_code = NULL,
+                    error_detail = NULL,
+                    error_at = NULL,
+                    finished_at = datetime('now'),
+                    updated_at = datetime('now')
+                WHERE job_id = ? AND course_id = ? AND status = 'running' AND lease_owner = ?
+                """,
+                (job_id, course_id, lease_owner),
+            )
+            self._conn.commit()
+        if updated.rowcount != 1:
+            raise ValueError("Knowledge job cannot be completed by this lease owner")
+        completed = self.get_knowledge_job(course_id, job_id)
+        if completed is None:
+            raise RuntimeError("Completed knowledge job could not be reloaded")
+        return completed
+
+    def fail_knowledge_job(
+        self,
+        course_id: str,
+        job_id: str,
+        lease_owner: str,
+        error_detail: str,
+        *,
+        retryable: bool,
+        error_code: str | None = None,
+    ) -> KnowledgeJob:
+        """Persist a visible failure and release the worker lease."""
+        if not error_detail.strip():
+            raise ValueError("error_detail is required when failing a knowledge job")
+        next_status = "retryable" if retryable else "failed"
+        with self._knowledge_job_lock:
+            updated = self._conn.execute(
+                """
+                UPDATE knowledge_jobs
+                SET status = ?,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    error_code = ?,
+                    error_detail = ?,
+                    error_at = datetime('now'),
+                    finished_at = datetime('now'),
+                    updated_at = datetime('now')
+                WHERE job_id = ? AND course_id = ? AND status = 'running' AND lease_owner = ?
+                """,
+                (next_status, error_code, error_detail, job_id, course_id, lease_owner),
+            )
+            self._conn.commit()
+        if updated.rowcount != 1:
+            raise ValueError("Knowledge job cannot be failed by this lease owner")
+        failed = self.get_knowledge_job(course_id, job_id)
+        if failed is None:
+            raise RuntimeError("Failed knowledge job could not be reloaded")
+        return failed
+
+    def retry_knowledge_job(self, course_id: str, job_id: str) -> KnowledgeJob:
+        """Requeue a terminal or retryable job without erasing its prior error."""
+        with self._knowledge_job_lock:
+            updated = self._conn.execute(
+                """
+                UPDATE knowledge_jobs
+                SET status = 'queued',
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    started_at = NULL,
+                    finished_at = NULL,
+                    updated_at = datetime('now')
+                WHERE job_id = ? AND course_id = ? AND status IN ('retryable', 'failed')
+                """,
+                (job_id, course_id),
+            )
+            self._conn.commit()
+        if updated.rowcount != 1:
+            raise ValueError("Only failed or retryable knowledge jobs can be retried")
+        retried = self.get_knowledge_job(course_id, job_id)
+        if retried is None:
+            raise RuntimeError("Retried knowledge job could not be reloaded")
+        return retried
+
+    @staticmethod
+    def _row_to_knowledge_job(row: sqlite3.Row) -> KnowledgeJob:
+        return KnowledgeJob(
+            job_id=row["job_id"],
+            course_id=row["course_id"],
+            material_id=row["material_id"],
+            job_type=row["job_type"],
+            revision=row["revision"],
+            scope=row["scope"],
+            status=row["status"],
+            attempt=row["attempt"],
+            idempotency_key=row["idempotency_key"],
+            token_budget=row["token_budget"],
+            lease_owner=row["lease_owner"],
+            lease_expires_at=row["lease_expires_at"],
+            error_code=row["error_code"],
+            error_detail=row["error_detail"],
+            error_at=row["error_at"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            started_at=row["started_at"],
+            finished_at=row["finished_at"],
+        )
+
     # --- Chat Sessions ---
 
     def create_chat_session(self, session_id: str, course_id: str, title: str = "新对话") -> None:
@@ -518,7 +824,6 @@ class SqliteStore:
     # --- Review Sessions ---
 
     def create_review_session(self, session_id: str, course_id: str, current_day: int = 1) -> None:
-        import json
         self._conn.execute(
             "INSERT INTO review_sessions (id, course_id, current_day) VALUES (?, ?, ?)",
             (session_id, course_id, current_day),

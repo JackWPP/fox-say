@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     max_batch_upload: int = 15  # 单次 /materials/batch 最多文件数
     max_concurrent_parsing: int = 3  # 同时解析的文件数(asyncio.Semaphore 上限)
 
+    # V2 持久知识任务。worker 尚未接入；该预算供课程级编译任务显式审计。
+    knowledge_job_default_token_budget: int = 12000
+
     # PR0 新增:解耦 Judge 模型 (评测端 / 轻量分类端使用)
     # 必须跟 deepseek_model 不同家族,否则 self-preference bias (调研结论)。
     # 默认指向 LM Studio 本地部署的 Qwen3.5 9B (OpenAI 兼容)。

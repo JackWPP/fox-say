@@ -1,5 +1,21 @@
 # FoxSay Architecture
 
+## Knowledge System V2 Foundation (2026-07-11)
+
+> The active request path below is still the legacy pipeline. V2 has only established its
+> durable job foundation so far; it does **not** yet replace material upload, parsing,
+> Qdrant writes, Wiki build, or the frontend status UI.
+
+- `knowledge_jobs` is a separate SQLite-backed, course-scoped queue for V2 work. It has
+  explicit revision, idempotency key, attempt, lease, error and token-budget fields.
+- The current V2 job types are `index_material` and `compile_course`. Store operations can
+  atomically enqueue, claim, reclaim an expired lease, complete, fail and requeue a job.
+- The queue currently has no worker or HTTP endpoint by design. The next V2 milestone wires
+  a single controlled worker and material revisions; legacy in-process `asyncio.create_task()`
+  work has not yet been removed.
+- The target evidence-first model, incremental revision policy and migration sequence are in
+  [knowledge-system-v2-implementation-plan.md](knowledge-system-v2-implementation-plan.md).
+
 ## MVP Architecture
 ```text
 Frontend: Vite + React + TypeScript + Tailwind
