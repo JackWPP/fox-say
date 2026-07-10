@@ -11,6 +11,9 @@
 - `source_fragments` is the V2 material evidence fact layer. Each fragment has an explicit
   `fragment_id`, course/material/revision scope, title path, source offsets and page/slide
   location; `EvidenceRef` resolves material claims through that ID rather than a filename.
+- The V2 Qdrant source-fragment index uses deterministic UUID5 point IDs and type-scoped
+  deletion, so a retry replaces only the affected material evidence rather than notes, terms
+  or legacy chunks.
 - The current V2 job types are `index_material` and `compile_course`. Store operations can
   atomically enqueue, claim, reclaim an expired lease, complete, fail and requeue a job.
 - `KnowledgeJobWorker` is a controlled, single-worker consumer with injected handlers. It is
