@@ -65,7 +65,8 @@ active / review → blocked → active; complete → reopened → active
 | ID | 状态 | 依赖 | 可修改范围 / 交付物 | 完成证据 |
 | --- | --- | --- | --- | --- |
 | V2-00 | `complete` | ADR-0001 | `AGENTS.md`、本台账、实施蓝图中的命名一致性 | 两条持久化链路和调度规则已写明；链接可读；文档 commit。 |
-| V2-A | `complete` | ADR-0001 | 证据对象、revision 防护、持久 job schema/store 与 lease 基础 | `262bd37`、`5079c50`、`647670f`、`bf98b74` 及对应 source fragment/vector/revision/job tests。 |
+| V2-A | `reopened` | ADR-0001 | 证据对象、revision 防护、持久 job schema/store 与 lease 基础 | 历史基础见 `262bd37`、`5079c50`、`647670f`、`bf98b74`；V2-A1 正在关闭 logical job identity 的唯一性缺口。 |
+| V2-A1 | `active` | V2-A | `knowledge_jobs` 的 material/course logical identity 唯一性、enqueue 防护与迁移安全 | 任一 course/material/revision/job_type 只能有一个 durable job；状态/证据查询不受伪造 idempotency key 影响。 |
 | V2-B | `complete` | V2-A | `index_material` 受控 worker、材料上传 enqueue、持久进度与重试入口 | `f794f44`；31 个 V2 窄测试、Ruff 与前端 typecheck 通过。旧 revision 不能写回 fragment、向量或 parser assets。 |
 | V2-C | `active` | V2-B | fragment preview、`EvidenceRef`、`KnowledgeStatus`、精确/向量/Outline 邻域检索与前端真实状态 | 两门合成课程不跨 `course_id`；每个 citation 以 fragment ID 打开正确位置；重连后状态来自 API 而非 SSE。由 C1～C3 串行交付。 |
 | V2-C1 | `active` | V2-B | 后端 `KnowledgeStatus`、当前 revision fragment preview 和公共证据 DTO；仅修改 schema/store/API/tests | 状态由持久材料/job/fragment 计算；跨课程、旧 revision、未知 fragment 均不能预览；不调用模型。 |
@@ -93,6 +94,13 @@ active / review → blocked → active; complete → reopened → active
 - **验收**：empty/processing/partial/failed 的状态映射有确定性测试；两个课程中相同/伪造 fragment ID 不越界；当前 revision 的 preview 有 material/file/locator，旧 revision 只可在以后显式历史接口开放，当前接口返回 404；HTTP 断线后重新请求仍得出同一状态。
 - **成本与时延**：只读 SQLite 查询，不新增模型调用或 embedding；列表/状态接口应是常数次或按材料数线性的小查询，不能扫描原始 Markdown。
 
+### 3.3 活动任务包：V2-A1
+
+- **目标**：补齐持久化队列的逻辑身份约束。`idempotency_key` 之外，还必须唯一约束 material-scoped `(course_id, material_id, job_type, revision)` 和 course-scoped `(course_id, job_type, revision)`；否则同一事实可能有多个相互矛盾的 job。
+- **依赖与范围**：允许修改 `backend/app/db/sqlite_store.py`、持久 job schema/store tests 及实际架构文档；不得改变已约定的 job 状态词汇、引入队列服务、删除已有 job 或修改 Agent/前端。
+- **验收**：不同 idempotency key 的重复逻辑 job 被明确去重或拒绝；新 SQLite 库有数据库级唯一约束；历史数据库若存在冲突，启动错误必须可见且指出修复方向，不能静默删除任务；C1 的 status/current-evidence 查询不再因重复 row 放大 coverage。
+- **成本与时延**：纯 SQLite schema/查询修复，不调用模型；enqueue 只增加索引命中或常数次查找。
+
 ## 4. 成本、等待和“自然生长”的调度门槛
 
 1. **先确定性，后模型**：解析、标题树、fragment、内容 hash、失效范围和基础索引先完成；不能为了“看起来聪明”对整门课无差别烧 token。
@@ -112,6 +120,7 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-B | `active → complete` | `f794f44`；持久 worker、上传 enqueue、revision publication fence、fragment preview/progress 与合成材料测试完成。 | `f794f44` |
 | 2026-07-11 | V2-00 | `active → complete` | 统一调度规则、任务台账、实际 job 名称与交接协议已落盘。 | this commit |
 | 2026-07-11 | V2-C / V2-C1 | `ready → active` | 领取只读证据状态与当前 revision fragment preview；范围、非目标、验收和成本限制见 §3.2。 | pending |
+| 2026-07-11 | V2-A / V2-A1 | `complete → reopened / proposed → active` | C1 审查发现 `idempotency_key` 唯一不足以阻止同一 logical job 重复；按 §3.3 先补数据库级约束。 | pending |
 
 ## 6. 交接检查
 
