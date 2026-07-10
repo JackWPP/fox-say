@@ -11,6 +11,8 @@
 - `source_fragments` is the V2 material evidence fact layer. Each fragment has an explicit
   `fragment_id`, course/material/revision scope, title path, source offsets and page/slide
   location; `EvidenceRef` resolves material claims through that ID rather than a filename.
+- Materials now expose an explicit revision and content hash. Revision-guarded status/text
+  writes reject stale jobs, so an old parse result cannot overwrite a newer upload.
 - The V2 Qdrant source-fragment index uses deterministic UUID5 point IDs and type-scoped
   deletion, so a retry replaces only the affected material evidence rather than notes, terms
   or legacy chunks.

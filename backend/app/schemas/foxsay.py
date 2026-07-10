@@ -1,7 +1,7 @@
 import uuid
 from typing import Any, Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 NAMESPACE_DMAP = uuid.UUID("12345678-1234-5678-1234-567812345678")  # 稳定 namespace
 
@@ -42,6 +42,12 @@ class Material(BaseModel):
     kind: MaterialKind
     status: CourseStatus
     degraded: bool = False
+    # New inputs start at revision 1. Rows that predate this field are
+    # migrated with revision 0 so callers can distinguish legacy material.
+    revision: int = Field(default=1, ge=0)
+    # Empty is retained for legacy rows and inputs whose source hash is not
+    # available at material creation time.
+    content_hash: str = ""
 
 
 class CourseSkeletonChapter(BaseModel):

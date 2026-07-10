@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS materials (
     file_path TEXT,
     degraded INTEGER NOT NULL DEFAULT 0,
     parsed_text TEXT,
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 0),
+    content_hash TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (course_id) REFERENCES courses(id)
 );
@@ -293,6 +295,9 @@ class SqliteStore:
             "ALTER TABLE chat_messages ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE courses ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE materials ADD COLUMN parsed_text TEXT",
+            # Existing rows remain explicitly identifiable as legacy inputs.
+            "ALTER TABLE materials ADD COLUMN revision INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE materials ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE courses ADD COLUMN icon TEXT NOT NULL DEFAULT '📚'",
         ]
         for sql in migrations:
@@ -372,11 +377,25 @@ class SqliteStore:
 
     def create_material(self, material: Material, file_path: str | None = None, degraded: bool = False) -> Material:
         self._conn.execute(
-            "INSERT INTO materials (id, course_id, filename, kind, status, file_path, degraded) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (material.id, material.course_id, material.filename, material.kind, material.status, file_path, int(degraded)),
+            """
+            INSERT INTO materials
+                (id, course_id, filename, kind, status, file_path, degraded, revision, content_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                material.id,
+                material.course_id,
+                material.filename,
+                material.kind,
+                material.status,
+                file_path,
+                int(degraded),
+                material.revision,
+                material.content_hash,
+            ),
         )
         self._conn.commit()
-        return material
+        return material.model_copy(update={"degraded": degraded})
 
     def get_material(self, course_id: str, material_id: str) -> Material | None:
         row = self._conn.execute(
@@ -384,31 +403,42 @@ class SqliteStore:
         ).fetchone()
         if row is None:
             return None
-        return Material(id=row["id"], course_id=row["course_id"], filename=row["filename"], kind=row["kind"], status=row["status"])
+        return self._material_from_row(row)
 
     def get_all_materials(self, course_id: str) -> list[Material]:
         rows = self._conn.execute(
-            "SELECT id, course_id, filename, kind, status, degraded FROM materials WHERE course_id = ? ORDER BY created_at DESC",
+            """
+            SELECT id, course_id, filename, kind, status, degraded, revision, content_hash
+            FROM materials
+            WHERE course_id = ?
+            ORDER BY created_at DESC
+            """,
             (course_id,),
         ).fetchall()
-        return [
-            Material(
-                id=r["id"], course_id=r["course_id"], filename=r["filename"],
-                kind=r["kind"], status=r["status"], degraded=bool(r["degraded"]),
-            )
-            for r in rows
-        ]
+        return [self._material_from_row(row) for row in rows]
 
     def update_material(self, course_id: str, material_id: str, material: Material) -> Material | None:
         existing = self.get_material(course_id, material_id)
         if existing is None:
             return None
+        if material.revision != existing.revision or material.content_hash != existing.content_hash:
+            raise ValueError(
+                "Material revision and content_hash are immutable in update_material; "
+                "use advance_material_revision for new source content"
+            )
         self._conn.execute(
-            "UPDATE materials SET filename=?, kind=?, status=? WHERE id=? AND course_id=?",
-            (material.filename, material.kind, material.status, material_id, course_id),
+            "UPDATE materials SET filename=?, kind=?, status=?, degraded=? WHERE id=? AND course_id=?",
+            (
+                material.filename,
+                material.kind,
+                material.status,
+                int(material.degraded),
+                material_id,
+                course_id,
+            ),
         )
         self._conn.commit()
-        return material
+        return self.get_material(course_id, material_id)
 
     def update_material_status(self, course_id: str, material_id: str, status: str, degraded: bool = False) -> None:
         self._conn.execute(
@@ -416,6 +446,27 @@ class SqliteStore:
             (status, int(degraded), material_id, course_id),
         )
         self._conn.commit()
+
+    def update_material_status_if_revision(
+        self,
+        course_id: str,
+        material_id: str,
+        revision: int,
+        status: str,
+        degraded: bool = False,
+    ) -> bool:
+        """Update status only when a worker still owns the current revision."""
+        self._validate_material_revision(revision)
+        cursor = self._conn.execute(
+            """
+            UPDATE materials
+            SET status = ?, degraded = ?
+            WHERE id = ? AND course_id = ? AND revision = ?
+            """,
+            (status, int(degraded), material_id, course_id, revision),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
 
     def is_material_degraded(self, course_id: str, material_id: str) -> bool:
         row = self._conn.execute(
@@ -440,6 +491,30 @@ class SqliteStore:
         )
         self._conn.commit()
 
+    def save_parsed_text_if_revision(
+        self,
+        course_id: str,
+        material_id: str,
+        revision: int,
+        text: str,
+    ) -> bool:
+        """Persist parsed text only if ``revision`` is still current.
+
+        ``False`` is a normal stale-job signal: no row was changed, so an old
+        worker cannot overwrite a newer material input.
+        """
+        self._validate_material_revision(revision)
+        cursor = self._conn.execute(
+            """
+            UPDATE materials
+            SET parsed_text = ?
+            WHERE id = ? AND course_id = ? AND revision = ?
+            """,
+            (text, material_id, course_id, revision),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
     def get_parsed_text(self, course_id: str, material_id: str) -> str | None:
         row = self._conn.execute(
             "SELECT parsed_text FROM materials WHERE id = ? AND course_id = ?",
@@ -454,6 +529,59 @@ class SqliteStore:
             (course_id,),
         ).fetchall()
         return {r["id"]: r["parsed_text"] for r in rows if r["parsed_text"]}
+
+    def advance_material_revision(
+        self,
+        course_id: str,
+        material_id: str,
+        content_hash: str,
+        *,
+        status: str = "processing",
+    ) -> Material | None:
+        """Record replacement source content and invalidate material-local output.
+
+        This is the only material-store method that changes the current hash
+        or revision. It clears parsed text and resets degraded state before
+        newer jobs begin, so older revision-guarded writes are rejected.
+        """
+        if not content_hash:
+            raise ValueError("content_hash must be non-empty when advancing a material revision")
+        cursor = self._conn.execute(
+            """
+            UPDATE materials
+            SET revision = revision + 1,
+                content_hash = ?,
+                parsed_text = NULL,
+                status = ?,
+                degraded = 0
+            WHERE id = ? AND course_id = ?
+            """,
+            (content_hash, status, material_id, course_id),
+        )
+        self._conn.commit()
+        if cursor.rowcount != 1:
+            return None
+        return self.get_material(course_id, material_id)
+
+    @staticmethod
+    def _validate_material_revision(revision: int) -> None:
+        if revision < 0:
+            raise ValueError("material revision must be non-negative")
+
+    @staticmethod
+    def _material_from_row(row: sqlite3.Row) -> Material:
+        """Build a Material while preserving migration-safe legacy defaults."""
+        keys = row.keys()
+        return Material(
+            id=row["id"],
+            course_id=row["course_id"],
+            filename=row["filename"],
+            kind=row["kind"],
+            status=row["status"],
+            degraded=bool(row["degraded"]) if "degraded" in keys else False,
+            revision=row["revision"] if "revision" in keys else 0,
+            content_hash=row["content_hash"] if "content_hash" in keys else "",
+        )
 
     # --- Source fragments (V2 evidence fact layer) ---
 

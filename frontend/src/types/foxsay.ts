@@ -21,6 +21,8 @@ export interface Material {
   kind: MaterialKind;
   status: CourseStatus;
   degraded?: boolean;
+  revision: number;
+  content_hash: string;
 }
 
 export interface CourseSkeletonChapter {
