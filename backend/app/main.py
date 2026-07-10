@@ -1,3 +1,7 @@
+import asyncio
+import os
+import socket
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -16,14 +20,32 @@ from app.api.settings import router as settings_router
 from app.api.skeleton import router as skeleton_router
 from app.core.config import settings
 from app.db.sqlite_store import SqliteStore
+from app.services.knowledge_worker import KnowledgeJobWorker
+from app.services.material_indexer import build_material_index_handlers
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     store = SqliteStore(db_path=settings.sqlite_path)
     app.state.store = store
-    yield
-    store.close()
+    stop_worker = asyncio.Event()
+    worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+    worker = KnowledgeJobWorker(
+        store,
+        worker_id=worker_id,
+        handlers=build_material_index_handlers(store),
+        lease_seconds=settings.knowledge_worker_lease_seconds,
+        poll_interval_seconds=settings.knowledge_worker_poll_interval_seconds,
+    )
+    try:
+        async with asyncio.TaskGroup() as tasks:
+            tasks.create_task(worker.run(stop_worker), name="knowledge-job-worker")
+            try:
+                yield
+            finally:
+                stop_worker.set()
+    finally:
+        store.close()
 
 
 app = FastAPI(title="FoxSay API", lifespan=lifespan)

@@ -19,9 +19,10 @@
 - The current V2 job types are `index_material` and `compile_course`. Store operations can
   atomically enqueue, claim, reclaim an expired lease, complete, fail and requeue a job.
 - `KnowledgeJobWorker` is a controlled, single-worker consumer with injected handlers and a
-  managed lease heartbeat. It is not wired into the FastAPI lifespan or HTTP API yet; the next
-  V2 milestone connects it to material revisions. Legacy in-process `asyncio.create_task()`
-  work has not yet been removed.
+  managed lease heartbeat. FastAPI starts it in its lifespan; uploads only enqueue the durable
+  `index_material` job, and material progress reads the durable job snapshot. SQLite MVP must
+  run one API/worker process. The legacy pipeline remains in the repository for later migration,
+  but public material uploads no longer launch it with `asyncio.create_task()`.
 - The target evidence-first model, incremental revision policy and migration sequence are in
   [knowledge-system-v2-implementation-plan.md](knowledge-system-v2-implementation-plan.md).
 

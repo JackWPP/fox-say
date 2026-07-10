@@ -34,6 +34,7 @@ function formatMaterialName(filename: string, kind: string, index: number): stri
 }
 
 const stepLabels: Record<string, string> = {
+  index_material: "正在建立证据索引",
   parsing: "正在解析",
   chunking: "正在分块",
   embedding: "正在嵌入",

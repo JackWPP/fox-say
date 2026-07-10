@@ -36,8 +36,11 @@ class Settings(BaseSettings):
     max_batch_upload: int = 15  # 单次 /materials/batch 最多文件数
     max_concurrent_parsing: int = 3  # 同时解析的文件数(asyncio.Semaphore 上限)
 
-    # V2 持久知识任务。worker 尚未接入；该预算供课程级编译任务显式审计。
+    # V2 持久知识任务：课程级编译任务使用显式 token budget。
     knowledge_job_default_token_budget: int = 12000
+    # SQLite MVP 只运行一个受控 worker；lease 需要覆盖较慢的文档解析并由 heartbeat 续约。
+    knowledge_worker_lease_seconds: int = Field(default=900, gt=0)
+    knowledge_worker_poll_interval_seconds: float = Field(default=0.5, gt=0)
 
     # PR0 新增:解耦 Judge 模型 (评测端 / 轻量分类端使用)
     # 必须跟 deepseek_model 不同家族,否则 self-preference bias (调研结论)。

@@ -1,7 +1,7 @@
 import json
 import sqlite3
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -283,6 +283,12 @@ class SqliteStore:
         # prevents two in-process workers from interleaving BEGIN IMMEDIATE.
         self._knowledge_job_lock = threading.RLock()
         self._source_fragment_lock = threading.RLock()
+        # Vector replacement cannot participate in a SQLite transaction.  In
+        # the SQLite MVP, serialise a material revision advance with the
+        # corresponding fragment/vector publication so a stale worker cannot
+        # delete a newer revision's Qdrant points in the gap between its
+        # revision check and the external write.
+        self._material_index_publish_lock = threading.RLock()
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
@@ -546,19 +552,29 @@ class SqliteStore:
         """
         if not content_hash:
             raise ValueError("content_hash must be non-empty when advancing a material revision")
-        cursor = self._conn.execute(
-            """
-            UPDATE materials
-            SET revision = revision + 1,
-                content_hash = ?,
-                parsed_text = NULL,
-                status = ?,
-                degraded = 0
-            WHERE id = ? AND course_id = ?
-            """,
-            (content_hash, status, material_id, course_id),
-        )
-        self._conn.commit()
+        with self._material_index_publish_lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE materials
+                SET revision = revision + 1,
+                    content_hash = ?,
+                    parsed_text = NULL,
+                    status = ?,
+                    degraded = 0
+                WHERE id = ? AND course_id = ?
+                """,
+                (content_hash, status, material_id, course_id),
+            )
+            if cursor.rowcount == 1:
+                # Assets have no historical revision column in the MVP.  Once
+                # the material source changes, their parser-derived metadata
+                # must disappear with the old parsed text rather than be
+                # accidentally reused by the next revision.
+                self._conn.execute(
+                    "DELETE FROM extracted_assets WHERE course_id = ? AND material_id = ?",
+                    (course_id, material_id),
+                )
+            self._conn.commit()
         if cursor.rowcount != 1:
             return None
         return self.get_material(course_id, material_id)
@@ -584,6 +600,50 @@ class SqliteStore:
         )
 
     # --- Source fragments (V2 evidence fact layer) ---
+
+    def publish_material_index_if_current(
+        self,
+        course_id: str,
+        material_id: str,
+        material_revision: int,
+        fragments: Sequence[SourceFragment],
+        publish_vectors: Callable[[], None],
+        publish_assets: Callable[[], None] | None = None,
+    ) -> bool:
+        """Publish one material's evidence only while its revision is current.
+
+        The asset and vector callbacks perform their respective replacement
+        writes in the same material-level critical section as
+        ``advance_material_revision``:
+        SQLite cannot atomically commit alongside Qdrant, but the documented
+        single-process SQLite MVP can still give replacement and publication a
+        single order.  A replacement that wins before this fence makes the
+        method return ``False`` without touching fragments or vectors; a
+        replacement that arrives while publishing waits until this revision has
+        finished, then advances and invalidates it.
+        """
+        self._assert_source_fragment_scope(course_id, material_id, material_revision)
+        with self._material_index_publish_lock:
+            material = self.get_material(course_id, material_id)
+            if material is None or material.revision != material_revision:
+                return False
+
+            if publish_assets is not None:
+                publish_assets()
+
+            self.replace_source_fragments(
+                course_id,
+                material_id,
+                material_revision,
+                fragments,
+            )
+            publish_vectors()
+            return self.update_material_status_if_revision(
+                course_id,
+                material_id,
+                material_revision,
+                "ready",
+            )
 
     def replace_source_fragments(
         self,
@@ -971,18 +1031,26 @@ class SqliteStore:
         return self._row_to_knowledge_job(row) if row is not None else None
 
     def list_knowledge_jobs(
-        self, course_id: str, status: str | None = None
+        self,
+        course_id: str,
+        status: str | None = None,
+        *,
+        material_id: str | None = None,
     ) -> list[KnowledgeJob]:
-        if status is None:
-            rows = self._conn.execute(
-                "SELECT * FROM knowledge_jobs WHERE course_id = ? ORDER BY created_at, job_id",
-                (course_id,),
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT * FROM knowledge_jobs WHERE course_id = ? AND status = ? ORDER BY created_at, job_id",
-                (course_id, status),
-            ).fetchall()
+        """List durable job facts, optionally within one material scope."""
+        clauses = ["course_id = ?"]
+        params: list[Any] = [course_id]
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        if material_id is not None:
+            clauses.append("material_id = ?")
+            params.append(material_id)
+        where = " AND ".join(clauses)
+        rows = self._conn.execute(
+            f"SELECT * FROM knowledge_jobs WHERE {where} ORDER BY created_at, job_id",
+            params,
+        ).fetchall()
         return [self._row_to_knowledge_job(row) for row in rows]
 
     def claim_next_knowledge_job(
@@ -1609,15 +1677,24 @@ class SqliteStore:
 
     # ---- extracted_assets ----
 
-    def save_extracted_assets(
+    @staticmethod
+    def _asset_bbox_value(asset: dict, field: str) -> float | None:
+        """Read a bounding-box coordinate from a Pydantic model dump or object."""
+        bbox = asset.get("bounding_box")
+        if bbox is None:
+            return None
+        if isinstance(bbox, dict):
+            return bbox.get(field)
+        return getattr(bbox, field, None)
+
+    def _insert_extracted_assets(
         self,
-        assets: list[dict],
+        assets: Sequence[dict],
         course_id: str,
         material_id: str,
         document_id: str,
     ) -> None:
         for asset in assets:
-            bbox = asset.get("bounding_box")
             self._conn.execute(
                 """INSERT OR REPLACE INTO extracted_assets
                    (asset_id, document_id, course_id, material_id, element_type,
@@ -1633,14 +1710,45 @@ class SqliteStore:
                     asset.get("sequential_label", ""),
                     asset.get("page_number", 1),
                     asset.get("source_chapter", ""),
-                    asset.get("storage_path", ""),
-                    asset.get("alt_text", ""),
-                    bbox.x0 if bbox else None,
-                    bbox.y0 if bbox else None,
-                    bbox.x1 if bbox else None,
-                    bbox.y1 if bbox else None,
+                    asset.get("storage_path") or "",
+                    asset.get("alt_text") or "",
+                    self._asset_bbox_value(asset, "x0"),
+                    self._asset_bbox_value(asset, "y0"),
+                    self._asset_bbox_value(asset, "x1"),
+                    self._asset_bbox_value(asset, "y1"),
                 ),
             )
+
+    def save_extracted_assets(
+        self,
+        assets: list[dict],
+        course_id: str,
+        material_id: str,
+        document_id: str,
+    ) -> None:
+        self._insert_extracted_assets(assets, course_id, material_id, document_id)
+        self._conn.commit()
+
+    def replace_extracted_assets(
+        self,
+        assets: Sequence[dict],
+        course_id: str,
+        material_id: str,
+        document_id: str,
+    ) -> None:
+        """Replace all parser assets for one current material input.
+
+        V2 treats assets as material-revision-local derived data.  This method
+        intentionally removes prior rows even when the fresh parser produced
+        no assets, so a retry or reparsed revision cannot retain stale figures.
+        Callers that publish V2 evidence invoke it inside the material revision
+        fence.
+        """
+        self._conn.execute(
+            "DELETE FROM extracted_assets WHERE course_id = ? AND material_id = ?",
+            (course_id, material_id),
+        )
+        self._insert_extracted_assets(assets, course_id, material_id, document_id)
         self._conn.commit()
 
     def get_extracted_assets(self, course_id: str, material_id: str | None = None) -> list[dict]:
