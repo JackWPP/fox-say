@@ -1,5 +1,7 @@
+import json
 import sqlite3
 import threading
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,7 @@ from app.schemas.foxsay import (
     ReviewPlan,
 )
 from app.schemas.knowledge_jobs import KnowledgeJob, KnowledgeJobCreate
+from app.schemas.evidence import SourceFragment
 
 _DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "foxsay.db"
 
@@ -185,6 +188,47 @@ CREATE TABLE IF NOT EXISTS extracted_assets (
 CREATE INDEX IF NOT EXISTS idx_asset_material ON extracted_assets(material_id);
 CREATE INDEX IF NOT EXISTS idx_asset_course ON extracted_assets(course_id);
 
+-- ===== Knowledge System V2: durable material evidence =====
+
+CREATE TABLE IF NOT EXISTS source_fragments (
+    fragment_id TEXT PRIMARY KEY,
+    course_id TEXT NOT NULL,
+    material_id TEXT NOT NULL,
+    material_revision INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    heading_path_json TEXT NOT NULL,
+    page_start INTEGER,
+    page_end INTEGER,
+    slide_start INTEGER,
+    slide_end INTEGER,
+    char_start INTEGER NOT NULL,
+    char_end INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    asset_id TEXT,
+    parser_name TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id) REFERENCES courses(id),
+    FOREIGN KEY (material_id) REFERENCES materials(id),
+    UNIQUE(course_id, material_id, material_revision, ordinal),
+    CHECK (material_revision >= 0),
+    CHECK (ordinal >= 0),
+    CHECK (char_start >= 0),
+    CHECK (char_end >= char_start),
+    CHECK (page_start IS NULL OR page_start >= 1),
+    CHECK (page_end IS NULL OR page_end >= 1),
+    CHECK (page_start IS NULL OR page_end IS NULL OR page_end >= page_start),
+    CHECK (slide_start IS NULL OR slide_start >= 1),
+    CHECK (slide_end IS NULL OR slide_end >= 1),
+    CHECK (slide_start IS NULL OR slide_end IS NULL OR slide_end >= slide_start),
+    CHECK (kind IN ('paragraph', 'formula', 'table', 'figure_context', 'visual_derived'))
+);
+CREATE INDEX IF NOT EXISTS idx_source_fragments_course_revision
+    ON source_fragments(course_id, material_revision, material_id, ordinal);
+CREATE INDEX IF NOT EXISTS idx_source_fragments_material_revision
+    ON source_fragments(course_id, material_id, material_revision, ordinal);
+
 -- ===== Knowledge System V2: persistent, recoverable job queue =====
 
 CREATE TABLE IF NOT EXISTS knowledge_jobs (
@@ -236,6 +280,7 @@ class SqliteStore:
         # The current SQLite queue is intentionally single-process.  This lock
         # prevents two in-process workers from interleaving BEGIN IMMEDIATE.
         self._knowledge_job_lock = threading.RLock()
+        self._source_fragment_lock = threading.RLock()
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
@@ -409,6 +454,253 @@ class SqliteStore:
             (course_id,),
         ).fetchall()
         return {r["id"]: r["parsed_text"] for r in rows if r["parsed_text"]}
+
+    # --- Source fragments (V2 evidence fact layer) ---
+
+    def replace_source_fragments(
+        self,
+        course_id: str,
+        material_id: str,
+        material_revision: int,
+        fragments: Sequence[SourceFragment],
+    ) -> list[SourceFragment]:
+        """Atomically replace one material revision's evidence fragments.
+
+        The caller must provide the full fragment set for exactly one explicit
+        course/material/revision scope.  Repeating the same replacement is
+        idempotent: stable fragment IDs are updated in place and stale rows in
+        that exact revision are removed.  A fragment can never be used to
+        write another course's material scope.
+        """
+        self._assert_source_fragment_scope(course_id, material_id, material_revision)
+        fragment_list = list(fragments)
+        self._validate_source_fragment_replacement(
+            course_id,
+            material_id,
+            material_revision,
+            fragment_list,
+        )
+
+        with self._source_fragment_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                fragment_ids = [fragment.fragment_id for fragment in fragment_list]
+                if fragment_ids:
+                    placeholders = ", ".join("?" for _ in fragment_ids)
+                    self._conn.execute(
+                        f"""
+                        DELETE FROM source_fragments
+                        WHERE course_id = ? AND material_id = ? AND material_revision = ?
+                          AND fragment_id NOT IN ({placeholders})
+                        """,
+                        (course_id, material_id, material_revision, *fragment_ids),
+                    )
+                else:
+                    self._conn.execute(
+                        """
+                        DELETE FROM source_fragments
+                        WHERE course_id = ? AND material_id = ? AND material_revision = ?
+                        """,
+                        (course_id, material_id, material_revision),
+                    )
+
+                for fragment in fragment_list:
+                    written = self._conn.execute(
+                        """
+                        INSERT INTO source_fragments (
+                            fragment_id, course_id, material_id, material_revision, ordinal,
+                            text, heading_path_json, page_start, page_end, slide_start,
+                            slide_end, char_start, char_end, kind, asset_id, parser_name,
+                            content_hash, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(fragment_id) DO UPDATE SET
+                            ordinal = excluded.ordinal,
+                            text = excluded.text,
+                            heading_path_json = excluded.heading_path_json,
+                            page_start = excluded.page_start,
+                            page_end = excluded.page_end,
+                            slide_start = excluded.slide_start,
+                            slide_end = excluded.slide_end,
+                            char_start = excluded.char_start,
+                            char_end = excluded.char_end,
+                            kind = excluded.kind,
+                            asset_id = excluded.asset_id,
+                            parser_name = excluded.parser_name,
+                            content_hash = excluded.content_hash
+                        WHERE source_fragments.course_id = excluded.course_id
+                          AND source_fragments.material_id = excluded.material_id
+                          AND source_fragments.material_revision = excluded.material_revision
+                        """,
+                        self._source_fragment_values(fragment),
+                    )
+                    if written.rowcount != 1:
+                        raise ValueError(
+                            "Source fragment ID is already bound to another source scope"
+                        )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+        return self.list_source_fragments(
+            course_id,
+            material_id=material_id,
+            material_revision=material_revision,
+        )
+
+    def get_source_fragment(
+        self,
+        course_id: str,
+        fragment_id: str,
+        *,
+        material_id: str | None = None,
+        material_revision: int | None = None,
+    ) -> SourceFragment | None:
+        """Load one fragment only when it belongs to the requested course."""
+        where, params = self._source_fragment_scope_query(
+            course_id,
+            material_id=material_id,
+            material_revision=material_revision,
+        )
+        row = self._conn.execute(
+            f"SELECT * FROM source_fragments WHERE fragment_id = ? AND {where}",
+            (fragment_id, *params),
+        ).fetchone()
+        return self._row_to_source_fragment(row) if row is not None else None
+
+    def list_source_fragments(
+        self,
+        course_id: str,
+        *,
+        material_id: str | None = None,
+        material_revision: int | None = None,
+    ) -> list[SourceFragment]:
+        """List fragments in source order, always constrained by ``course_id``."""
+        where, params = self._source_fragment_scope_query(
+            course_id,
+            material_id=material_id,
+            material_revision=material_revision,
+        )
+        rows = self._conn.execute(
+            f"""
+            SELECT * FROM source_fragments
+            WHERE {where}
+            ORDER BY material_id, material_revision, ordinal, fragment_id
+            """,
+            params,
+        ).fetchall()
+        return [self._row_to_source_fragment(row) for row in rows]
+
+    def _assert_source_fragment_scope(
+        self, course_id: str, material_id: str, material_revision: int
+    ) -> None:
+        if not course_id.strip():
+            raise ValueError("course_id is required for source fragments")
+        if not material_id.strip():
+            raise ValueError("material_id is required for source fragments")
+        if material_revision < 0:
+            raise ValueError("material_revision must be non-negative")
+        if self.get_course(course_id) is None:
+            raise ValueError(f"Cannot write source fragments: course {course_id!r} not found")
+        if self.get_material(course_id, material_id) is None:
+            raise ValueError("Cannot write source fragments: material does not belong to course")
+
+    @staticmethod
+    def _validate_source_fragment_replacement(
+        course_id: str,
+        material_id: str,
+        material_revision: int,
+        fragments: Sequence[SourceFragment],
+    ) -> None:
+        fragment_ids: set[str] = set()
+        ordinals: set[int] = set()
+        for fragment in fragments:
+            identity = (
+                fragment.course_id,
+                fragment.material_id,
+                fragment.material_revision,
+            )
+            expected = (course_id, material_id, material_revision)
+            if identity != expected:
+                raise ValueError(
+                    "All source fragments must match the requested course/material/revision"
+                )
+            if fragment.fragment_id in fragment_ids:
+                raise ValueError("Source fragment replacement contains duplicate fragment_id")
+            if fragment.ordinal in ordinals:
+                raise ValueError("Source fragment replacement contains duplicate ordinal")
+            fragment_ids.add(fragment.fragment_id)
+            ordinals.add(fragment.ordinal)
+
+    @staticmethod
+    def _source_fragment_values(fragment: SourceFragment) -> tuple[Any, ...]:
+        return (
+            fragment.fragment_id,
+            fragment.course_id,
+            fragment.material_id,
+            fragment.material_revision,
+            fragment.ordinal,
+            fragment.text,
+            json.dumps(fragment.heading_path, ensure_ascii=False, separators=(",", ":")),
+            fragment.page_start,
+            fragment.page_end,
+            fragment.slide_start,
+            fragment.slide_end,
+            fragment.char_start,
+            fragment.char_end,
+            fragment.kind,
+            fragment.asset_id,
+            fragment.parser_name,
+            fragment.content_hash,
+            fragment.created_at,
+        )
+
+    @staticmethod
+    def _source_fragment_scope_query(
+        course_id: str,
+        *,
+        material_id: str | None,
+        material_revision: int | None,
+    ) -> tuple[str, tuple[Any, ...]]:
+        if not course_id.strip():
+            raise ValueError("course_id is required for source fragment queries")
+        if material_id is not None and not material_id.strip():
+            raise ValueError("material_id must not be blank when provided")
+        if material_revision is not None and material_revision < 0:
+            raise ValueError("material_revision must be non-negative")
+
+        clauses = ["course_id = ?"]
+        params: list[Any] = [course_id]
+        if material_id is not None:
+            clauses.append("material_id = ?")
+            params.append(material_id)
+        if material_revision is not None:
+            clauses.append("material_revision = ?")
+            params.append(material_revision)
+        return " AND ".join(clauses), tuple(params)
+
+    @staticmethod
+    def _row_to_source_fragment(row: sqlite3.Row) -> SourceFragment:
+        return SourceFragment(
+            fragment_id=row["fragment_id"],
+            course_id=row["course_id"],
+            material_id=row["material_id"],
+            material_revision=row["material_revision"],
+            ordinal=row["ordinal"],
+            text=row["text"],
+            heading_path=json.loads(row["heading_path_json"]),
+            page_start=row["page_start"],
+            page_end=row["page_end"],
+            slide_start=row["slide_start"],
+            slide_end=row["slide_end"],
+            char_start=row["char_start"],
+            char_end=row["char_end"],
+            kind=row["kind"],
+            asset_id=row["asset_id"],
+            parser_name=row["parser_name"],
+            content_hash=row["content_hash"],
+            created_at=row["created_at"],
+        )
 
     # --- Skeletons ---
 

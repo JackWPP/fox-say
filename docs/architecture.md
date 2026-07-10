@@ -8,6 +8,9 @@
 
 - `knowledge_jobs` is a separate SQLite-backed, course-scoped queue for V2 work. It has
   explicit revision, idempotency key, attempt, lease, error and token-budget fields.
+- `source_fragments` is the V2 material evidence fact layer. Each fragment has an explicit
+  `fragment_id`, course/material/revision scope, title path, source offsets and page/slide
+  location; `EvidenceRef` resolves material claims through that ID rather than a filename.
 - The current V2 job types are `index_material` and `compile_course`. Store operations can
   atomically enqueue, claim, reclaim an expired lease, complete, fail and requeue a job.
 - `KnowledgeJobWorker` is a controlled, single-worker consumer with injected handlers. It is
