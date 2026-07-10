@@ -1,14 +1,16 @@
 import { useState, useCallback, useEffect } from "react";
 import { api } from "../../shared/api";
 import { foxCopy } from "../../shared/fox-copy";
-import type { Citation, ConfidenceStatus, ToolCallState, StreamEvent } from "../../shared/types";
+import type { Citation, ConfidenceStatus, ToolCallState, StreamEvent, TermHit } from "../../shared/types";
 export type { ConfidenceStatus } from "../../shared/types";
+export type { TermHit } from "../../shared/types";
 
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
   citations?: Citation[];
+  termHits?: TermHit[];
   confidenceStatus?: ConfidenceStatus;
   refusalReason?: string;
   toolCalls?: ToolCallState[];
@@ -156,6 +158,7 @@ export function useChat(courseId: string) {
         let buf = "";
         let fullAnswer = "";
         let allCitations: Citation[] = [];
+        let allTermHits: TermHit[] = [];
         let streamError = false;
         const toolCallMap = new Map<string, ToolCallState>();
 
@@ -179,6 +182,7 @@ export function useChat(courseId: string) {
               } else if (event.type === "done") {
                 fullAnswer = event.answer || fullAnswer;
                 allCitations = event.citations || [];
+                allTermHits = event.term_hits || [];
                 // Mark all tool calls as done
                 for (const tc of toolCallMap.values()) { tc.status = "done"; }
                 setActiveToolCalls([]);
@@ -190,7 +194,7 @@ export function useChat(courseId: string) {
           }
         }
 
-        const aiMsg: ChatMessage = { id: generateId(), role: "assistant", content: fullAnswer || foxCopy.errors.generic, citations: allCitations, toolCalls: [...toolCallMap.values()], isStreaming: false, isError: streamError };
+        const aiMsg: ChatMessage = { id: generateId(), role: "assistant", content: fullAnswer || foxCopy.errors.generic, citations: allCitations, termHits: allTermHits, toolCalls: [...toolCallMap.values()], isStreaming: false, isError: streamError };
         setMessages((prev) => [...prev, aiMsg]);
         setStreamingBuffer("");
         setActiveToolCalls([]);

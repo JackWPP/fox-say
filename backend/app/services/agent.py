@@ -9,7 +9,7 @@
 - 无进展检测:连续相同工具调用强制跳出,防止死循环
 
 工具集(7 个):
-  search_wiki          三层混合检索(章节+KC+chunk)
+  search_wiki          级联检索(章节→KC+笔记) + 并行术语词典(Qdrant term)
   get_course_map       拿课程索引全文
   get_concept          按 ID 或名称拿完整 KC 卡
   get_chapter_outline  按 chapter_id 或标题拿章节摘要
@@ -55,8 +55,8 @@ SYSTEM_PROMPT = (
     "2. **预判误解**: 主动提醒学生容易搞混的点、常见陷阱、与相似概念的区别。\n"
     "3. **公式推导**: 涉及公式时，先讲「这个公式在说什么、为什么合理」，"
     "再给数学表达，最后说明每个符号的含义。\n"
-    "4. **小狐狸语气**: 语言生动活泼，可以偶尔带点小调皮，但不要油腻。"
-    "像一个聪明的学长/学姐在给你讲题。\n"
+    "4. **语气**: 语言生动清晰，像一个耐心的学长/学姐在给你讲题。"
+    "**禁止**：使用 emoji、\"哈哈\"、感叹号堆砌等浮夸表达；编造或引用当前问题之外的任何对话内容。\n"
     "5. **结尾延伸**: 每次回答完，主动提一个值得思考的延伸问题，引导深入思考。\n"
     "6. **模糊追问**: 如果问题太模糊（比如只说「讲讲这个」），先礼貌追问具体想了解哪方面，"
     "不要猜着答。\n\n"
@@ -77,6 +77,8 @@ SYSTEM_PROMPT = (
     "## 工具使用策略（重要！）\n"
     "- **第一步永远是 search_wiki**: 任何问题先用 `search_wiki` 搜索相关材料，"
     "获取 concept_id/chapter_id 等 ID 后再调用其他工具。不要猜测 ID！\n"
+    "- **search_wiki 返回两个字段**: `wiki`（章节+知识点，按相关性级联检索）和 `terms`（学科专有名词权威定义词典）。"
+    "如果 `terms` 中命中了相关术语，**优先用 terms 的定义解释该专有名词**，wiki 补充上下文。\n"
     "- **定义/是什么类问题**: 先用 `search_wiki` 找到概念，再用 `get_concept` 获取完整 KC 卡。\n"
     "- **比较/对比类问题**: 先用 `search_wiki` 获取多个相关 KC，再对比分析。\n"
     "- **为什么/原理类问题**: 先用 `search_wiki` 找到概念，再用 `follow_prerequisite` 追溯先修知识。\n"
@@ -283,6 +285,7 @@ async def agent_chat(
     messages.append({"role": "user", "content": question})
 
     collected_sources: list[dict] = []
+    collected_terms: list[dict] = []  # terms from Qdrant dictionary, for visualization
     dsml_streak = 0
     last_tool_key: str | None = None
     repeat_count = 0
@@ -368,6 +371,7 @@ async def agent_chat(
                 "type": "done",
                 "answer": answer_text,
                 "citations": citations,
+                "term_hits": collected_terms,
                 "in_scope": True,
                 "guard_warning": None,
             }
@@ -462,6 +466,7 @@ async def agent_chat(
                                 "type": "done",
                                 "answer": content,
                                 "citations": citations,
+                                "term_hits": collected_terms,
                                 "in_scope": True,
                                 "guard_warning": None,
                             }
@@ -472,6 +477,7 @@ async def agent_chat(
                                 "type": "done",
                                 "answer": tool_result,
                                 "citations": [],
+                                "term_hits": collected_terms,
                                 "in_scope": True,
                                 "guard_warning": None,
                             }
@@ -502,16 +508,26 @@ async def agent_chat(
                         if src["file_name"]:
                             collected_sources.append(src)
                             new_sources += 1
+                    # Collect term hits for frontend visualization
+                    for t in data.get("terms", []):
+                        if t.get("name") and t.get("definition"):
+                            collected_terms.append({
+                                "name": t["name"],
+                                "definition": t["definition"],
+                                "score": round(t.get("score", 0), 3),
+                            })
 
-                    # CRAG: score < 0.55 时标注为补充回答，让 LLM 透明回答 (AGENTS.md CRAG Policy)
+                    # CRAG: score < 0.55 时标注为补充回答，让 LLM 透明回答
                     if data.get("_crag_supplementary"):
+                        max_score = data.get("_max_score", 0)
+                        term_max_score = max((t.get("score", 0) for t in data.get("terms", [])), default=0)
+                        if term_max_score >= 0.50:
+                            hint = f"术语词典命中了相关词条（最高分 {term_max_score:.2f}），请优先用 terms 中的定义解释该术语。"
+                        else:
+                            hint = "请基于你的通用知识给出有帮助的回答，并在回答开头明确声明：\n「课程材料中未覆盖此内容，以下是通用理解，建议对照教材确认。」"
                         messages.append({
                             "role": "system",
-                            "content": (
-                                "检索结果表明课程材料中没有覆盖此内容（score < 0.55）。"
-                                "请基于你的通用知识给出有帮助的回答，并在回答开头明确声明：\n"
-                                "「课程材料中未覆盖此内容，以下是通用理解，建议对照教材确认。」"
-                            ),
+                            "content": f"检索结果表明课程材料中没有覆盖此内容（score < 0.55）。{hint}",
                         })
 
                     # 第一次search_wiki低分/空结果时立即引导
@@ -638,10 +654,19 @@ async def agent_chat(
     if not answer_text:
         answer_text = "（AI 暂时无法生成有效回答，请换个问法再试试～）"
 
+    # Dedup term hits by name before sending
+    seen_term_names: set[str] = set()
+    deduped_terms: list[dict] = []
+    for t in collected_terms:
+        if t["name"] not in seen_term_names:
+            seen_term_names.add(t["name"])
+            deduped_terms.append(t)
+
     yield {
         "type": "done",
         "answer": answer_text,
         "citations": citations,
+        "term_hits": deduped_terms,
         "in_scope": True,
         "guard_warning": None,
     }
@@ -662,7 +687,7 @@ async def _execute_tool(
 ) -> str:
     """路由工具到对应实现。"""
     from app.services import query_tools
-    from app.services.retrieval import search_wiki_layer
+    from app.services.retrieval import search_wiki_layer, search_term_layer
 
     if name == "search_wiki":
         query = args.get("query", "")
@@ -670,19 +695,29 @@ async def _execute_tool(
         top_k = args.get("top_k", 5)
         if store is None:
             return json.dumps({"results": [], "count": 0, "note": "store not provided"}, ensure_ascii=False)
-        results = search_wiki_layer(
-            course_id, query, layer, top_k, store,
-            selected_material_ids=selected_source_ids,
-            selected_note_ids=selected_note_ids,
-        )
 
-        max_score = max((r.get("score", 0) for r in results), default=0)
-        payload: dict[str, Any] = {"results": results, "count": len(results)}
-        if not results or max_score < 0.55:
+        # Parallel: Wiki cascade + terminology dictionary
+        import asyncio as _asyncio
+        wiki_task = _asyncio.to_thread(
+            search_wiki_layer,
+            course_id, query, layer, top_k, store,
+            selected_source_ids, selected_note_ids,
+        )
+        term_task = _asyncio.to_thread(search_term_layer, course_id, query, top_k=5)
+        wiki_results, term_results = await _asyncio.gather(wiki_task, term_task)
+
+        max_score = max((r.get("score", 0) for r in wiki_results), default=0)
+        payload: dict[str, Any] = {
+            "wiki": wiki_results,
+            "terms": term_results,
+            "count": len(wiki_results),
+            "results": wiki_results,
+        }
+        if not wiki_results or max_score < 0.55:
             payload["note"] = "课程材料中未覆盖此内容。请基于通用知识回答，并声明这是补充说明。"
             payload["_crag_supplementary"] = True
             payload["_max_score"] = max_score
-        elif max_score < 0.72:
+        elif max_score < 0.65:
             payload["note"] = "检索结果相关性较低，请谨慎回答。"
         return json.dumps(payload, ensure_ascii=False)
 

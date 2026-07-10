@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
-import { ArrowLeft, ChevronLeft, ChevronRight, Zap, X, MessageCircle } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Zap, X, MessageCircle, BookMarked } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useCourse } from "../bookshelf/useCourses";
 import MaterialsTab from "./MaterialsTab";
@@ -64,6 +64,7 @@ export default function CourseDetailPage() {
   }, [materials]);
 
   const [toast, setToast] = useState<{ message: string; weakAreas: string[]; coreConcepts: string[] } | null>(null);
+  const [termToast, setTermToast] = useState<{ termCount: number } | null>(null);
 
   useEffect(() => {
     if (!courseId) return;
@@ -77,6 +78,13 @@ export default function CourseDetailPage() {
           coreConcepts: data.core_concepts || [],
         });
         refetchMaterials();
+      } catch { /* ignore */ }
+    });
+    es.addEventListener("terminology_ready", (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setTermToast({ termCount: data.term_count || 0 });
+        setTimeout(() => setTermToast(null), 5000);
       } catch { /* ignore */ }
     });
     return () => es.close();
@@ -157,6 +165,18 @@ export default function CourseDetailPage() {
 
   return (
     <div className="h-[calc(100vh-56px)] flex flex-col bg-slate-50 overflow-hidden">
+      {termToast && (
+        <div className="mx-4 mt-3 bg-violet-50 border border-violet-200 rounded-xl px-4 py-2.5 shadow-sm fox-fade-in shrink-0 z-20 flex items-center gap-2">
+          <BookMarked className="w-4 h-4 text-violet-500 shrink-0" />
+          <p className="text-xs text-violet-700 flex-1">
+            词典构建完成，提取到 <span className="font-semibold">{termToast.termCount}</span> 条专有名词，问问题时将自动召回
+          </p>
+          <button onClick={() => setTermToast(null)} className="p-1 rounded hover:bg-violet-100 text-violet-400">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {toast && (
         <div className="mx-4 mt-3 bg-foxAmber/10 border border-foxAmber/30 rounded-xl px-5 py-4 shadow-sm fox-fade-in shrink-0 z-20">
           <div className="flex items-start justify-between">
