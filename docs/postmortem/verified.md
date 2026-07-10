@@ -22,10 +22,12 @@
   - 行为约束：未显式关闭 thinking 时，两次受控请求（`max_tokens=32`、`256`）均以 `finish_reason=length` 结束，最终 `content` 为空，输出预算被 `reasoning_content` 消耗。因此图片转 Markdown 的生产调用必须显式选择“关闭 thinking”或为推理与最终答案分别设置可审计的 token 预算，不能依赖默认行为。
 - [已验证] `https://api.siliconflow.cn/v1` — 对上述 VLM 模型可用的 OpenAI 兼容 API base URL；除既有 embedding 验证外，已在 2026-07-11 通过真实图片 Chat Completions 调用验证。
 
-### VLM 接入待实现约束
+### VLM 接入实现（2026-07-11）
 
-- [未实施] `backend/app/services/vlm_parser.py` 目前错误地读取 `deepseek_*` 配置。接入时应新增语义独立的 `vlm_api_key`、`vlm_api_base`、`vlm_model` 配置（base 默认可为上述 SiliconFlow URL），而不是把 embedding 或 DeepSeek 字段挪作 VLM 的长期事实源。
-- [未实施] 为 VLM 客户端增加 mock 单测：断言 data-URI `image_url` 载荷、模型/endpoint 配置来源、`enable_thinking=false` 和空内容/网络异常均转化为可见的 `DocumentParsingException`。真实 API 冒烟测试不应进入常规 CI。
+- [已实施] `backend/app/core/config.py` 通过独立的 `VLM_API_KEY`、`VLM_API_BASE`、`VLM_MODEL`、`VLM_MAX_TOKENS` 配置 VLM；默认 base/model 为上述已验证的 SiliconFlow / Qwen 组合，默认输出上限为 2,048 tokens。不会再把 embedding 或 DeepSeek 字段作为 VLM 的事实源。
+- [已实施] `backend/app/services/vlm_parser.py` 保留 data-URI 图片载荷，使用独立的 VLM 配置，并传入 `extra_body={"enable_thinking": false}` 和可配置的 `max_tokens`。未配置 `VLM_API_KEY`、空内容和 API 异常都会抛出可见的 `DocumentParsingException`。
+- [已实施] `backend/tests/test_vlm_parser.py` 以 mock 覆盖配置、载荷、模型/endpoint、关闭 thinking、缺少 key、空内容和 API 异常。真实 API 冒烟测试不进入常规 CI。
+- [未实施] 当前 legacy 图片路由仍使用 MinerU；本次没有改动 `parsing.py`、pipeline 或路由，是否将已配置的 VLM parser 纳入图片路由需在后续任务中显式决定。
 
 ## Embedding 模型
 

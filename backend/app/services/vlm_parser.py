@@ -1,6 +1,6 @@
 """VLM 多模态图片解析器。
 
-对用户上传的单张图片（.png/.jpg/.jpeg），调用 DeepSeek VL API
+对用户上传的单张图片（.png/.jpg/.jpeg），调用独立配置的 SiliconFlow VLM API
 做端到端的结构化 Markdown 提取。
 """
 
@@ -72,7 +72,10 @@ class VLMImageParser(BaseDocumentParser):
         )
 
     def _call_vlm(self, file_path: Path) -> str:
-        """调用 DeepSeek VL API 提取图片内容。"""
+        """调用配置的 VLM API 提取图片内容。"""
+        if not settings.vlm_api_key.strip():
+            raise DocumentParsingException(file_path, "VLM_API_KEY is not configured")
+
         from openai import OpenAI
 
         # 读取图片并 base64 编码
@@ -88,14 +91,14 @@ class VLMImageParser(BaseDocumentParser):
         }.get(suffix, "image/png")
 
         client = OpenAI(
-            api_key=settings.deepseek_api_key or "placeholder",
-            base_url=settings.deepseek_api_base,
+            api_key=settings.vlm_api_key,
+            base_url=settings.vlm_api_base,
             timeout=60,
         )
 
         try:
             response = client.chat.completions.create(
-                model=settings.deepseek_model,
+                model=settings.vlm_model,
                 messages=[
                     {
                         "role": "user",
@@ -114,6 +117,10 @@ class VLMImageParser(BaseDocumentParser):
                     }
                 ],
                 temperature=0.2,
+                max_tokens=settings.vlm_max_tokens,
+                # Qwen3.6 默认会把小图片解析的全部输出预算花在 reasoning_content 上。
+                # 解析任务需要稳定的 Markdown 最终内容，因此显式关闭 thinking。
+                extra_body={"enable_thinking": False},
             )
             content = response.choices[0].message.content or ""
             if not content.strip():

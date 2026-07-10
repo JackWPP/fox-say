@@ -39,6 +39,7 @@ Document parsing: MinerU V4/V1 hybrid (PRIMARY, 1000 pages/day quota) → Doclin
   批量上传: POST /materials/batch 最多 15 个文件, 后端 asyncio.Semaphore(3) 控制解析并发
 Boundary control: CRAG 透明门控 (score < 0.55 允许补充回答, 强制标注 answer_source: "supplementary" + 声明课程材料未覆盖) + 0.55-0.72 软引导 + system-prompt 硬约束
 LLM: DeepSeek V4 Flash (生成端) + Qwen3.5-9B (Judge) + Qwen3-4b (批量轻活)
+VLM parser service: SiliconFlow `Qwen/Qwen3.6-27B` (独立 `VLM_*` 配置、data-URI 图片载荷、关闭 thinking、可配输出 token 上限)；legacy 图片路由当前仍使用 MinerU，尚未接入该服务
 Deployment: Docker Compose (Qdrant container)
 Pipeline: 7 步 (parsing[路由+归一化] → build_dmap → wiki_build → chunking[语义切块] → embedding → storing → skeleton_generating)
   解析子步: 文件类型路由 → MinerU V4/V1 primary (或 fallback 链) → NormalizationEngine 归一化 → extracted_assets 入库
@@ -58,7 +59,7 @@ Course creation
     · PDF: PyMuPDF 探测类型 → MinerU V4 primary → Docling/pdfplumber fallback
     · Office (DOCX/DOC/PPTX/PPT): MinerU V4 primary → MarkItDown/python-pptx fallback
     · XLSX: MarkItDown only
-    · 图片: VLM 多模态分支
+    · 图片: MinerU V4/V1 为当前路由；独立配置的 VLM parser 已实现但尚未接入此 legacy 路由
     · 归一化: NormalizationEngine (页面锚定 + 表格保护 + 公式对齐 + 全局编号)
     · extracted_assets 写入 SQLite
     · 并发控制: asyncio.Semaphore(3) 限制同时解析的文件数
