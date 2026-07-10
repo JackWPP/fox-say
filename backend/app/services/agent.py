@@ -61,7 +61,8 @@ SYSTEM_PROMPT = (
     "6. **模糊追问**: 如果问题太模糊（比如只说「讲讲这个」），先礼貌追问具体想了解哪方面，"
     "不要猜着答。\n\n"
     "## 核心规则\n"
-    "1. 只能回答当前课程相关问题。超出范围时，必须回答：`这个问题超出了[课程名]的范围，不知道。`\n"
+    "1. 优先基于当前课程材料回答。当材料不足以回答时，可以用通用知识补充，"
+    "但必须明确声明「课程材料中未覆盖此内容，以下是通用理解，建议对照教材确认」。\n"
     "2. 引用材料时，必须用格式 `来自 [文件名] · 第X部分`，在正文中自然嵌入。\n"
     "   引用笔记时，必须用格式 `来自笔记 · [笔记标题]`。\n"
     "3. 回答用 Markdown 排版，有清晰的结构（标题、列表、加粗重点），但不要过度分节。\n"
@@ -84,8 +85,8 @@ SYSTEM_PROMPT = (
     "- **复习相关问题**: 用 `get_review_plan`。\n"
     "- 如果不知道 concept_id 或 chapter_id，传 concept_name 或 chapter_title 进行模糊查找。\n"
     "- 如果工具返回错误或未找到，不要用相同参数重复调用，换一种方式或用 search_wiki 重新搜索。\n"
-    "- 如果 `search_wiki` 返回的 note 提示「检索结果与问题无关」，你必须直接返回拒答消息，"
-    "不要尝试用常识回答。\n"
+    "- 如果 `search_wiki` 返回的 note 提示「检索结果与问题无关」，"
+    "说明课程材料未覆盖此内容。你可以基于通用知识回答，但必须声明这是补充说明，不是来自课程材料。\n"
     "- 获得足够信息后直接回答，不要做不必要的工具调用。\n"
     "- **工具调用预算**: 你最多有 8 轮工具调用机会。绝大多数问题 1-3 轮即可解决，请高效使用。\n"
     "- **动态能力(Skill)**: 除了上述查询工具，你还可以使用以下能力：\n"
@@ -297,8 +298,8 @@ async def agent_chat(
                 "role": "system",
                 "content": (
                     "你已经调用了多次工具但还没有找到相关材料。"
-                    "如果问题确实超出课程范围，请诚实拒答，格式为："
-                    "`这个问题超出了[课程名]的范围，不知道。`"
+                    "课程材料可能没有覆盖这个问题。请基于你的通用知识给出有帮助的回答，"
+                    "同时明确声明「课程材料中未覆盖此内容，以下是通用理解，建议对照教材确认」。"
                     "不要继续无意义的工具调用。"
                 ),
             })
@@ -422,8 +423,9 @@ async def agent_chat(
                     messages.append({
                         "role": "system",
                         "content": (
-                            "你已经多次搜索但没有找到相关材料。这可能意味着问题超出了课程范围。"
-                            "请直接回答：`这个问题超出了[课程名]的范围，不知道。`（替换[课程名]为实际课程名）"
+                            "你已经多次搜索但没有找到相关材料。课程材料可能没有覆盖这个问题。"
+                            "请基于你的通用知识给出有帮助的回答，同时明确声明"
+                            "「课程材料中未覆盖此内容，以下是通用理解，建议对照教材确认」。"
                         ),
                     })
                     break
@@ -501,17 +503,16 @@ async def agent_chat(
                             collected_sources.append(src)
                             new_sources += 1
 
-                    # CRAG 硬门控：score < 0.55 时代码级强制拒答 (AGENTS.md CRAG Policy)
-                    if data.get("_crag_reject"):
-                        max_score = data.get("_max_score", 0)
-                        yield {
-                            "type": "done",
-                            "answer": f"这个问题超出了{course_title}的范围，不知道。",
-                            "citations": [],
-                            "in_scope": False,
-                            "guard_warning": f"CRAG gate: max_score={max_score:.3f} < 0.55",
-                        }
-                        return
+                    # CRAG: score < 0.55 时标注为补充回答，让 LLM 透明回答 (AGENTS.md CRAG Policy)
+                    if data.get("_crag_supplementary"):
+                        messages.append({
+                            "role": "system",
+                            "content": (
+                                "检索结果表明课程材料中没有覆盖此内容（score < 0.55）。"
+                                "请基于你的通用知识给出有帮助的回答，并在回答开头明确声明：\n"
+                                "「课程材料中未覆盖此内容，以下是通用理解，建议对照教材确认。」"
+                            ),
+                        })
 
                     # 第一次search_wiki低分/空结果时立即引导
                     if _round == 0 and (new_sources == 0 or data.get("note")):
@@ -521,7 +522,7 @@ async def agent_chat(
                             "content": (
                                 f"第一次搜索结果提示：{note_msg}。\n"
                                 "请考虑：1)换更具体的课程术语重新search_wiki；"
-                                "2)如果问题确实与课程材料无关，直接拒答。"
+                                "2)如果问题确实与课程材料无关，基于通用知识回答并声明这是补充说明。"
                                 "不要继续调用get_concept/get_chapter_outline等需要ID的工具。"
                             ),
                         })
@@ -568,8 +569,9 @@ async def agent_chat(
     if force_answer and not collected_sources:
         final_prompt = (
             "你已尝试多次工具调用但未找到相关材料。"
-            "如果问题确实超出课程范围，直接回答：`这个问题超出了[课程名]的范围，不知道。`"
-            "不要编造内容，不要继续调用工具。"
+            "课程材料可能没有覆盖这个问题。请基于你的通用知识给出有帮助的回答，"
+            "并在回答开头声明「课程材料中未覆盖此内容，以下是通用理解，建议对照教材确认」。"
+            "不要编造课程内容，不要继续调用工具。"
         )
     else:
         final_prompt = (
@@ -580,7 +582,8 @@ async def agent_chat(
             "3. 如果工具结果只能部分回答，先基于已有信息回答能确定的部分，"
             "再明确说明哪些部分材料中没有覆盖，绝对不要编造内容。\n"
             "4. 如果工具结果完全不足以回答（没有任何相关来源），"
-            "直接回答：`这个问题超出了[课程名]的范围，不知道。`（替换[课程名]）。\n"
+            "请声明「课程材料中未覆盖此内容，以下是通用理解，建议对照教材确认」，"
+            "然后基于通用知识给出有帮助的回答。\n"
             "5. 不要继续调用任何工具，直接给出文字回答。"
         )
 
@@ -676,8 +679,8 @@ async def _execute_tool(
         max_score = max((r.get("score", 0) for r in results), default=0)
         payload: dict[str, Any] = {"results": results, "count": len(results)}
         if not results or max_score < 0.55:
-            payload["note"] = "检索结果与问题无关，可能超出课程范围。请诚实拒答。"
-            payload["_crag_reject"] = True
+            payload["note"] = "课程材料中未覆盖此内容。请基于通用知识回答，并声明这是补充说明。"
+            payload["_crag_supplementary"] = True
             payload["_max_score"] = max_score
         elif max_score < 0.72:
             payload["note"] = "检索结果相关性较低，请谨慎回答。"
