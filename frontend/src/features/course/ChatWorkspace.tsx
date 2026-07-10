@@ -327,8 +327,20 @@ export default function ChatWorkspace({
     try { await navigator.clipboard.writeText(text); } catch { /* ignore */ }
   };
 
-  const handleSaveToNote = (content: string) => {
-    console.info("[save-to-note]", content.slice(0, 50));
+  const [noteSavedId, setNoteSavedId] = useState<string | null>(null);
+
+  const handleSaveToNote = async (content: string) => {
+    try {
+      const title = content.slice(0, 30).replace(/[#*\n]/g, "").trim() || "Chat 笔记";
+      const note = await api.post<{ id: string; title: string }>(
+        `/courses/${courseId}/notes`,
+        { title, content },
+      );
+      setNoteSavedId(note.id);
+      setTimeout(() => setNoteSavedId(null), 2000);
+    } catch (e) {
+      console.error("Failed to save note:", e);
+    }
   };
 
   return (
@@ -493,10 +505,14 @@ export default function ChatWorkspace({
                           </button>
                           <button
                             onClick={() => handleSaveToNote(msg.content)}
-                            className="p-1.5 rounded-md text-slate-400 hover:text-foxAmber hover:bg-slate-100 transition-colors"
+                            className={`p-1.5 rounded-md transition-colors ${
+                              noteSavedId
+                                ? "text-green-500 bg-green-50"
+                                : "text-slate-400 hover:text-foxAmber hover:bg-slate-100"
+                            }`}
                             title="保存到笔记"
                           >
-                            <Bookmark className="w-3.5 h-3.5" />
+                            {noteSavedId ? <Check className="w-3.5 h-3.5" /> : <Bookmark className="w-3.5 h-3.5" />}
                           </button>
                           {isLastAi && (
                             <button

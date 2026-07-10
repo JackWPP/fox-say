@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { Upload, FileUp, AlertCircle, CheckCircle, X } from "lucide-react";
 import { useUploadMaterials } from "./useMaterials";
 
@@ -85,6 +85,33 @@ export default function MaterialUpload({ courseId, onUploaded }: MaterialUploadP
     setBatchError(null);
   };
 
+  // 监听全局粘贴事件，捕获剪贴板中的图片
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      if (uploading) return;
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const imageFiles: File[] = [];
+      for (const item of items) {
+        if (item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (file) {
+            const named = new File([file], `pasted-image-${Date.now()}.${item.type.split("/")[1] || "png"}`, { type: item.type });
+            imageFiles.push(named);
+          }
+        }
+      }
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        const dt = new DataTransfer();
+        imageFiles.forEach((f) => dt.items.add(f));
+        handleFiles(dt.files);
+      }
+    };
+    document.addEventListener("paste", handlePaste);
+    return () => document.removeEventListener("paste", handlePaste);
+  }, [uploading]);
+
   const hasActiveFiles = fileStatuses.length > 0;
   const doneCount = fileStatuses.filter((s) => s.status === "done").length;
   const overallProgress =
@@ -130,7 +157,7 @@ export default function MaterialUpload({ courseId, onUploaded }: MaterialUploadP
               拖拽文件到此处,或点击选择(支持多选)
             </p>
             <p className="text-xs text-gray-400">
-              支持 PDF/PPT/Word/HTML/图片/文本,单次最多 {MAX_BATCH} 个文件
+              支持 PDF/PPT/Word/HTML/图片/文本,单次最多 {MAX_BATCH} 个文件 · 可直接 Ctrl+V 粘贴图片
             </p>
           </>
         )}

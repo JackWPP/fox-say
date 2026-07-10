@@ -235,24 +235,29 @@ def _parse_pptx(path: Path) -> UnifiedParserOutput:
 
 
 def _parse_image(path: Path, storage_root: Path) -> UnifiedParserOutput:
-    """图片解析：优先 VLM，失败后尝试 MinerU。"""
-    # 尝试 VLM
-    try:
-        from app.services.vlm_parser import VLMImageParser
-        parser = VLMImageParser()
-        return parser.parse(path, storage_root)
-    except Exception as e:
-        logger.warning("VLM parser failed for %s: %s, trying MinerU", path, e)
+    """图片解析：MinerU V4/V1（原生支持 PNG/JPG），降级返回空内容提示。
 
-    # 尝试 MinerU
-    try:
-        from app.services.mineru import MinerUParser
-        parser = MinerUParser()
-        output = parser.parse(path, storage_root)
-        output.raw_input_type = "USER_IMAGE"
-        return output
-    except Exception as e:
-        raise DocumentParsingException(path, "All image parsers failed", e)
+    DeepSeek 当前无可用的视觉模型（v4-flash/v4-pro 均为纯文本），
+    因此不走 VLM 分支，直接用 MinerU 的 OCR 能力处理图片。
+    """
+    from app.core.config import settings
+
+    if settings.mineru_api_token:
+        try:
+            from app.services.mineru import MinerUParser
+            parser = MinerUParser()
+            output = parser.parse(path, storage_root)
+            output.raw_input_type = "USER_IMAGE"
+            return output
+        except Exception as e:
+            logger.warning("MinerU image parsing failed for %s: %s", path.name, e)
+
+    # MinerU 不可用时，返回提示信息而非静默失败
+    raise DocumentParsingException(
+        path,
+        "图片解析需要 MinerU API（当前未配置或调用失败）。"
+        "请配置 MINERU_API_TOKEN 后重试。",
+    )
 
 
 def _get_storage_root() -> Path:
