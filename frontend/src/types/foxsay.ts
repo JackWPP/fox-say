@@ -83,6 +83,12 @@ export interface ToolCallState {
   status: "running" | "done";
 }
 
+export interface TermHit {
+  name: string;
+  definition: string;
+  score: number;
+}
+
 export interface StreamEvent {
   type: "tool_call" | "token" | "done" | "error";
   tool?: string;
@@ -90,6 +96,7 @@ export interface StreamEvent {
   token?: string;
   answer?: string;
   citations?: Citation[];
+  term_hits?: TermHit[];
   in_scope?: boolean;
   guard_warning?: string | null;
   message?: string;

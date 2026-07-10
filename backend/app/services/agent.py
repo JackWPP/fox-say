@@ -9,7 +9,7 @@
 - 无进展检测:连续相同工具调用强制跳出,防止死循环
 
 工具集(7 个):
-  search_wiki          三层混合检索(章节+KC+chunk)
+  search_wiki          级联检索(章节→KC+笔记) + 并行术语词典(Qdrant term)
   get_course_map       拿课程索引全文
   get_concept          按 ID 或名称拿完整 KC 卡
   get_chapter_outline  按 chapter_id 或标题拿章节摘要
@@ -55,13 +55,15 @@ SYSTEM_PROMPT = (
     "2. **预判误解**: 主动提醒学生容易搞混的点、常见陷阱、与相似概念的区别。\n"
     "3. **公式推导**: 涉及公式时，先讲「这个公式在说什么、为什么合理」，"
     "再给数学表达，最后说明每个符号的含义。\n"
-    "4. **小狐狸语气**: 语言生动活泼，可以偶尔带点小调皮，但不要油腻。"
-    "像一个聪明的学长/学姐在给你讲题。\n"
+    "4. **语气**: 语言生动清晰，像一个耐心的学长/学姐在给你讲题。"
+    "**禁止**：使用 emoji、\"哈哈\"、感叹号堆砌等浮夸表达；编造或引用当前问题之外的任何对话内容。\n"
     "5. **结尾延伸**: 每次回答完，主动提一个值得思考的延伸问题，引导深入思考。\n"
     "6. **模糊追问**: 如果问题太模糊（比如只说「讲讲这个」），先礼貌追问具体想了解哪方面，"
     "不要猜着答。\n\n"
     "## 核心规则\n"
-    "1. 只能回答当前课程相关问题。超出范围时，必须回答：`这个问题超出了[课程名]的范围，不知道。`\n"
+    "1. 只能基于课程材料回答问题。如果工具搜索结果为空或不相关，说明课程材料暂时没有该内容，"
+    "回答：`课程材料中暂时没有关于这个问题的内容。`\n"
+    "   **重要**：不要用自己的训练知识判断某概念\"属于哪门课\"，只根据检索结果决定能否回答。\n"
     "2. 引用材料时，必须用格式 `来自 [文件名] · 第X部分`，在正文中自然嵌入。\n"
     "   引用笔记时，必须用格式 `来自笔记 · [笔记标题]`。\n"
     "3. 回答用 Markdown 排版，有清晰的结构（标题、列表、加粗重点），但不要过度分节。\n"
@@ -76,6 +78,8 @@ SYSTEM_PROMPT = (
     "## 工具使用策略（重要！）\n"
     "- **第一步永远是 search_wiki**: 任何问题先用 `search_wiki` 搜索相关材料，"
     "获取 concept_id/chapter_id 等 ID 后再调用其他工具。不要猜测 ID！\n"
+    "- **search_wiki 返回两个字段**: `wiki`（章节+知识点，按相关性级联检索）和 `terms`（学科专有名词权威定义词典）。"
+    "如果 `terms` 中命中了相关术语，**优先用 terms 的定义解释该专有名词**，wiki 补充上下文。\n"
     "- **定义/是什么类问题**: 先用 `search_wiki` 找到概念，再用 `get_concept` 获取完整 KC 卡。\n"
     "- **比较/对比类问题**: 先用 `search_wiki` 获取多个相关 KC，再对比分析。\n"
     "- **为什么/原理类问题**: 先用 `search_wiki` 找到概念，再用 `follow_prerequisite` 追溯先修知识。\n"
@@ -282,6 +286,7 @@ async def agent_chat(
     messages.append({"role": "user", "content": question})
 
     collected_sources: list[dict] = []
+    collected_terms: list[dict] = []  # terms from Qdrant dictionary, for visualization
     dsml_streak = 0
     last_tool_key: str | None = None
     repeat_count = 0
@@ -296,10 +301,9 @@ async def agent_chat(
             messages.append({
                 "role": "system",
                 "content": (
-                    "你已经调用了多次工具但还没有找到相关材料。"
-                    "如果问题确实超出课程范围，请诚实拒答，格式为："
-                    "`这个问题超出了[课程名]的范围，不知道。`"
-                    "不要继续无意义的工具调用。"
+                    "你已经调用了多次工具但没有找到相关材料，说明课程材料中暂时没有该内容。"
+                    "请直接回答：`课程材料中暂时没有关于这个问题的内容。`"
+                    "不要继续工具调用，不要用自己的知识推断范围归属。"
                 ),
             })
             force_answer = True
@@ -367,6 +371,7 @@ async def agent_chat(
                 "type": "done",
                 "answer": answer_text,
                 "citations": citations,
+                "term_hits": collected_terms,
                 "in_scope": True,
                 "guard_warning": None,
             }
@@ -422,8 +427,9 @@ async def agent_chat(
                     messages.append({
                         "role": "system",
                         "content": (
-                            "你已经多次搜索但没有找到相关材料。这可能意味着问题超出了课程范围。"
-                            "请直接回答：`这个问题超出了[课程名]的范围，不知道。`（替换[课程名]为实际课程名）"
+                            "你已经多次搜索但没有找到相关材料，说明课程材料中暂时没有该内容（可能该章节尚未上传）。"
+                            "请直接回答：`课程材料中暂时没有关于这个问题的内容。`"
+                            "不要基于自己的训练知识推断该概念属于哪门课或超出什么范围。"
                         ),
                     })
                     break
@@ -460,6 +466,7 @@ async def agent_chat(
                                 "type": "done",
                                 "answer": content,
                                 "citations": citations,
+                                "term_hits": collected_terms,
                                 "in_scope": True,
                                 "guard_warning": None,
                             }
@@ -470,6 +477,7 @@ async def agent_chat(
                                 "type": "done",
                                 "answer": tool_result,
                                 "citations": [],
+                                "term_hits": collected_terms,
                                 "in_scope": True,
                                 "guard_warning": None,
                             }
@@ -500,18 +508,44 @@ async def agent_chat(
                         if src["file_name"]:
                             collected_sources.append(src)
                             new_sources += 1
+                    # Collect term hits for frontend visualization
+                    for t in data.get("terms", []):
+                        if t.get("name") and t.get("definition"):
+                            collected_terms.append({
+                                "name": t["name"],
+                                "definition": t["definition"],
+                                "score": round(t.get("score", 0), 3),
+                            })
 
-                    # CRAG 硬门控：score < 0.55 时代码级强制拒答 (AGENTS.md CRAG Policy)
+                    # CRAG 硬门控：score < 0.45 时检查术语词典是否有命中
+                    # 如果词典有好的命中，允许 LLM 用术语定义回答，不强制拒答
                     if data.get("_crag_reject"):
                         max_score = data.get("_max_score", 0)
-                        yield {
-                            "type": "done",
-                            "answer": f"这个问题超出了{course_title}的范围，不知道。",
-                            "citations": [],
-                            "in_scope": False,
-                            "guard_warning": f"CRAG gate: max_score={max_score:.3f} < 0.55",
-                        }
-                        return
+                        term_max_score = max((t.get("score", 0) for t in data.get("terms", [])), default=0)
+                        if term_max_score >= 0.50 or collected_sources:
+                            # 术语词典有命中 或 已有来源 → 引导 LLM 基于已有信息回答
+                            hint = ""
+                            if term_max_score >= 0.50:
+                                hint = f"术语词典命中了相关词条（最高分 {term_max_score:.2f}），请用 terms 中的定义回答。"
+                            elif collected_sources:
+                                hint = "已从之前的搜索中找到了一些相关材料，请直接基于这些材料给出回答，不要再搜索。"
+                            messages.append({
+                                "role": "system",
+                                "content": (
+                                    f"这次搜索分数较低（{max_score:.2f}）。{hint}"
+                                    "不要再调用 search_wiki。"
+                                ),
+                            })
+                        else:
+                            yield {
+                                "type": "done",
+                                "answer": "课程材料中暂时没有关于这个问题的内容。",
+                                "citations": [],
+                                "term_hits": collected_terms,
+                                "in_scope": False,
+                                "guard_warning": f"CRAG gate: max_score={max_score:.3f} < 0.45",
+                            }
+                            return
 
                     # 第一次search_wiki低分/空结果时立即引导
                     if _round == 0 and (new_sources == 0 or data.get("note")):
@@ -567,9 +601,9 @@ async def agent_chat(
     # 达到 max rounds 或被强制跳出 → 基于已有信息生成回答
     if force_answer and not collected_sources:
         final_prompt = (
-            "你已尝试多次工具调用但未找到相关材料。"
-            "如果问题确实超出课程范围，直接回答：`这个问题超出了[课程名]的范围，不知道。`"
-            "不要编造内容，不要继续调用工具。"
+            "你已尝试多次工具调用但未找到相关材料，说明课程材料中暂时没有该内容。"
+            "请直接回答：`课程材料中暂时没有关于这个问题的内容。`"
+            "不要编造内容，不要用自己的知识推断该概念属于哪门课或超出什么范围。"
         )
     else:
         final_prompt = (
@@ -580,7 +614,7 @@ async def agent_chat(
             "3. 如果工具结果只能部分回答，先基于已有信息回答能确定的部分，"
             "再明确说明哪些部分材料中没有覆盖，绝对不要编造内容。\n"
             "4. 如果工具结果完全不足以回答（没有任何相关来源），"
-            "直接回答：`这个问题超出了[课程名]的范围，不知道。`（替换[课程名]）。\n"
+            "直接回答：`课程材料中暂时没有关于这个问题的内容。`\n"
             "5. 不要继续调用任何工具，直接给出文字回答。"
         )
 
@@ -635,10 +669,19 @@ async def agent_chat(
     if not answer_text:
         answer_text = "（AI 暂时无法生成有效回答，请换个问法再试试～）"
 
+    # Dedup term hits by name before sending
+    seen_term_names: set[str] = set()
+    deduped_terms: list[dict] = []
+    for t in collected_terms:
+        if t["name"] not in seen_term_names:
+            seen_term_names.add(t["name"])
+            deduped_terms.append(t)
+
     yield {
         "type": "done",
         "answer": answer_text,
         "citations": citations,
+        "term_hits": deduped_terms,
         "in_scope": True,
         "guard_warning": None,
     }
@@ -659,7 +702,7 @@ async def _execute_tool(
 ) -> str:
     """路由工具到对应实现。"""
     from app.services import query_tools
-    from app.services.retrieval import search_wiki_layer
+    from app.services.retrieval import search_wiki_layer, search_term_layer
 
     if name == "search_wiki":
         query = args.get("query", "")
@@ -667,19 +710,30 @@ async def _execute_tool(
         top_k = args.get("top_k", 5)
         if store is None:
             return json.dumps({"results": [], "count": 0, "note": "store not provided"}, ensure_ascii=False)
-        results = search_wiki_layer(
-            course_id, query, layer, top_k, store,
-            selected_material_ids=selected_source_ids,
-            selected_note_ids=selected_note_ids,
-        )
 
-        max_score = max((r.get("score", 0) for r in results), default=0)
-        payload: dict[str, Any] = {"results": results, "count": len(results)}
-        if not results or max_score < 0.55:
+        # Parallel: Wiki cascade + terminology dictionary
+        import asyncio as _asyncio
+        wiki_task = _asyncio.to_thread(
+            search_wiki_layer,
+            course_id, query, layer, top_k, store,
+            selected_source_ids, selected_note_ids,
+        )
+        term_task = _asyncio.to_thread(search_term_layer, course_id, query, top_k=5)
+        wiki_results, term_results = await _asyncio.gather(wiki_task, term_task)
+
+        max_score = max((r.get("score", 0) for r in wiki_results), default=0)
+        payload: dict[str, Any] = {
+            "wiki": wiki_results,
+            "terms": term_results,
+            "count": len(wiki_results),
+            # Keep 'results' for backward-compat with CRAG gate in caller
+            "results": wiki_results,
+        }
+        if not wiki_results or max_score < 0.45:
             payload["note"] = "检索结果与问题无关，可能超出课程范围。请诚实拒答。"
             payload["_crag_reject"] = True
             payload["_max_score"] = max_score
-        elif max_score < 0.72:
+        elif max_score < 0.65:
             payload["note"] = "检索结果相关性较低，请谨慎回答。"
         return json.dumps(payload, ensure_ascii=False)
 

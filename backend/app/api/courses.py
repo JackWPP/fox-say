@@ -217,6 +217,25 @@ async def list_course_kcs(course_id: str, store: SqliteStore = Depends(get_store
     return {"kcs": [kc.model_dump() for kc in kcs], "count": len(kcs)}
 
 
+@router.post("/{course_id}/build-terminology")
+async def build_terminology_endpoint(course_id: str, store: SqliteStore = Depends(get_store)):
+    """Re-extract terminology dictionary from stored parsed texts and upsert into Qdrant."""
+    course = store.get_course(course_id)
+    if course is None:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    all_parsed = store.get_all_parsed_texts(course_id)
+    if not all_parsed:
+        raise HTTPException(status_code=400, detail="No parsed texts found. Upload materials first.")
+
+    import asyncio
+    from app.services.terminology import extract_and_upsert_terms
+
+    texts = list(all_parsed.values())
+    term_count = await asyncio.to_thread(extract_and_upsert_terms, course_id, texts)
+    return {"term_count": term_count, "status": "ok"}
+
+
 @router.get("/{course_id}/chapter-wikis")
 async def list_chapter_wikis(course_id: str, store: SqliteStore = Depends(get_store)):
     """List all chapter wikis for a course."""
