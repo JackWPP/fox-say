@@ -167,16 +167,23 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def _text_overlap_score(query: str, text: str) -> float:
-    if not query or not text:
-        return 0.0
-    q_chars = set(query.lower())
-    t_chars = set(text.lower())
-    if not q_chars or not t_chars:
-        return 0.0
-    intersection = q_chars & t_chars
-    union = q_chars | t_chars
-    return len(intersection) / len(union) if union else 0.0
+# 章节 embedding 缓存（避免每次查询都重新 embed 所有章节）
+_chapter_embedding_cache: dict[str, list[float]] = {}
+
+
+def _get_chapter_embedding(text: str) -> list[float] | None:
+    """获取文本的 embedding，带内存缓存。"""
+    cache_key = text[:200]
+    if cache_key in _chapter_embedding_cache:
+        return _chapter_embedding_cache[cache_key]
+    try:
+        embs = embed_texts([text])
+        if embs:
+            _chapter_embedding_cache[cache_key] = embs[0]
+            return embs[0]
+    except Exception:
+        pass
+    return None
 
 
 def search_wiki_layer(
@@ -205,8 +212,12 @@ def search_wiki_layer(
         chapter_wikis = store.get_chapter_wikis_by_course(course_id)
         for cw in chapter_wikis:
             text = f"{cw.title} {cw.overview} {' '.join(cw.key_concepts)}"
-            score = _text_overlap_score(query, text)
-            if score > 0:
+            ch_emb = _get_chapter_embedding(text)
+            if q_emb is not None and ch_emb is not None:
+                score = _cosine_similarity(q_emb, ch_emb)
+            else:
+                score = 0.0
+            if score > 0.1:
                 results.append({
                     "id": cw.id,
                     "name": cw.title,
@@ -224,36 +235,38 @@ def search_wiki_layer(
         kcs_with_emb = [kc for kc in kcs if kc.embedding is not None]
         kcs_without_emb = [kc for kc in kcs if kc.embedding is None]
 
-        if q_emb is not None and kcs_with_emb:
+        if q_emb is not None:
             for kc in kcs_with_emb:
                 score = _cosine_similarity(q_emb, kc.embedding)
-                results.append({
-                    "id": kc.id,
-                    "name": kc.name,
-                    "layer": kc.layer,
-                    "score": score,
-                    "content": kc.definition,
-                    "source_ref": kc.source_refs[0].file if kc.source_refs else "",
-                    "file_name": kc.source_refs[0].file if kc.source_refs else "",
-                    "locator": kc.chapter_id,
-                })
-        else:
-            kcs_without_emb = kcs
+                if score > 0.1:
+                    results.append({
+                        "id": kc.id,
+                        "name": kc.name,
+                        "layer": kc.layer,
+                        "score": score,
+                        "content": kc.definition,
+                        "source_ref": kc.source_refs[0].file if kc.source_refs else "",
+                        "file_name": kc.source_refs[0].file if kc.source_refs else "",
+                        "locator": kc.chapter_id,
+                    })
 
-        for kc in kcs_without_emb:
-            text = f"{kc.name} {kc.definition} {kc.formula}"
-            score = _text_overlap_score(query, text)
-            if score > 0:
-                results.append({
-                    "id": kc.id,
-                    "name": kc.name,
-                    "layer": kc.layer,
-                    "score": score,
-                    "content": kc.definition,
-                    "source_ref": kc.source_refs[0].file if kc.source_refs else "",
-                    "file_name": kc.source_refs[0].file if kc.source_refs else "",
-                    "locator": kc.chapter_id,
-                })
+            # KCs without stored embeddings: compute on-demand
+            for kc in kcs_without_emb:
+                text = f"{kc.name} {kc.definition} {kc.formula}"
+                kc_emb = _get_chapter_embedding(text)
+                if kc_emb is not None:
+                    score = _cosine_similarity(q_emb, kc_emb)
+                    if score > 0.1:
+                        results.append({
+                            "id": kc.id,
+                            "name": kc.name,
+                            "layer": kc.layer,
+                            "score": score,
+                            "content": kc.definition,
+                            "source_ref": kc.source_refs[0].file if kc.source_refs else "",
+                            "file_name": kc.source_refs[0].file if kc.source_refs else "",
+                            "locator": kc.chapter_id,
+                        })
 
         if q_emb is not None:
             q_results = _search_with_filters(

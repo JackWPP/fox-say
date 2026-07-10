@@ -64,7 +64,8 @@ class QdrantStore:
         for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
             payload = {
                 "text": chunk["text"],
-                "index": chunk["index"],
+                "index": chunk.get("index", i),
+                "heading_path": chunk.get("heading_path", ""),
                 **metadata,
             }
             points.append(PointStruct(id=str(uuid.uuid4()), vector=embedding, payload=payload))
