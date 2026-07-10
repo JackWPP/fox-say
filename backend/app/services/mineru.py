@@ -209,12 +209,13 @@ class MinerUParser(BaseDocumentParser):
                 resp.raise_for_status()
                 data = resp.json().get("data", {})
 
-                # batch 结果可能是一个列表
-                results = data if isinstance(data, list) else data.get("results", [data])
+                # 实际格式: data.extract_result = [{state, full_zip_url, ...}]
+                results = data.get("extract_result", [])
                 if not results:
+                    # 可能还在排队中，data 里没有 extract_result
                     continue
 
-                result = results[0] if isinstance(results, list) else results
+                result = results[0]
                 state = result.get("state", "")
 
                 if state == "done":
@@ -226,12 +227,10 @@ class MinerUParser(BaseDocumentParser):
                 elif state == "failed":
                     raise ValueError(f"V4 failed: {result.get('err_msg', '?')}")
                 else:
-                    progress = result.get("extract_progress", {})
+                    progress = data.get("extract_progress", {})
                     if progress:
                         logger.debug(
-                            "V4 progress: %d/%d pages",
-                            progress.get("extracted_pages", 0),
-                            progress.get("total_pages", 0),
+                            "V4 progress: %s", progress
                         )
             except ValueError:
                 raise

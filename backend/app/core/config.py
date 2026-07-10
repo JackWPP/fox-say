@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     mineru_api_token: str = ""
     mineru_api_base: str = "https://mineru.net/api/v4"
     mineru_poll_interval: int = 5       # 轮询间隔（秒）
-    mineru_max_poll_time: int = 300     # 最大轮询时间（秒）
+    mineru_max_poll_time: int = 600     # 最大轮询时间（秒）
     # 批量上传与并发控制
     max_batch_upload: int = 15  # 单次 /materials/batch 最多文件数
     max_concurrent_parsing: int = 3  # 同时解析的文件数(asyncio.Semaphore 上限)
