@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -113,3 +114,35 @@ async def test_worker_marks_unknown_job_type_failed(store: SqliteStore) -> None:
     assert persisted is not None
     assert persisted.status == "failed"
     assert persisted.error_code == "unsupported_knowledge_job_type"
+
+
+async def test_worker_renews_lease_while_handler_is_running(
+    store: SqliteStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    enqueued = enqueue_course_compile_job(store, course_id="course-a", revision=4)
+    original_renew = store.renew_knowledge_job_lease
+    renew_calls = 0
+
+    def record_renew(*args, **kwargs):
+        nonlocal renew_calls
+        renew_calls += 1
+        return original_renew(*args, **kwargs)
+
+    monkeypatch.setattr(store, "renew_knowledge_job_lease", record_renew)
+
+    async def handle(_job):
+        await asyncio.sleep(0.04)
+
+    worker = KnowledgeJobWorker(
+        store,
+        worker_id="worker-a",
+        handlers={"compile_course": handle},
+        lease_seconds=5,
+        heartbeat_interval_seconds=0.01,
+    )
+
+    await worker.run_once()
+    persisted = store.get_knowledge_job("course-a", enqueued.job_id)
+
+    assert renew_calls >= 1
+    assert persisted is not None and persisted.status == "succeeded"

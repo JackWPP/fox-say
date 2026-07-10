@@ -86,6 +86,21 @@ def test_claim_honors_lease_and_reclaims_expired_job(store: SqliteStore):
         store.complete_knowledge_job("course-a", queued.job_id, "worker-a")
 
 
+def test_renew_lease_requires_current_owner(store: SqliteStore):
+    queued = enqueue_course_compile_job(store, course_id="course-a", revision=8)
+    claimed = store.claim_next_knowledge_job("worker-a", lease_seconds=60)
+    assert claimed is not None and claimed.job_id == queued.job_id
+
+    assert store.renew_knowledge_job_lease(
+        "course-a", queued.job_id, "worker-a", lease_seconds=120
+    )
+    refreshed = store.get_knowledge_job("course-a", queued.job_id)
+    assert refreshed is not None and refreshed.lease_expires_at is not None
+    assert not store.renew_knowledge_job_lease(
+        "course-a", queued.job_id, "worker-b", lease_seconds=120
+    )
+
+
 def test_complete_fail_and_retry_preserve_explicit_state(store: SqliteStore):
     completed_job = enqueue_course_compile_job(store, course_id="course-a", revision=1)
     claimed = store.claim_next_knowledge_job("worker-a", lease_seconds=60)

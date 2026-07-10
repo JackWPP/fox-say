@@ -1075,6 +1075,45 @@ class SqliteStore:
             raise RuntimeError("Completed knowledge job could not be reloaded")
         return completed
 
+    def renew_knowledge_job_lease(
+        self,
+        course_id: str,
+        job_id: str,
+        lease_owner: str,
+        lease_seconds: int,
+    ) -> bool:
+        """Extend a running lease only for its current owner.
+
+        A false return is an explicit lost-lease signal.  Workers must stop
+        writing derived knowledge when it occurs; a recovered worker may have
+        already claimed the job.
+        """
+        if not lease_owner.strip():
+            raise ValueError("lease_owner is required to renew a knowledge job lease")
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        lease_modifier = f"+{lease_seconds} seconds"
+        with self._knowledge_job_lock:
+            updated = self._conn.execute(
+                """
+                UPDATE knowledge_jobs
+                SET lease_expires_at = datetime('now', ?),
+                    updated_at = datetime('now')
+                WHERE job_id = ?
+                  AND course_id = ?
+                  AND status = 'running'
+                  AND lease_owner = ?
+                """,
+                (
+                    lease_modifier,
+                    job_id,
+                    course_id,
+                    lease_owner,
+                ),
+            )
+            self._conn.commit()
+        return updated.rowcount == 1
+
     def fail_knowledge_job(
         self,
         course_id: str,

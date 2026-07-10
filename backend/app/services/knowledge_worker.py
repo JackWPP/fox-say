@@ -9,6 +9,7 @@ injected so they can be tested and evolved independently.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -46,6 +47,7 @@ class KnowledgeJobWorker:
         handlers: dict[str, KnowledgeJobHandler],
         lease_seconds: int = 120,
         poll_interval_seconds: float = 0.5,
+        heartbeat_interval_seconds: float | None = None,
     ) -> None:
         if not worker_id.strip():
             raise ValueError("worker_id is required")
@@ -53,11 +55,19 @@ class KnowledgeJobWorker:
             raise ValueError("lease_seconds must be positive")
         if poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds must be positive")
+        resolved_heartbeat_interval = (
+            max(1.0, lease_seconds / 3)
+            if heartbeat_interval_seconds is None
+            else heartbeat_interval_seconds
+        )
+        if resolved_heartbeat_interval <= 0:
+            raise ValueError("heartbeat_interval_seconds must be positive")
         self._store = store
         self._worker_id = worker_id
         self._handlers = handlers
         self._lease_seconds = lease_seconds
         self._poll_interval_seconds = poll_interval_seconds
+        self._heartbeat_interval_seconds = resolved_heartbeat_interval
 
     async def run_once(self) -> KnowledgeJob | None:
         """Claim at most one job and persist its result.
@@ -90,12 +100,17 @@ class KnowledgeJobWorker:
             return job
 
         try:
-            await handler(job)
+            await self._run_handler_with_lease_heartbeat(handler, job)
         except asyncio.CancelledError:
             # Do not race shutdown against a future worker.  The durable lease
             # will expire and the job can be safely reclaimed.
             raise
         except KnowledgeJobExecutionError as exc:
+            if exc.code == "knowledge_job_lease_lost":
+                # Another worker owns the durable job now.  Writing a failure
+                # would violate the lease boundary, so stop without changing
+                # its state.
+                return job
             await asyncio.to_thread(
                 self._store.fail_knowledge_job,
                 job.course_id,
@@ -123,6 +138,72 @@ class KnowledgeJobWorker:
                 self._worker_id,
             )
         return job
+
+    async def _run_handler_with_lease_heartbeat(
+        self,
+        handler: KnowledgeJobHandler,
+        job: KnowledgeJob,
+    ) -> None:
+        """Run one handler while a managed child keeps its durable lease alive."""
+        stop_heartbeat = asyncio.Event()
+        handler_task = asyncio.create_task(
+            handler(job), name=f"knowledge-handler:{job.job_id}"
+        )
+        heartbeat_task = asyncio.create_task(
+            self._heartbeat_until_stopped(job, stop_heartbeat),
+            name=f"knowledge-heartbeat:{job.job_id}",
+        )
+        try:
+            done, _ = await asyncio.wait(
+                {handler_task, heartbeat_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if handler_task in done:
+                return await handler_task
+
+            heartbeat_error = heartbeat_task.exception()
+            if heartbeat_error is None:
+                raise RuntimeError("Knowledge job heartbeat stopped before the handler")
+            handler_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await handler_task
+            raise heartbeat_error
+        finally:
+            stop_heartbeat.set()
+            if not heartbeat_task.done():
+                heartbeat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
+            if not handler_task.done():
+                handler_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await handler_task
+
+    async def _heartbeat_until_stopped(
+        self,
+        job: KnowledgeJob,
+        stop_event: asyncio.Event,
+    ) -> None:
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    stop_event.wait(), timeout=self._heartbeat_interval_seconds
+                )
+                return
+            except TimeoutError:
+                renewed = await asyncio.to_thread(
+                    self._store.renew_knowledge_job_lease,
+                    job.course_id,
+                    job.job_id,
+                    self._worker_id,
+                    self._lease_seconds,
+                )
+                if not renewed:
+                    raise KnowledgeJobExecutionError(
+                        "Knowledge job lease was lost before the handler completed",
+                        code="knowledge_job_lease_lost",
+                        retryable=True,
+                    )
 
     async def run(self, stop_event: asyncio.Event) -> None:
         """Continuously consume durable work until the owner requests stop."""
