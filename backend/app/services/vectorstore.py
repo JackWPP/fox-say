@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import uuid
 
 from qdrant_client import QdrantClient
@@ -15,17 +16,20 @@ from qdrant_client.models import (
 from app.core.config import settings
 
 _client: QdrantClient | None = None
+_client_lock = threading.Lock()
 _write_lock = asyncio.Lock()
 
 
 def _get_client() -> QdrantClient:
     global _client
-    if _client is None:
+    if _client is not None:
+        return _client
+    with _client_lock:
+        if _client is not None:  # double-check after acquiring lock
+            return _client
         if settings.qdrant_url:
-            # 远程模式: qdrant_url = "http://host:port"
             _client = QdrantClient(url=settings.qdrant_url)
         else:
-            # 进程内 local mode: 数据持久化到 qdrant_local_path, 无需 Docker
             from pathlib import Path
             local_path = Path(settings.qdrant_local_path)
             local_path.mkdir(parents=True, exist_ok=True)
@@ -180,6 +184,73 @@ class QdrantStore:
         if not must:
             return None
         return Filter(must=must)
+
+    def upsert_terms(
+        self,
+        course_id: str,
+        terms: list[dict],
+        embeddings: list[list[float]],
+    ) -> None:
+        """Upsert domain terminology into Qdrant (type=term).
+
+        Each term dict must have 'name' and 'definition' keys.
+        Point IDs are deterministic (uuid5) so re-running overwrites cleanly.
+        """
+        name = _collection_name(course_id)
+        client = _get_client()
+        self.create_course_collection(course_id)
+        points: list[PointStruct] = []
+        for term, embedding in zip(terms, embeddings):
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{course_id}:{term['name'].lower().strip()}"))
+            payload = {
+                "type": "term",
+                "term": term["name"],
+                "text": term["definition"],
+                "course_id": course_id,
+            }
+            points.append(PointStruct(id=point_id, vector=embedding, payload=payload))
+        if points:
+            client.upsert(collection_name=name, points=points)
+
+    def delete_terms_by_course(self, course_id: str) -> None:
+        name = _collection_name(course_id)
+        client = _get_client()
+        if not client.collection_exists(name):
+            return
+        client.delete(
+            collection_name=name,
+            points_selector=Filter(
+                must=[
+                    FieldCondition(key="type", match=MatchValue(value="term")),
+                    FieldCondition(key="course_id", match=MatchValue(value=course_id)),
+                ]
+            ),
+        )
+
+    def search_terms(
+        self,
+        course_id: str,
+        query_embedding: list[float],
+        limit: int = 5,
+    ) -> list[dict]:
+        name = _collection_name(course_id)
+        client = _get_client()
+        if not client.collection_exists(name):
+            return []
+        term_filter = Filter(
+            must=[
+                FieldCondition(key="type", match=MatchValue(value="term")),
+                FieldCondition(key="course_id", match=MatchValue(value=course_id)),
+            ]
+        )
+        response = client.query_points(
+            collection_name=name,
+            query=query_embedding,
+            limit=limit,
+            with_payload=True,
+            query_filter=term_filter,
+        )
+        return [{"score": p.score, "payload": p.payload or {}} for p in response.points]
 
     def get_chunk_by_index(
         self,

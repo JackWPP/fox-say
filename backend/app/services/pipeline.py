@@ -5,11 +5,9 @@ from datetime import datetime, timedelta, timezone
 
 from app.core.config import settings
 from app.db.sqlite_store import SqliteStore
-from app.services.chunking import chunk_text
-from app.services.embedding import embed_texts
 from app.services.parsing import parse_document
 from app.services.skeleton import generate_skeleton
-from app.services.vectorstore import QdrantStore, _write_lock
+from app.services.vectorstore import QdrantStore
 from app.api.events import push_event
 from app.services.dmap import build_dmap
 from app.services.merkle import compute_merkle_tree, diff_merkle_trees
@@ -23,12 +21,11 @@ _qdrant = QdrantStore()
 _parsing_semaphore = asyncio.Semaphore(settings.max_concurrent_parsing)
 
 PIPELINE_STEPS = [
-    "parsing", "build_dmap", "wiki_build",
-    "chunking", "embedding", "storing", "skeleton_generating",
+    "parsing", "build_dmap", "wiki_build", "terminology", "skeleton_generating",
 ]
 
 # 这些步骤在所有材料就绪后统一执行(不逐材料跑)
-_COURSE_LEVEL_STEPS = {"build_dmap", "wiki_build", "skeleton_generating"}
+_COURSE_LEVEL_STEPS = {"build_dmap", "wiki_build", "terminology", "skeleton_generating"}
 
 
 async def process_material(
@@ -75,7 +72,7 @@ async def process_material(
         logger.warning("Unsupported material kind for %s: %s", material_id, exc)
         store.update_task(task_ids["parsing"], "failed", detail=str(exc))
         store.update_material_status(course_id, material_id, "failed")
-        for remaining_step in ["build_dmap", "wiki_build", "chunking", "embedding", "storing", "skeleton_generating"]:
+        for remaining_step in ["build_dmap", "wiki_build", "terminology", "skeleton_generating"]:
             store.update_task(task_ids[remaining_step], "skipped")
         return
     except Exception as exc:
@@ -89,18 +86,18 @@ async def process_material(
                 store.update_material_status(course_id, material_id, "ready", degraded=True)
                 _update_course_if_ready(course_id, store)
                 asyncio.create_task(_generate_and_store_skeleton(course_id, store))
-                for remaining_step in ["build_dmap", "wiki_build", "chunking", "embedding", "storing"]:
+                for remaining_step in ["build_dmap", "wiki_build", "terminology"]:
                     store.update_task(task_ids[remaining_step], "skipped")
                 return
             else:
                 store.update_material_status(course_id, material_id, "failed")
-                for remaining_step in ["build_dmap", "wiki_build", "chunking", "embedding", "storing", "skeleton_generating"]:
+                for remaining_step in ["build_dmap", "wiki_build", "terminology", "skeleton_generating"]:
                     store.update_task(task_ids[remaining_step], "skipped")
                 return
         except Exception as fallback_exc:
             logger.exception("Degraded extraction also failed for %s: %s", material_id, fallback_exc)
             store.update_material_status(course_id, material_id, "failed")
-            for remaining_step in ["build_dmap", "wiki_build", "chunking", "embedding", "storing", "skeleton_generating"]:
+            for remaining_step in ["build_dmap", "wiki_build", "terminology", "skeleton_generating"]:
                 store.update_task(task_ids[remaining_step], "skipped")
             return
 
@@ -125,65 +122,42 @@ async def process_material(
         # Flat fallback: treat entire text as a paragraph element (no heading/level)
         docling_chunks = [{"text": text, "heading": "", "level": 0, "page": 0}]
 
-    # build_dmap + wiki_build 不再逐材料执行,标记为 pending 等 course-level 处理
+    # build_dmap / wiki_build / terminology 不逐材料执行,等所有材料就绪后统一跑
     store.update_task(task_ids["build_dmap"], "skipped", detail="deferred to course-level")
     store.update_task(task_ids["wiki_build"], "skipped", detail="deferred to course-level")
+    store.update_task(task_ids["terminology"], "skipped", detail="deferred to course-level")
 
-    try:
-        store.update_task(task_ids["chunking"], "running")
-        chunks = await asyncio.to_thread(chunk_text, text)
-        store.update_task(task_ids["chunking"], "done")
+    store.update_material_status(course_id, material_id, "ready")
+    push_event(course_id, "material_processed", {"material_id": material_id})
 
-        texts = [c["text"] for c in chunks]
-        store.update_task(task_ids["embedding"], "running")
-        embeddings = await asyncio.to_thread(embed_texts, texts)
-        store.update_task(task_ids["embedding"], "done")
+    texts = [c["text"] for c in chunks]
+    store.update_task(task_ids["embedding"], "running")
+    embeddings = await asyncio.to_thread(embed_texts, texts)
+    store.update_task(task_ids["embedding"], "done")
 
-        base_metadata = {
-            "course_id": course_id,
-            "material_id": material_id,
-            "file_name": file_name,
-        }
-        # 每个 chunk 附带自己的 heading_path
-        for c in chunks:
-            c["heading_path"] = c.get("heading_path", "")
+    base_metadata = {
+        "course_id": course_id,
+        "material_id": material_id,
+        "file_name": file_name,
+    }
+    for c in chunks:
+        c["heading_path"] = c.get("heading_path", "")
 
-        store.update_task(task_ids["storing"], "running")
-        async with _write_lock:
-            await asyncio.to_thread(_qdrant.delete_by_material, course_id, material_id)
-            await asyncio.to_thread(_qdrant.upsert_chunks, course_id, chunks, embeddings, base_metadata)
-        store.update_task(task_ids["storing"], "done")
+    store.update_task(task_ids["storing"], "running")
+    async with _write_lock:
+        await asyncio.to_thread(_qdrant.delete_by_material, course_id, material_id)
+        await asyncio.to_thread(_qdrant.upsert_chunks, course_id, chunks, embeddings, base_metadata)
+    store.update_task(task_ids["storing"], "done")
 
-        store.update_material_status(course_id, material_id, "ready")
-        push_event(course_id, "material_processed", {"material_id": material_id})
+    store.update_material_status(course_id, material_id, "ready")
+    push_event(course_id, "material_processed", {"material_id": material_id})
 
-        just_ready = _update_course_if_ready(course_id, store)
-        if just_ready:
-            # 所有材料就绪 → 统一跑 DMAP + wiki_build + skeleton
-            asyncio.create_task(_build_course_wiki(course_id, store))
-        else:
-            store.update_task(task_ids["skeleton_generating"], "skipped", detail="waiting for other materials")
-
-    except Exception:
-        logger.exception("Failed to process material %s for course %s", material_id, course_id)
-        store.update_material_status(course_id, material_id, "failed")
-        current_running = None
-        for step, tid in task_ids.items():
-            task_data = store.get_tasks_for_material(course_id, material_id)
-            for t in task_data:
-                if t["id"] == tid and t["status"] == "running":
-                    current_running = step
-                    store.update_task(tid, "failed")
-                    break
-        if current_running:
-            for step in PIPELINE_STEPS:
-                if step not in task_ids:
-                    continue
-                t = store.get_tasks_for_material(course_id, material_id)
-                for task_row in t:
-                    if task_row["id"] == task_ids[step] and task_row["status"] == "pending":
-                        store.update_task(task_ids[step], "skipped")
-                        break
+    just_ready = _update_course_if_ready(course_id, store)
+    if just_ready:
+        # 所有材料就绪 → 统一跑 DMAP + wiki_build + terminology + skeleton
+        asyncio.create_task(_build_course_wiki(course_id, store))
+    else:
+        store.update_task(task_ids["skeleton_generating"], "skipped", detail="waiting for other materials")
 
 
 def _update_course_if_ready(course_id: str, store: SqliteStore) -> bool:
@@ -297,7 +271,17 @@ async def _build_course_wiki(course_id: str, store: SqliteStore) -> None:
     except Exception:
         logger.exception("Wiki build failed for %s", course_id)
 
-    # 5. skeleton — 优先从 course_index 派生(不调 LLM),fallback 到 LLM 生成
+    # 5. 术语词典提取 → Qdrant(type=term)
+    try:
+        from app.services.terminology import extract_and_upsert_terms
+        all_texts = list(texts_dict.values())
+        term_count = await asyncio.to_thread(extract_and_upsert_terms, course_id, all_texts)
+        logger.info("Terminology extraction done for %s: %d terms", course_id, term_count)
+        push_event(course_id, "terminology_ready", {"term_count": term_count})
+    except Exception:
+        logger.exception("Terminology extraction failed for %s (non-fatal)", course_id)
+
+    # 6. skeleton — 优先从 course_index 派生(不调 LLM),fallback 到 LLM 生成
     try:
         from app.services.skeleton import generate_skeleton_from_wiki
         skeleton = await generate_skeleton_from_wiki(course_id, store)
@@ -310,7 +294,7 @@ async def _build_course_wiki(course_id: str, store: SqliteStore) -> None:
             push_event(course_id, "skeleton_ready", {"course_id": course_id})
             logger.info("Skeleton generated for %s (%d chapters)", course_id, len(skeleton.chapters))
 
-            # 6. 第一个惊喜:推送 course_ready 事件(骨架 + 薄弱诊断)
+            # 7. 推送 course_ready 事件(骨架 + 薄弱诊断)
             weak_chapters = [ch.title for ch in skeleton.chapters if ch.importance == "high"]
             total_kcs = len(store.get_kcs_by_course(course_id, include_invalid=False))
             push_event(course_id, "course_ready", {

@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Check, Copy, RefreshCw, ThumbsDown, ThumbsUp, AlertTriangle, ShieldOff, Sparkles, RotateCcw } from "lucide-react";
+import { Check, Copy, RefreshCw, ThumbsDown, ThumbsUp, AlertTriangle, ShieldOff, Sparkles, RotateCcw, BookMarked, ChevronDown } from "lucide-react";
 import type { ConfidenceStatus } from "../../shared/types";
-import type { ChatMessage as ChatMessageType } from "./useChat";
+import type { ChatMessage as ChatMessageType, TermHit } from "./useChat";
 import MarkdownRenderer from "./MarkdownRenderer";
 import CitationCard from "./CitationCard";
 import ToolCallIndicator from "./ToolCallIndicator";
@@ -46,6 +46,37 @@ function ToolbarCopyButton({ text }: { text: string }) {
         ? <Check className="w-3.5 h-3.5 text-emerald-600 fox-check" />
         : <Copy className="w-3.5 h-3.5" />}
     </button>
+  );
+}
+
+function TermHitsPanel({ terms }: { terms: TermHit[] }) {
+  const [open, setOpen] = useState(false);
+  if (!terms.length) return null;
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-100">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 text-[0.68rem] text-violet-600 hover:text-violet-700 transition-colors w-full text-left"
+      >
+        <BookMarked className="w-3 h-3 shrink-0" />
+        <span className="font-medium">词典命中 {terms.length} 条</span>
+        <ChevronDown className={`w-3 h-3 ml-auto transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="mt-2 space-y-1.5">
+          {terms.map((t, i) => (
+            <div key={i} className="rounded-lg bg-violet-50 border border-violet-100 px-3 py-2">
+              <div className="flex items-center gap-2">
+                <span className="text-[0.72rem] font-semibold text-violet-700">{t.name}</span>
+                <span className="ml-auto text-[0.6rem] text-violet-400 font-mono">score {t.score.toFixed(2)}</span>
+              </div>
+              <p className="text-[0.7rem] text-slate-600 mt-0.5 leading-snug">{t.definition}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -169,6 +200,9 @@ export default function ChatMessage({ message, onRegenerate, onFeedback }: ChatM
               </div>
             </div>
           )}
+
+          {/* Term hits from Qdrant dictionary */}
+          {message.termHits && <TermHitsPanel terms={message.termHits} />}
         </div>
 
         {/* Action toolbar (only for completed, non-error assistant messages) */}
