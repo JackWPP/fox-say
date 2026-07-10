@@ -1,5 +1,11 @@
 # FoxSay 文档管线重构计划
 
+> **STATUS: COMPLETED** -- 2026-07-10
+> 本计划所列全部变更已实施并合入主分支。MinerU V4/V1 hybrid 已上线为 PRIMARY 解析器，
+> LangChain 语义切块已替换 500 字符盲切，Jaccard 评分已移除，CRAG 已改为透明补充模式。
+> 新增文件: parser_interface.py, normalizer.py, vlm_parser.py, pdf_detector.py。
+> 新增依赖: docling, langchain-text-splitters。新增数据库表: extracted_assets。
+
 ## 目标
 
 将当前"markitdown 统一入口 + 500字符盲切"的粗糙管线，重构为"多路路由 + 语义感知切块 + 结构化归一化"的生产级管线，从根本上提升检索质量和回答准确性。
@@ -8,7 +14,7 @@
 
 | 决策项 | 选择 | 理由 |
 |--------|------|------|
-| MinerU API | 迁移到 V4（JWT 鉴权） | 支持更大文件、HTML 多格式输出、公式/表格专项识别 |
+| MinerU API | V4/V1 hybrid（V4 primary，V1 降级路径） | V4 使用 `/api/v4/file-urls/batch` 上传本地文件，1000 pages/day 额度；额度耗尽自动降级到 V1 |
 | PDF 策略 | 双轨制：电子版 → Docling，扫描件 → MinerU 云端 | 本地精确结构 + 云端重度 OCR，互补 |
 | 切块库 | LangChain TextSplitter | 功能全面，MarkdownHeaderTextSplitter + RecursiveCharacterTextSplitter |
 | 数据库 | 保持 SQLite，新增 extracted_assets 表 | 避免引入 PostgreSQL 运维，当前规模足够 |
@@ -19,8 +25,8 @@
 | 依赖 | 状态 | 动作 |
 |------|------|------|
 | PyMuPDF (fitz) | 已安装 v1.26.4 | 保留，用于 PDF 扫描件探测 |
-| Docling | 未安装 | 需安装 `docling` |
-| LangChain | 未安装 | 需安装 `langchain-text-splitters` |
+| Docling | 已安装 | 保留，用于电子版 PDF 解析 (MinerU fallback) |
+| LangChain | 已安装 | 保留，语义切块 (langchain-text-splitters) |
 | markitdown | 已安装 | 保留，用于 Word/Excel 轻量解析 |
 | pdfplumber | 已安装 | 保留，作为 Docling 的 fallback |
 | python-pptx | 已安装 | 保留，PPT 解析 |

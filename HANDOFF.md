@@ -45,10 +45,13 @@ v0 (mvp 初版):  PDF → 文本分块 → embedding → 向量库 → 聊天框
                           ↓ 调研发现
                   这是"另一个 RAG 问答",没差异化
                           ↓ 决策改路线
-v1 (当前):      PDF → docling → DMAP (文档结构图)
+v1 (当前):      PDF → MinerU V4/V1 primary (路由+归一化)
+                          → DMAP (文档结构图)
                           → LangGraph 4 阶段 Wiki 构建 (Supervisor→Workers→Reducer→Reviewer)
                           → KC (Knowledge Component) 抽取 + Merkle 增量合并
-                          → 11 工具 Agent (7静态+4动态Skill) + 三层检索
+                          → LangChain 语义切块 (MarkdownHeaderTextSplitter + 表格保护)
+                          → 11 工具 Agent (7静态+4动态Skill) + 三层检索 (全 embedding cosine)
+                          → CRAG 透明门控 (score<0.55 补充回答+强制披露)
                           → 知识图谱可视化
 ```
 
@@ -218,20 +221,26 @@ app/
 │   └── foxsay.py                    ★ PR0 433 行,核心 schema
 └── services/                        业务逻辑
     ├── agent.py                     ★ 11 工具 Agent ReAct 主循环 (7静态+4动态Skill, max 8轮)
-    ├── chunking.py                  文本分块
+    ├── chunking.py                  ★ LangChain 语义切块 (MarkdownHeaderTextSplitter + 表格保护)
     ├── crag.py                      老 RAG (legacy, 待清理)
     ├── dmap.py                      文档结构图构建
     ├── embedding.py                 BGE-M3 调用
     ├── guard.py                     内容安全守卫
     ├── merkle.py                    Merkle Tree diff
-    ├── parsing.py / parsing_docling.py  PDF 解析
-    ├── pipeline.py                  ★ 7 步处理流水线
+    ├── mineru.py                    ★ MinerU V4/V1 hybrid API (PRIMARY 解析器, 1000 pages/day quota)
+    ├── normalizer.py                ★★ 新增: Markdown 归一化引擎 (页面锚定 + 表格保护 + 公式对齐)
+    ├── parser_interface.py          ★★ 新增: 解析器抽象基类 + UnifiedParserOutput schema
+    ├── parsing.py                   ★★ 路由器: 文件类型分发 → MinerU primary → fallback 链
+    ├── parsing_docling.py           Docling 集成 (电子版 PDF fallback)
+    ├── pdf_detector.py              ★★ 新增: PyMuPDF 快速探测 PDF 电子/扫描件
+    ├── pipeline.py                  ★ 7 步处理流水线 (解析含路由+归一化子步)
     ├── query_tools.py               ★ 8 个查询函数实现 (dispatch 合并为 7 个工具)
-    ├── retrieval.py                 ★ 三层混合检索 (含 search_wiki_layer)
+    ├── retrieval.py                 ★ 三层混合检索 (全 embedding cosine, 已移除 Jaccard)
     ├── review.py                    复习计划 LLM 生成
     ├── skeleton.py                  骨架图 LLM 生成 (legacy, 待清理)
     ├── timetable.py                 课程表解析
     ├── vectorstore.py               Qdrant 客户端
+    ├── vlm_parser.py                ★★ 新增: VLM 多模态图片解析分支
     └── wiki_builder.py              ★★ LangGraph 4 阶段 Wiki 构建
 eval/                                ★ Line B 新增
 ├── __init__.py
@@ -348,17 +357,25 @@ Course (id, title, status, exam_date)
 ### 7.2 Pipeline 7 步(用户上传材料后触发)
 
 ```
-parsing → build_dmap → wiki_build → chunking → embedding → storing → skeleton_generating
+parsing[路由+归一化] → build_dmap → wiki_build → chunking[语义切块] → embedding → storing → skeleton_generating
 ```
+
+Parsing 子步:
+1. 文件类型路由 (PDF/Office/XLSX/图片/文本)
+2. PDF: PyMuPDF 探测电子/扫描件 → MinerU V4 primary → Docling/pdfplumber fallback
+3. Office: MinerU V4 (native) → MarkItDown/python-pptx fallback
+4. 归一化: NormalizationEngine (页面锚定 + 表格保护 + 公式对齐 + 全局编号)
+5. extracted_assets 写入 SQLite
 
 每个 step 写到 `tasks` 表,SSE 通过 `push_event` 推前端。
 Wiki build 是 4 阶段 LangGraph(Supervisor→Workers[Send 并发]→Reducer→Reviewer)。
+Chunking 使用 LangChain MarkdownHeaderTextSplitter + 表格不可分割 + 上下文标题 prepend。
 
 ### 7.3 Agent 11 工具 ReAct(8 轮 max, round 5 软性强制)
 
 ```
 # 7 静态工具
-search_wiki          三层混合检索 (macro=章节, micro=KC, all=合并)
+search_wiki          三层混合检索 (macro=章节, micro=KC, all=合并, 全 embedding cosine)
 get_course_map       拿课程索引全文
 get_concept          按 concept_id 或 concept_name 拿完整 KC 卡
 get_chapter_outline  按 chapter_id 或 chapter_title 拿章节摘要
@@ -375,7 +392,7 @@ show_concept_graph   显示概念先修图谱
 
 **DSML 防御**:DeepSeek V4 Flash 有时会输出 `<|DSML|...|>` 假装是 tool_call,需要 strip。
 **max_rounds=8**(原 5→3→8, round 5 软性强制回答, streak≥2 强制回答)。
-**CRAG 硬门控**:score < 0.55 时代码级直接拒答(不让 LLM 决策)。
+**CRAG 透明门控**:score < 0.55 时不再硬拒答,允许基于通用知识补充回答,但强制标注 `answer_source: "supplementary"` + 声明课程材料未覆盖。
 
 ### 7.4 API 端点
 

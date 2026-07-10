@@ -26,7 +26,8 @@ _KIND_MAP: dict[str, MaterialKind] = {
     ".png": "image",
     ".jpg": "image",
     ".jpeg": "image",
-    ".docx": "text_note",  # markitdown 支持,归类为 text_note 走 markdown 解析
+    ".docx": "text_note",
+    ".doc": "text_note",
     ".html": "text_note",
 }
 

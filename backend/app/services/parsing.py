@@ -53,17 +53,21 @@ def parse_document_full(file_path: str, kind: str) -> UnifiedParserOutput:
     if kind == "pdf":
         return _parse_pdf(path, storage_root)
 
-    # Word/Excel/HTML: MarkItDown 轻量解析
-    if kind == "text_note" and ext in (".docx", ".xlsx", ".html", ".htm"):
+    # Word/Excel/HTML
+    if kind == "text_note" and ext in (".docx", ".doc", ".xlsx", ".html", ".htm"):
+        # DOCX/DOC: 优先 MinerU V4（原生支持），降级到 MarkItDown
+        if ext in (".docx", ".doc"):
+            return _parse_office(path, storage_root, ext, fallback="markitdown")
+        # XLSX/HTML: MarkItDown（MinerU V4 不支持 xlsx）
         return _parse_markitdown(path, ext)
 
     # 纯文本/Markdown: 直接读取
     if kind == "text_note":
         return _parse_text(path)
 
-    # PPT
+    # PPT: 优先 MinerU V4（原生支持），降级到 python-pptx
     if kind == "ppt":
-        return _parse_pptx(path)
+        return _parse_office(path, storage_root, ext, fallback="pptx")
 
     # 图片: VLM 多模态分支
     if kind == "image":
@@ -122,6 +126,32 @@ def _parse_pdf_pdfplumber(path: Path) -> UnifiedParserOutput:
         page_count=len(pages),
         parser_name="pdfplumber",
     )
+
+
+def _parse_office(
+    path: Path, storage_root: Path, ext: str, fallback: str = "markitdown"
+) -> UnifiedParserOutput:
+    """Office 文档解析：优先 MinerU V4（原生支持 DOC/DOCX/PPT/PPTX），降级到本地解析器。"""
+    from app.core.config import settings
+
+    input_type_map = {
+        ".docx": "WORD", ".doc": "WORD",
+        ".pptx": "PPT", ".ppt": "PPT",
+    }
+
+    if settings.mineru_api_token:
+        try:
+            from app.services.mineru import MinerUParser
+            parser = MinerUParser()
+            output = parser.parse(path, storage_root)
+            output.raw_input_type = input_type_map.get(ext, "TEXT")
+            return output
+        except Exception as e:
+            logger.warning("MinerU failed for %s: %s, falling back to local parser", path.name, e)
+
+    if fallback == "pptx":
+        return _parse_pptx(path)
+    return _parse_markitdown(path, ext)
 
 
 def _parse_markitdown(path: Path, ext: str) -> UnifiedParserOutput:

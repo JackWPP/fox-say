@@ -67,8 +67,13 @@ def _track_v4_usage(pages: int) -> None:
 class MinerUParser(BaseDocumentParser):
     """MinerU 文档解析器，V4/V1 混合模式。"""
 
+    _SUPPORTED_EXTENSIONS = (
+        ".pdf", ".png", ".jpg", ".jpeg",
+        ".doc", ".docx", ".ppt", ".pptx",
+    )
+
     def can_handle(self, file_extension: str) -> bool:
-        return file_extension.lower() in (".pdf", ".png", ".jpg", ".jpeg")
+        return file_extension.lower() in self._SUPPORTED_EXTENSIONS
 
     def parse(self, file_path: Path, storage_root: Path, **kwargs) -> UnifiedParserOutput:
         token = settings.mineru_api_token
