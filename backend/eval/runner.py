@@ -41,10 +41,10 @@ def _default_mock_foxsay(case: Any) -> FoxsayAnswer:
     if not case.answerability:
         return FoxsayAnswer(
             course_id=case.course_id,
-            answer=f"这个问题超出了{case.course_id}的范围,不知道。",
+            answer="课程材料中未覆盖此内容，以下是通用理解，建议对照教材确认。" + (case.gold_answer or "")[:100],
             citations=[],
             confidence_status="out_of_scope",
-            refusal_reason="out_of_scope",
+            refusal_reason="supplementary",
         )
     return FoxsayAnswer(
         course_id=case.course_id,

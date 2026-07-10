@@ -1,45 +1,214 @@
-import logging
+"""FoxSay 文档解析路由器。
 
-import pdfplumber
+根据文件类型自动分发到对应的解析器：
+- .pdf → 双轨制：电子版 → Docling，扫描件 → MinerU V4 云端
+- .docx/.xlsx/.html → MarkItDown 轻量解析
+- .ppt/.pptx → python-pptx
+- .txt/.md → 直接读取
+- .png/.jpg/.jpeg → VLM 多模态分支
+
+所有解析器输出统一的 UnifiedParserOutput。
+"""
+
+import logging
+from pathlib import Path
+
+from app.services.parser_interface import (
+    DocumentParsingException,
+    UnifiedParserOutput,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def parse_pdf(file_path: str, use_docling: bool | None = None) -> str:
-    if use_docling is None:
-        from app.core.config import settings
-        use_docling = settings.pdf_parser == "docling"
+def parse_document(file_path: str, kind: str) -> str:
+    """向后兼容的接口：返回纯文本字符串。
 
-    if use_docling:
+    内部调用 parse_document_full() 获取结构化输出，然后提取 markdown_content。
+    新代码应直接使用 parse_document_full()。
+    """
+    output = parse_document_full(file_path, kind)
+    return output.markdown_content
+
+
+def parse_document_full(file_path: str, kind: str) -> UnifiedParserOutput:
+    """完整解析接口：返回结构化的 UnifiedParserOutput。
+
+    Args:
+        file_path: 文件的物理路径
+        kind: 材料类型 ("pdf", "ppt", "text_note", "image")
+
+    Returns:
+        UnifiedParserOutput
+
+    Raises:
+        ValueError: 不支持的材料类型
+        DocumentParsingException: 解析失败
+    """
+    path = Path(file_path)
+    ext = path.suffix.lower()
+    storage_root = _get_storage_root()
+
+    # PDF: 双轨制路由
+    if kind == "pdf":
+        return _parse_pdf(path, storage_root)
+
+    # Word/Excel/HTML
+    if kind == "text_note" and ext in (".docx", ".doc", ".xlsx", ".html", ".htm"):
+        # DOCX/DOC: 优先 MinerU V4（原生支持），降级到 MarkItDown
+        if ext in (".docx", ".doc"):
+            return _parse_office(path, storage_root, ext, fallback="markitdown")
+        # XLSX/HTML: MarkItDown（MinerU V4 不支持 xlsx）
+        return _parse_markitdown(path, ext)
+
+    # 纯文本/Markdown: 直接读取
+    if kind == "text_note":
+        return _parse_text(path)
+
+    # PPT: 优先 MinerU V4（原生支持），降级到 python-pptx
+    if kind == "ppt":
+        return _parse_office(path, storage_root, ext, fallback="pptx")
+
+    # 图片: VLM 多模态分支
+    if kind == "image":
+        return _parse_image(path, storage_root)
+
+    raise ValueError(f"Unsupported material kind: {kind}")
+
+
+def _parse_pdf(path: Path, storage_root: Path) -> UnifiedParserOutput:
+    """PDF 解析路由：MinerU (V4→V1) → Docling → pdfplumber。
+
+    MinerU 公式识别质量远超 Docling，作为首选。
+    仅当 MinerU 不可用（无 token / 全失败）时降级到本地解析器。
+    """
+    from app.core.config import settings
+
+    # 优先走 MinerU（内部已包含 V4→V1 自动降级）
+    has_mineru_token = bool(settings.mineru_api_token)
+    if has_mineru_token:
         try:
-            from app.services.parsing_docling import parse_pdf_docling, docling_to_flat_text
+            from app.services.mineru import MinerUParser
+            parser = MinerUParser()
+            return parser.parse(path, storage_root)
+        except Exception as e:
+            logger.warning("MinerU failed for %s: %s, falling back to local parsers", path.name, e)
 
-            chunks = parse_pdf_docling(file_path)
-            if chunks:
-                return docling_to_flat_text(chunks)
-        except Exception:
-            logger.warning("Docling parse failed for %s, falling back to pdfplumber", file_path)
+    # 降级到 Docling（本地，电子版 PDF 效果好）
+    try:
+        from app.services.parsing_docling import DoclingParser
+        parser = DoclingParser()
+        return parser.parse(path, storage_root)
+    except Exception as e:
+        logger.warning("Docling failed for %s: %s, falling back to pdfplumber", path.name, e)
+
+    # 最终兜底：pdfplumber
+    return _parse_pdf_pdfplumber(path)
+
+
+def _parse_pdf_pdfplumber(path: Path) -> UnifiedParserOutput:
+    """pdfplumber 兜底解析（纯文字提取）。"""
+    import pdfplumber
 
     pages: list[str] = []
-    with pdfplumber.open(file_path) as pdf:
-        for page in pdf.pages:
+    with pdfplumber.open(str(path)) as pdf:
+        for i, page in enumerate(pdf.pages, 1):
             text = page.extract_text()
             if text:
-                pages.append(text)
-    return "\n".join(pages)
+                pages.append(f"<!-- PAGE_START {i} -->\n{text}\n<!-- PAGE_END {i} -->")
+
+    if not pages:
+        raise DocumentParsingException(path, "pdfplumber extracted no text")
+
+    return UnifiedParserOutput(
+        raw_input_type="DIGITAL_PDF",
+        markdown_content="\n\n".join(pages),
+        page_count=len(pages),
+        parser_name="pdfplumber",
+    )
 
 
-def parse_text(file_path: str) -> str:
-    with open(file_path, encoding="utf-8") as f:
-        return f.read()
+def _parse_office(
+    path: Path, storage_root: Path, ext: str, fallback: str = "markitdown"
+) -> UnifiedParserOutput:
+    """Office 文档解析：优先 MinerU V4（原生支持 DOC/DOCX/PPT/PPTX），降级到本地解析器。"""
+    from app.core.config import settings
+
+    input_type_map = {
+        ".docx": "WORD", ".doc": "WORD",
+        ".pptx": "PPT", ".ppt": "PPT",
+    }
+
+    if settings.mineru_api_token:
+        try:
+            from app.services.mineru import MinerUParser
+            parser = MinerUParser()
+            output = parser.parse(path, storage_root)
+            output.raw_input_type = input_type_map.get(ext, "TEXT")
+            return output
+        except Exception as e:
+            logger.warning("MinerU failed for %s: %s, falling back to local parser", path.name, e)
+
+    if fallback == "pptx":
+        return _parse_pptx(path)
+    return _parse_markitdown(path, ext)
 
 
-def parse_pptx(file_path: str) -> str:
+def _parse_markitdown(path: Path, ext: str) -> UnifiedParserOutput:
+    """MarkItDown 轻量解析（Word/Excel/HTML）。"""
+    from markitdown import MarkItDown
+
+    input_type_map = {
+        ".docx": "WORD",
+        ".xlsx": "EXCEL",
+        ".html": "HTML",
+        ".htm": "HTML",
+    }
+
+    try:
+        md = MarkItDown()
+        result = md.convert(str(path))
+        text = result.text_content or ""
+    except Exception as e:
+        raise DocumentParsingException(path, "MarkItDown failed", e)
+
+    if not text.strip():
+        raise DocumentParsingException(path, "MarkItDown returned empty content")
+
+    return UnifiedParserOutput(
+        raw_input_type=input_type_map.get(ext, "TEXT"),
+        markdown_content=text,
+        parser_name="MarkItDown",
+    )
+
+
+def _parse_text(path: Path) -> UnifiedParserOutput:
+    """纯文本/Markdown 直接读取。"""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = path.read_text(encoding="gbk", errors="replace")
+    except Exception as e:
+        raise DocumentParsingException(path, "Failed to read text file", e)
+
+    return UnifiedParserOutput(
+        raw_input_type="TEXT",
+        markdown_content=text,
+        parser_name="text_reader",
+    )
+
+
+def _parse_pptx(path: Path) -> UnifiedParserOutput:
+    """python-pptx 解析 PPT。"""
     from pptx import Presentation
 
-    prs = Presentation(file_path)
+    try:
+        prs = Presentation(str(path))
+    except Exception as e:
+        raise DocumentParsingException(path, "Failed to open PPTX", e)
+
     slides: list[str] = []
-    for slide in prs.slides:
+    for i, slide in enumerate(prs.slides, 1):
         texts: list[str] = []
         for shape in slide.shapes:
             if shape.has_text_frame:
@@ -48,67 +217,47 @@ def parse_pptx(file_path: str) -> str:
                     if t:
                         texts.append(t)
         if texts:
-            slides.append("[Slide] " + "\n".join(texts))
-    return "\n\n".join(slides)
+            slides.append(
+                f"<!-- PAGE_START {i} -->\n"
+                f"## Slide {i}\n" + "\n".join(texts) +
+                f"\n<!-- PAGE_END {i} -->"
+            )
+
+    if not slides:
+        raise DocumentParsingException(path, "PPTX contains no text content")
+
+    return UnifiedParserOutput(
+        raw_input_type="PPT",
+        markdown_content="\n\n".join(slides),
+        page_count=len(slides),
+        parser_name="python-pptx",
+    )
 
 
-def parse_with_markitdown(file_path: str) -> str:
-    """Layer 1: markitdown 统一解析入口,支持 PDF/PPT/Word/HTML/图片等格式。
-
-    输出 Markdown 文本。失败时抛异常给上层(HEC-1,不静默吞错)。
-    """
-    from markitdown import MarkItDown
-
-    md = MarkItDown()
-    result = md.convert(file_path)
-    return result.text_content or ""
-
-
-def parse_image_via_mineru(file_path: str) -> str:
-    """Layer 3 for image: 走 MinerU 云端 OCR。
-
-    复用 mineru.py 现有的 parse_pdf_mineru 流程(MinerU API 对 PDF/图片用同一端点)。
-    [未验证] MinerU 对图片的支持,若不支持会返回 error,上层会捕获并标记 failed。
-    """
-    from app.services.mineru import parse_pdf_mineru
-
-    md_text, err = parse_pdf_mineru(file_path)
-    if err:
-        raise RuntimeError(f"MinerU image OCR failed: {err}")
-    if not md_text:
-        raise RuntimeError("MinerU image OCR returned empty content")
-    return md_text
-
-
-def parse_document(file_path: str, kind: str) -> str:
-    """三层 fallback 解析链:
-
-    Layer 1: markitdown 统一入口(支持 pdf/ppt/word/html/图片)
-    Layer 2: 原生解析器(pdfplumber / python-pptx / utf-8 open)
-    Layer 3: MinerU 云端 OCR(仅 PDF/图片,作为最后兜底)
-
-    所有 Layer 失败时抛异常(HEC-1),由调用方决定降级或标记 failed。
-    """
-    # Layer 1: markitdown 统一入口
+def _parse_image(path: Path, storage_root: Path) -> UnifiedParserOutput:
+    """图片解析：优先 VLM，失败后尝试 MinerU。"""
+    # 尝试 VLM
     try:
-        text = parse_with_markitdown(file_path)
-        if text and len(text.strip()) > 50:
-            return text
-        logger.info(
-            "markitdown returned thin content for %s (len=%d), falling back to native parser",
-            file_path, len(text.strip() if text else 0),
-        )
+        from app.services.vlm_parser import VLMImageParser
+        parser = VLMImageParser()
+        return parser.parse(path, storage_root)
     except Exception as e:
-        logger.warning("markitdown failed for %s: %s, falling back to native parser", file_path, e)
+        logger.warning("VLM parser failed for %s: %s, trying MinerU", path, e)
 
-    # Layer 2: 原生解析器
-    if kind == "pdf":
-        return parse_pdf(file_path)
-    if kind == "ppt":
-        return parse_pptx(file_path)
-    if kind == "text_note":
-        return parse_text(file_path)
-    if kind == "image":
-        # Layer 3 for image: MinerU OCR(markitdown 失败后无原生解析器,直接走云端)
-        return parse_image_via_mineru(file_path)
-    raise ValueError(f"Unsupported material kind: {kind}")
+    # 尝试 MinerU
+    try:
+        from app.services.mineru import MinerUParser
+        parser = MinerUParser()
+        output = parser.parse(path, storage_root)
+        output.raw_input_type = "USER_IMAGE"
+        return output
+    except Exception as e:
+        raise DocumentParsingException(path, "All image parsers failed", e)
+
+
+def _get_storage_root() -> Path:
+    """获取图片存储根目录。"""
+    from app.core.config import settings
+    storage_root = Path(settings.upload_root) / "storage" / "images"
+    storage_root.mkdir(parents=True, exist_ok=True)
+    return storage_root

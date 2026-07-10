@@ -20,7 +20,12 @@ class Settings(BaseSettings):
     upload_root: str = str(_PROJECT_ROOT / "uploads")
     sqlite_path: str = str(_PROJECT_ROOT / "data" / "foxsay.db")
     foxsay_env: str = "development"
-    pdf_parser: str = "pdfplumber"  # docling 太慢(CPU OCR >5min/页),pdfplumber 快但不支持扫描件
+    pdf_parser: str = "auto"  # "auto" = PDF 探测路由(电子版→Docling, 扫描件→MinerU)
+    # MinerU V4 云端 API
+    mineru_api_token: str = ""
+    mineru_api_base: str = "https://mineru.net/api/v4"
+    mineru_poll_interval: int = 5       # 轮询间隔（秒）
+    mineru_max_poll_time: int = 300     # 最大轮询时间（秒）
     # 批量上传与并发控制
     max_batch_upload: int = 15  # 单次 /materials/batch 最多文件数
     max_concurrent_parsing: int = 3  # 同时解析的文件数(asyncio.Semaphore 上限)

@@ -35,9 +35,12 @@
 
 ### 解析链路（已实现）
 ```
-pdfplumber（快）→ Docling（结构化，CPU 慢）→ MinerU API（云端）→ flat fallback
+MinerU V4/V1 hybrid (PRIMARY, 1000 pages/day) → Docling (电子版 PDF fallback) → pdfplumber (lightweight fallback)
+Office: MinerU V4 (native) → MarkItDown (Word) / python-pptx (PPT) fallback
+XLSX: MarkItDown only
+归一化: NormalizationEngine → 语义切块: LangChain MarkdownHeaderTextSplitter
 ```
-默认 pdfplumber。MinerU 作为 fallback 处理扫描件。
+MinerU 是 PRIMARY。V4 使用 `/api/v4/file-urls/batch` 上传本地文件，额度耗尽自动降级到 V1。PDF 类型由 PyMuPDF 探测。
 
 ### 知识抽取链路（已实现）
 ```
@@ -46,8 +49,10 @@ DMAP → LangGraph 4 阶段 Wiki Build → KC 抽取 → Merkle 增量合并
 
 ### 检索链路（已实现）
 ```
-macro（章节级，文本匹配）→ micro（KC 级，文本匹配）→ chunk（向量检索）→ CRAG 门控
+macro（章节级，embedding cosine）→ micro（KC 级，embedding cosine）→ chunk（向量检索，embedding cosine）→ CRAG 门控
 ```
+所有检索层统一使用 embedding cosine similarity 评分（已移除字符级 Jaccard `_text_overlap_score`）。
+CRAG < 0.55 不再硬拒答，允许透明补充回答（强制标注 `answer_source: "supplementary"`）。
 
 ### Agent 链路（已实现）
 ```
@@ -139,3 +144,7 @@ macro（章节级，文本匹配）→ micro（KC 级，文本匹配）→ chunk
 | 2026-06 | macro/micro 层改文本匹配 | 消除 N 次 embedding API 调用 |
 | 2026-06 | HEC-8 文档必须与代码对齐 | 防止新 agent 走偏 |
 | 2026-06 | skeleton prompt 请求 core_concepts | 之前硬编码空列表 |
+| 2026-07 | MinerU V4/V1 hybrid 升级为 PRIMARY 解析器 | V4 原生支持 PDF/Office，精度更高；V1 作为降级路径 |
+| 2026-07 | 500 字符盲切 → LangChain 语义切块 | MarkdownHeaderTextSplitter 保留标题层级 + 表格不可分割 |
+| 2026-07 | 移除 Jaccard (`_text_overlap_score`)，全层统一 embedding cosine | macro/micro 层 Jaccard 与 chunk 层 cosine 尺度不一致 |
+| 2026-07 | CRAG < 0.55 硬拒答 → 透明补充回答 | 硬拒答体验差；改为允许补充但强制 `answer_source: "supplementary"` 披露 |

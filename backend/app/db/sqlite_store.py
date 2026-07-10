@@ -165,6 +165,23 @@ CREATE TABLE IF NOT EXISTS notes (
     FOREIGN KEY (course_id) REFERENCES courses(id)
 );
 CREATE INDEX IF NOT EXISTS idx_notes_course ON notes(course_id);
+
+CREATE TABLE IF NOT EXISTS extracted_assets (
+    asset_id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    course_id TEXT NOT NULL,
+    material_id TEXT NOT NULL,
+    element_type TEXT NOT NULL,
+    sequential_label TEXT NOT NULL,
+    page_number INTEGER NOT NULL DEFAULT 1,
+    closest_heading TEXT NOT NULL DEFAULT '',
+    storage_path TEXT NOT NULL DEFAULT '',
+    alt_text TEXT NOT NULL DEFAULT '',
+    x0 REAL, y0 REAL, x1 REAL, y1 REAL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_asset_material ON extracted_assets(material_id);
+CREATE INDEX IF NOT EXISTS idx_asset_course ON extracted_assets(course_id);
 """
 
 
@@ -825,3 +842,56 @@ class SqliteStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    # ---- extracted_assets ----
+
+    def save_extracted_assets(
+        self,
+        assets: list[dict],
+        course_id: str,
+        material_id: str,
+        document_id: str,
+    ) -> None:
+        for asset in assets:
+            bbox = asset.get("bounding_box")
+            self._conn.execute(
+                """INSERT OR REPLACE INTO extracted_assets
+                   (asset_id, document_id, course_id, material_id, element_type,
+                    sequential_label, page_number, closest_heading, storage_path,
+                    alt_text, x0, y0, x1, y1)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    asset.get("element_id", ""),
+                    document_id,
+                    course_id,
+                    material_id,
+                    asset.get("element_type", ""),
+                    asset.get("sequential_label", ""),
+                    asset.get("page_number", 1),
+                    asset.get("source_chapter", ""),
+                    asset.get("storage_path", ""),
+                    asset.get("alt_text", ""),
+                    bbox.x0 if bbox else None,
+                    bbox.y0 if bbox else None,
+                    bbox.x1 if bbox else None,
+                    bbox.y1 if bbox else None,
+                ),
+            )
+        self._conn.commit()
+
+    def get_extracted_assets(self, course_id: str, material_id: str | None = None) -> list[dict]:
+        if material_id:
+            rows = self._conn.execute(
+                "SELECT * FROM extracted_assets WHERE course_id = ? AND material_id = ? ORDER BY page_number, sequential_label",
+                (course_id, material_id),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM extracted_assets WHERE course_id = ? ORDER BY page_number, sequential_label",
+                (course_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_extracted_assets(self, material_id: str) -> None:
+        self._conn.execute("DELETE FROM extracted_assets WHERE material_id = ?", (material_id,))
+        self._conn.commit()

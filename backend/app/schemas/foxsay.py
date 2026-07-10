@@ -9,6 +9,7 @@ CourseStatus = Literal["empty", "processing", "ready", "failed"]
 MaterialKind = Literal["pdf", "ppt", "image", "text_note"]
 Importance = Literal["high", "medium", "low"]
 ConfidenceStatus = Literal["grounded", "ambiguous", "out_of_scope"]
+AnswerSource = Literal["material", "supplementary"]
 
 # PR0 新增 (锁三线并行的 contract)
 QuestionType = Literal[
@@ -99,6 +100,7 @@ class CragAnswer(BaseModel):
     citations: list[Citation]
     confidence_status: ConfidenceStatus
     relevance_score: float
+    answer_source: AnswerSource = "material"
     refusal_reason: str | None = None
 
 

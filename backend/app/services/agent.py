@@ -61,9 +61,8 @@ SYSTEM_PROMPT = (
     "6. **模糊追问**: 如果问题太模糊（比如只说「讲讲这个」），先礼貌追问具体想了解哪方面，"
     "不要猜着答。\n\n"
     "## 核心规则\n"
-    "1. 只能基于课程材料回答问题。如果工具搜索结果为空或不相关，说明课程材料暂时没有该内容，"
-    "回答：`课程材料中暂时没有关于这个问题的内容。`\n"
-    "   **重要**：不要用自己的训练知识判断某概念\"属于哪门课\"，只根据检索结果决定能否回答。\n"
+    "1. 优先基于当前课程材料回答。当材料不足以回答时，可以用通用知识补充，"
+    "但必须明确声明「课程材料中未覆盖此内容，以下是通用理解，建议对照教材确认」。\n"
     "2. 引用材料时，必须用格式 `来自 [文件名] · 第X部分`，在正文中自然嵌入。\n"
     "   引用笔记时，必须用格式 `来自笔记 · [笔记标题]`。\n"
     "3. 回答用 Markdown 排版，有清晰的结构（标题、列表、加粗重点），但不要过度分节。\n"
@@ -88,8 +87,8 @@ SYSTEM_PROMPT = (
     "- **复习相关问题**: 用 `get_review_plan`。\n"
     "- 如果不知道 concept_id 或 chapter_id，传 concept_name 或 chapter_title 进行模糊查找。\n"
     "- 如果工具返回错误或未找到，不要用相同参数重复调用，换一种方式或用 search_wiki 重新搜索。\n"
-    "- 如果 `search_wiki` 返回的 note 提示「检索结果与问题无关」，你必须直接返回拒答消息，"
-    "不要尝试用常识回答。\n"
+    "- 如果 `search_wiki` 返回的 note 提示「检索结果与问题无关」，"
+    "说明课程材料未覆盖此内容。你可以基于通用知识回答，但必须声明这是补充说明，不是来自课程材料。\n"
     "- 获得足够信息后直接回答，不要做不必要的工具调用。\n"
     "- **工具调用预算**: 你最多有 8 轮工具调用机会。绝大多数问题 1-3 轮即可解决，请高效使用。\n"
     "- **动态能力(Skill)**: 除了上述查询工具，你还可以使用以下能力：\n"
@@ -301,9 +300,10 @@ async def agent_chat(
             messages.append({
                 "role": "system",
                 "content": (
-                    "你已经调用了多次工具但没有找到相关材料，说明课程材料中暂时没有该内容。"
-                    "请直接回答：`课程材料中暂时没有关于这个问题的内容。`"
-                    "不要继续工具调用，不要用自己的知识推断范围归属。"
+                    "你已经调用了多次工具但还没有找到相关材料。"
+                    "课程材料可能没有覆盖这个问题。请基于你的通用知识给出有帮助的回答，"
+                    "同时明确声明「课程材料中未覆盖此内容，以下是通用理解，建议对照教材确认」。"
+                    "不要继续无意义的工具调用。"
                 ),
             })
             force_answer = True
@@ -427,9 +427,9 @@ async def agent_chat(
                     messages.append({
                         "role": "system",
                         "content": (
-                            "你已经多次搜索但没有找到相关材料，说明课程材料中暂时没有该内容（可能该章节尚未上传）。"
-                            "请直接回答：`课程材料中暂时没有关于这个问题的内容。`"
-                            "不要基于自己的训练知识推断该概念属于哪门课或超出什么范围。"
+                            "你已经多次搜索但没有找到相关材料。课程材料可能没有覆盖这个问题。"
+                            "请基于你的通用知识给出有帮助的回答，同时明确声明"
+                            "「课程材料中未覆盖此内容，以下是通用理解，建议对照教材确认」。"
                         ),
                     })
                     break
@@ -517,35 +517,18 @@ async def agent_chat(
                                 "score": round(t.get("score", 0), 3),
                             })
 
-                    # CRAG 硬门控：score < 0.45 时检查术语词典是否有命中
-                    # 如果词典有好的命中，允许 LLM 用术语定义回答，不强制拒答
-                    if data.get("_crag_reject"):
+                    # CRAG: score < 0.55 时标注为补充回答，让 LLM 透明回答
+                    if data.get("_crag_supplementary"):
                         max_score = data.get("_max_score", 0)
                         term_max_score = max((t.get("score", 0) for t in data.get("terms", [])), default=0)
-                        if term_max_score >= 0.50 or collected_sources:
-                            # 术语词典有命中 或 已有来源 → 引导 LLM 基于已有信息回答
-                            hint = ""
-                            if term_max_score >= 0.50:
-                                hint = f"术语词典命中了相关词条（最高分 {term_max_score:.2f}），请用 terms 中的定义回答。"
-                            elif collected_sources:
-                                hint = "已从之前的搜索中找到了一些相关材料，请直接基于这些材料给出回答，不要再搜索。"
-                            messages.append({
-                                "role": "system",
-                                "content": (
-                                    f"这次搜索分数较低（{max_score:.2f}）。{hint}"
-                                    "不要再调用 search_wiki。"
-                                ),
-                            })
+                        if term_max_score >= 0.50:
+                            hint = f"术语词典命中了相关词条（最高分 {term_max_score:.2f}），请优先用 terms 中的定义解释该术语。"
                         else:
-                            yield {
-                                "type": "done",
-                                "answer": "课程材料中暂时没有关于这个问题的内容。",
-                                "citations": [],
-                                "term_hits": collected_terms,
-                                "in_scope": False,
-                                "guard_warning": f"CRAG gate: max_score={max_score:.3f} < 0.45",
-                            }
-                            return
+                            hint = "请基于你的通用知识给出有帮助的回答，并在回答开头明确声明：\n「课程材料中未覆盖此内容，以下是通用理解，建议对照教材确认。」"
+                        messages.append({
+                            "role": "system",
+                            "content": f"检索结果表明课程材料中没有覆盖此内容（score < 0.55）。{hint}",
+                        })
 
                     # 第一次search_wiki低分/空结果时立即引导
                     if _round == 0 and (new_sources == 0 or data.get("note")):
@@ -555,7 +538,7 @@ async def agent_chat(
                             "content": (
                                 f"第一次搜索结果提示：{note_msg}。\n"
                                 "请考虑：1)换更具体的课程术语重新search_wiki；"
-                                "2)如果问题确实与课程材料无关，直接拒答。"
+                                "2)如果问题确实与课程材料无关，基于通用知识回答并声明这是补充说明。"
                                 "不要继续调用get_concept/get_chapter_outline等需要ID的工具。"
                             ),
                         })
@@ -601,9 +584,10 @@ async def agent_chat(
     # 达到 max rounds 或被强制跳出 → 基于已有信息生成回答
     if force_answer and not collected_sources:
         final_prompt = (
-            "你已尝试多次工具调用但未找到相关材料，说明课程材料中暂时没有该内容。"
-            "请直接回答：`课程材料中暂时没有关于这个问题的内容。`"
-            "不要编造内容，不要用自己的知识推断该概念属于哪门课或超出什么范围。"
+            "你已尝试多次工具调用但未找到相关材料。"
+            "课程材料可能没有覆盖这个问题。请基于你的通用知识给出有帮助的回答，"
+            "并在回答开头声明「课程材料中未覆盖此内容，以下是通用理解，建议对照教材确认」。"
+            "不要编造课程内容，不要继续调用工具。"
         )
     else:
         final_prompt = (
@@ -614,7 +598,8 @@ async def agent_chat(
             "3. 如果工具结果只能部分回答，先基于已有信息回答能确定的部分，"
             "再明确说明哪些部分材料中没有覆盖，绝对不要编造内容。\n"
             "4. 如果工具结果完全不足以回答（没有任何相关来源），"
-            "直接回答：`课程材料中暂时没有关于这个问题的内容。`\n"
+            "请声明「课程材料中未覆盖此内容，以下是通用理解，建议对照教材确认」，"
+            "然后基于通用知识给出有帮助的回答。\n"
             "5. 不要继续调用任何工具，直接给出文字回答。"
         )
 
@@ -726,12 +711,11 @@ async def _execute_tool(
             "wiki": wiki_results,
             "terms": term_results,
             "count": len(wiki_results),
-            # Keep 'results' for backward-compat with CRAG gate in caller
             "results": wiki_results,
         }
-        if not wiki_results or max_score < 0.45:
-            payload["note"] = "检索结果与问题无关，可能超出课程范围。请诚实拒答。"
-            payload["_crag_reject"] = True
+        if not wiki_results or max_score < 0.55:
+            payload["note"] = "课程材料中未覆盖此内容。请基于通用知识回答，并声明这是补充说明。"
+            payload["_crag_supplementary"] = True
             payload["_max_score"] = max_score
         elif max_score < 0.65:
             payload["note"] = "检索结果相关性较低，请谨慎回答。"

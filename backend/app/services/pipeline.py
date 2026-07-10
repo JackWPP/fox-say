@@ -45,9 +45,28 @@ async def process_material(
     try:
         async with _parsing_semaphore:
             store.update_task(task_ids["parsing"], "running")
-            text = await asyncio.to_thread(parse_document, file_path, kind)
+            from app.services.parsing import parse_document_full
+            parser_output = await asyncio.to_thread(parse_document_full, file_path, kind)
         store.update_task(task_ids["parsing"], "done")
-        # 持久化解析文本到 DB(替代模块级 dict,进程重启不丢失)
+
+        # 保存提取资产到 DB
+        if parser_output.extracted_assets:
+            store.save_extracted_assets(
+                [a.model_dump() for a in parser_output.extracted_assets],
+                course_id, material_id, parser_output.document_id,
+            )
+
+        # 归一化 Markdown
+        from app.services.normalizer import NormalizationEngine
+        normalizer = NormalizationEngine()
+        normalized = normalizer.normalize(
+            parser_output.markdown_content,
+            parser_output.raw_input_type,
+            parser_output.extracted_assets,
+        )
+        text = normalized.markdown_content
+
+        # 持久化归一化后的文本到 DB
         store.save_parsed_text(course_id, material_id, text)
     except ValueError as exc:
         logger.warning("Unsupported material kind for %s: %s", material_id, exc)
@@ -107,6 +126,28 @@ async def process_material(
     store.update_task(task_ids["build_dmap"], "skipped", detail="deferred to course-level")
     store.update_task(task_ids["wiki_build"], "skipped", detail="deferred to course-level")
     store.update_task(task_ids["terminology"], "skipped", detail="deferred to course-level")
+
+    store.update_material_status(course_id, material_id, "ready")
+    push_event(course_id, "material_processed", {"material_id": material_id})
+
+    texts = [c["text"] for c in chunks]
+    store.update_task(task_ids["embedding"], "running")
+    embeddings = await asyncio.to_thread(embed_texts, texts)
+    store.update_task(task_ids["embedding"], "done")
+
+    base_metadata = {
+        "course_id": course_id,
+        "material_id": material_id,
+        "file_name": file_name,
+    }
+    for c in chunks:
+        c["heading_path"] = c.get("heading_path", "")
+
+    store.update_task(task_ids["storing"], "running")
+    async with _write_lock:
+        await asyncio.to_thread(_qdrant.delete_by_material, course_id, material_id)
+        await asyncio.to_thread(_qdrant.upsert_chunks, course_id, chunks, embeddings, base_metadata)
+    store.update_task(task_ids["storing"], "done")
 
     store.update_material_status(course_id, material_id, "ready")
     push_event(course_id, "material_processed", {"material_id": material_id})
