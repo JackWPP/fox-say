@@ -8,11 +8,14 @@ from typing import Any
 from app.db.sqlite_store import SqliteStore
 from app.schemas.evidence import EvidenceRef, SourceFragment
 from app.schemas.retrieval_answer import (
+    RetrievalChannel,
     RetrievalError,
     RetrievalHit,
     RetrievalOutcome,
     RetrievalWarning,
 )
+from app.schemas.foxsay import ConfidenceStatus
+from app.schemas.knowledge_status import KnowledgeStatus
 from app.services.embedding import embed_text, embed_texts
 from app.services.knowledge_status import build_knowledge_status
 from app.services.vectorstore import QdrantStore
@@ -30,7 +33,11 @@ AMBIGUOUS_THRESHOLD = 0.55
 # treats Qdrant as an untrusted candidate index and only emits evidence that
 # has been read back through the current-ready SQLite boundary.
 
-_V2_CHANNEL_ORDER = ("exact", "vector", "heading_neighborhood")
+_V2_CHANNEL_ORDER: tuple[RetrievalChannel, ...] = (
+    "exact",
+    "vector",
+    "heading_neighborhood",
+)
 _V2_HEADING_PREFIX = re.compile(
     r"""
     ^\s*(?:
@@ -408,7 +415,7 @@ def _v2_no_ready_evidence_outcome(
     )
 
 
-def _v2_course_source_coverage(status: Any) -> float:
+def _v2_course_source_coverage(status: KnowledgeStatus) -> float:
     total = status.coverage.total_materials
     if total <= 0:
         return 0.0
@@ -506,7 +513,10 @@ def _v2_vector_candidates(
             continue
 
         fragment_id = payload.get("fragment_id")
-        canonical = canonical_by_id.get(fragment_id) if isinstance(fragment_id, str) else None
+        if not isinstance(fragment_id, str):
+            invalid_payload_count += 1
+            continue
+        canonical = canonical_by_id.get(fragment_id)
         if canonical is None or not _v2_payload_matches_fragment(payload, canonical, course_id):
             invalid_payload_count += 1
             continue
@@ -608,7 +618,7 @@ def _v2_same_canonical_fragment(left: SourceFragment, right: SourceFragment) -> 
     )
 
 
-def _v2_confidence_for_score(score: float) -> str:
+def _v2_confidence_for_score(score: float) -> ConfidenceStatus:
     if score >= GROUND_THRESHOLD:
         return "grounded"
     if score >= AMBIGUOUS_THRESHOLD:
@@ -621,7 +631,7 @@ def _v2_to_hit(
     file_name: str,
     candidate: Mapping[str, Any],
 ) -> RetrievalHit:
-    channels = [
+    channels: list[RetrievalChannel] = [
         channel
         for channel in _V2_CHANNEL_ORDER
         if channel in candidate["channels"]
