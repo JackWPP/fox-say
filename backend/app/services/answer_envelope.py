@@ -23,7 +23,7 @@ def assemble_answer_envelope(
     outcome: RetrievalOutcome,
     *,
     answer: str,
-    citation_fragment_ids: Iterable[str] = (),
+    citation_fragment_ids: Iterable[object] | None = (),
     answer_source: AnswerSource | None = None,
 ) -> AnswerEnvelope:
     """Build an answer envelope using only canonical evidence from ``outcome``.
@@ -58,7 +58,16 @@ def assemble_answer_envelope(
     warnings: list[AnswerAssemblyWarning] = []
     selected_ids: set[str] = set()
 
-    for fragment_id in citation_fragment_ids:
+    for raw_fragment_id in _iter_citation_selections(citation_fragment_ids):
+        fragment_id = _normalize_fragment_id(raw_fragment_id)
+        if fragment_id is None:
+            warnings.append(
+                AnswerAssemblyWarning(
+                    warning_code="unknown_citation_selection",
+                    warning_detail="Citation selection must be a non-blank string fragment ID",
+                )
+            )
+            continue
         if fragment_id in selected_ids:
             warnings.append(
                 AnswerAssemblyWarning(
@@ -110,6 +119,34 @@ def assemble_answer_envelope(
 
 def _default_answer_source(outcome: RetrievalOutcome) -> AnswerSource:
     return "supplementary" if outcome.confidence == "out_of_scope" else "material"
+
+
+def _iter_citation_selections(
+    selections: Iterable[object] | None,
+) -> Iterable[object]:
+    """Treat malformed selection containers as one rejected selection.
+
+    An LLM integration can accidentally provide ``None``, a scalar, or a raw
+    string instead of a JSON list.  Keeping this boundary defensive ensures a
+    single malformed citation request cannot fail an otherwise valid answer.
+    """
+    if selections is None:
+        return ()
+    if isinstance(selections, str):
+        return (selections,)
+    try:
+        iter(selections)
+    except TypeError:
+        return (selections,)
+    return selections
+
+
+def _normalize_fragment_id(selection: object) -> str | None:
+    """Return an opaque usable fragment ID, or ``None`` for invalid input."""
+    if not isinstance(selection, str):
+        return None
+    normalized = selection.strip()
+    return normalized or None
 
 
 def _build_envelope(

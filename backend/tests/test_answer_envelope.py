@@ -182,6 +182,44 @@ def test_invalid_material_selection_falls_back_to_the_allowed_evidence_pack():
     ]
 
 
+def test_blank_and_non_string_selections_are_dropped_without_failing_the_answer():
+    envelope = assemble_answer_envelope(
+        _outcome(),
+        answer="特征值定义见课程材料。",
+        citation_fragment_ids=["", "  ", None, 7, " la-r2-eigenvalue-definition "],
+    )
+
+    assert [citation.evidence.fragment_id for citation in envelope.citations] == [
+        "la-r2-eigenvalue-definition"
+    ]
+    assert [warning.warning_code for warning in envelope.warnings] == [
+        "unknown_citation_selection",
+        "unknown_citation_selection",
+        "unknown_citation_selection",
+        "unknown_citation_selection",
+    ]
+    assert [warning.fragment_id for warning in envelope.warnings] == [None, None, None, None]
+
+
+def test_all_invalid_selections_fall_back_without_raising():
+    envelope = assemble_answer_envelope(
+        _outcome(),
+        answer="特征值定义见课程材料。",
+        citation_fragment_ids=["", None, 7],
+    )
+
+    assert [citation.evidence.fragment_id for citation in envelope.citations] == [
+        "la-r2-eigenvalue-definition"
+    ]
+    assert [warning.warning_code for warning in envelope.warnings] == [
+        "unknown_citation_selection",
+        "unknown_citation_selection",
+        "unknown_citation_selection",
+        "fallback_to_allowed_evidence",
+    ]
+    assert envelope.warnings[-1].fragment_id is None
+
+
 def test_assembler_preserves_retrieval_degradation_warnings_separately():
     outcome = _outcome()
     outcome.warnings = [
