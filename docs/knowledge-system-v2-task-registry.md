@@ -70,13 +70,13 @@ active / review → blocked → active; complete → reopened → active
 | V2-B | `complete` | V2-A | `index_material` 受控 worker、材料上传 enqueue、持久进度与重试入口 | `f794f44`；31 个 V2 窄测试、Ruff 与前端 typecheck 通过。旧 revision 不能写回 fragment、向量或 parser assets。 |
 | V2-C | `active` | V2-B | fragment preview、`EvidenceRef`、`KnowledgeStatus`、精确/向量/Outline 邻域检索与前端真实状态 | 两门合成课程不跨 `course_id`；每个 citation 以 fragment ID 打开正确位置；重连后状态来自 API 而非 SSE。由 C1～C3 串行交付。 |
 | V2-C1 | `complete` | V2-B | 后端 `KnowledgeStatus`、当前 revision fragment preview 和公共证据 DTO；仅修改 schema/store/API/tests | `881b2d4`；状态由持久材料/job/fragment 计算；跨课程、旧 revision、未知 fragment 均不能预览；不调用模型。 |
-| V2-C2 | `active` | V2-C1 | fragment-first 混合检索、CRAG 结果与服务器侧 `AnswerEnvelope`；仅修改 retrieval/service/query tests，不新增 HTTP/SSE/chat/Agent/frontend 接入 | 只检索当前 course/current revision 的 `source_fragment`；无效 Qdrant payload 丢弃；模型不能伪造 citation。 |
+| V2-C2 | `complete` | V2-C1 | fragment-first 混合检索、CRAG 结果与服务器侧 `AnswerEnvelope`；仅修改 retrieval/service/query tests，不新增 HTTP/SSE/chat/Agent/frontend 接入 | `0f8d592`、`8060137`、`2209b08`、`056d050`、`02940bd`、`2603bf5`、`0c495f1`、`2b1c319`；canonical rehydrate、availability/error、citation 与成本短路回归通过。 |
 | V2-C3 | `ready` | V2-C1, V2-C2 | 前端 public types、CitationCard、SourcesPanel/Chat 状态呈现 | 引用按 `fragment_id` 打开；`supplementary` 不被展示为拒答；状态重连来自 API。 |
 | V2-D | `ready` | V2-C | 课程级 `compile_course`、Outline、SemanticAtom、Term、KC、关系及 revision 依赖 | 模型输出的 fragment ID 均经代码校验；坏引用只丢弃该候选并留下 warning；增量与全量重建决策可审计。 |
 | V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
 | V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
-| V2-M1 | `ready` | — | 隔离修复 legacy raw-text fallback 的 `_text_overlap_score` 未定义 lint 缺陷；仅修改该 helper 与其回归测试 | 恢复历史 Jaccard 评分语义；`ruff check app/services/retrieval.py` 不再报 F821；不改 V2-C2 行为或 legacy 检索排序策略。 |
+| V2-M1 | `complete` | — | 隔离修复 legacy raw-text fallback 的 `_text_overlap_score` 未定义 lint 缺陷；仅修改该 helper 与其回归测试 | `5b29a0d`；恢复历史 Jaccard 评分语义；`ruff check app/services/retrieval.py` 通过，未改 V2-C2 行为或 legacy 检索排序策略。 |
 
 ### 3.1 当前契约差异必须显式关闭
 
@@ -140,6 +140,10 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-C1 | `active → complete` | `881b2d4`；当前证据状态、current-ready source preview、legacy/hash/revision/course isolation 测试完成。 | `881b2d4` |
 | 2026-07-11 | V2-C2 | `ready → active` | 领取纯 fragment-first 检索与 AnswerEnvelope 契约；范围、非目标、验收和成本限制见 §3.4。 | pending |
 | 2026-07-11 | V2-M1 | `proposed → ready` | C2 审查发现 `retrieval.py` 的 legacy raw-text fallback 在 C2 之前已有未定义 helper；单列最小修复，避免与证据检索契约混入同一提交。 | this commit |
+| 2026-07-11 | V2-C2 | `active → review` | `0f8d592`、`8060137`、`2209b08`、`056d050`、`02940bd`、`2603bf5`、`0c495f1` 已实现 pair-scoped vector filter、canonical rehydrate、AnswerEnvelope、availability/error、exact-first 与 C1 citation endpoint 组合回归；等待文档和最终核验。 | `0c495f1` |
+| 2026-07-11 | V2-M1 | `ready → active` | 按 §3.5 领取历史 `_text_overlap_score` 复原，文件范围与 C2 隔离。 | `c6e0880` |
+| 2026-07-11 | V2-M1 | `active → complete` | `5b29a0d`；4 个 Jaccard/空输入回归通过，`ruff check app/services/retrieval.py tests/test_legacy_raw_text_retrieval.py` 通过。全量 mypy 既存 strict baseline 未在此任务修复。 | `5b29a0d` |
+| 2026-07-11 | V2-C2 | `review → complete` | 50 个 C1/C2/M1 聚焦回归通过，相关 Ruff 通过，完整 backend pytest 已完成；定向 mypy 的新增 C2 行已清零。剩余 mypy 仅为 legacy/imported baseline，未宣称已修复。纯 service/schema/test，未接 chat/Agent/frontend。 | `2b1c319` |
 
 ## 6. 交接检查
 

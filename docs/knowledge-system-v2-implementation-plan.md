@@ -1,6 +1,6 @@
 # FoxSay 知识体系 V2：实施蓝图
 
-> 状态：**阶段 A、B、C1 已完成；C2 已提交纯后端的 fragment 检索与 `AnswerEnvelope` 契约，尚未接入 chat / Agent / frontend。精确状态以任务台账为准。**
+> 状态：**阶段 A、B、C1、C2 已完成；C2 提供纯后端的 fragment 检索与 `AnswerEnvelope` 契约，尚未接入 chat / Agent / frontend。精确状态以任务台账为准。**
 >
 > 基准课程：**线性代数**
 >
