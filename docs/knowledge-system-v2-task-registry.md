@@ -72,7 +72,8 @@ active / review → blocked → active; complete → reopened → active
 | V2-C1 | `complete` | V2-B | 后端 `KnowledgeStatus`、当前 revision fragment preview 和公共证据 DTO；仅修改 schema/store/API/tests | `881b2d4`；状态由持久材料/job/fragment 计算；跨课程、旧 revision、未知 fragment 均不能预览；不调用模型。 |
 | V2-C2 | `complete` | V2-C1 | fragment-first 混合检索、CRAG 结果与服务器侧 `AnswerEnvelope`；仅修改 retrieval/service/query tests，不新增 HTTP/SSE/chat/Agent/frontend 接入 | `0f8d592`、`8060137`、`2209b08`、`056d050`、`02940bd`、`2603bf5`、`0c495f1`、`2b1c319`；canonical rehydrate、availability/error、citation 与成本短路回归通过。 |
 | V2-C3 | `complete` | V2-C1, V2-C2 | 前端 V2 public types、可复用的 evidence-aware CitationCard、SourcesPanel 的真实证据状态 | `da2a0b3`、`5355ece`；`npm run typecheck`、`npm run build` 通过。隔离浏览器创建/刷新合成线性代数课程后，`KnowledgeStatus` 以 200 响应驱动“尚无证据”和“课程地图尚未编译”。没有生产 AnswerEnvelope/chat citation，因此 V2 citation 点击仍由 C1/C2 endpoint 测试覆盖。不得把 legacy chat citation/CRAG 映射成 V2。 |
-| V2-D | `ready` | V2-C | 课程级 `compile_course`、Outline、SemanticAtom、Term、KC、关系及 revision 依赖 | 模型输出的 fragment ID 均经代码校验；坏引用只丢弃该候选并留下 warning；增量与全量重建决策可审计。 |
+| V2-D | `active` | V2-C | 课程级 `compile_course`、Outline、SemanticAtom、Term、KC、关系及 revision 依赖 | 先由 D0 把 source-pinned、零模型的 CourseOutline snapshot 与状态发布栅栏做成可运行垂直切片；模型 Atom/Term/KC/关系随后拆分，不得跳过身份和审计边界。 |
+| V2-D0 | `active` | V2-C | 将占位 `compile_course` 变成 source-pinned、确定性的 CourseOutline 编译与读取边界；只写 V2 projection tables | 目标 source manifest、course job identity、snapshot publication fence、`KnowledgeStatus` stale/ready 和 course-outline API 均有合成回归；零 LLM/VLM/embedding 调用。 |
 | V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
 | V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
@@ -124,6 +125,16 @@ active / review → blocked → active; complete → reopened → active
 - **验收**：source-ready 但 projection-not-started 显示“材料证据已就绪、课程地图尚未编译”，不显示“课程已吃透”；processing/retryable/failed/missing-evidence 覆盖与错误可见；V2 citation 只按 fragment ID 打开 current preview，404/失败清晰可见；无 fragment ID 的 legacy citation 不调用 V2 endpoint；前端 `npm run typecheck` 与 `npm run build` 通过。测试/人工验证必须记录状态 API 是重连事实源，SSE 最多作为刷新提示。
 - **成本与时延**：不调用模型、embedding 或 Qdrant；状态在挂载/材料上传或重试后读取，只有任一 material evidence 仍为 `processing` 时才以有限频率轮询；原文预览仅在用户点击单个 V2 citation 时请求。
 
+### 3.7 活动任务包：V2-D0
+
+- **目标**：把当前仅有 schema/enqueue 占位的 `compile_course` 变成一个可恢复、可验证的零模型垂直切片。它只从 current-ready `SourceFragment` 构建确定性的 `CourseOutline` snapshot，并使 `KnowledgeStatus` 能真实区分 `not_started / processing / ready / stale / failed` 的课程投影；不把 legacy Wiki、DMAP、KC、ChapterWiki 或 CourseIndex 当作输入或输出事实源。
+- **依赖与范围**：依赖已完成的 V2-C。允许修改 `backend/app/schemas/knowledge_jobs.py`、新增 V2 projection/source-revision schema、`sqlite_store.py`、`knowledge_jobs.py`、新增 course compiler service、`material_indexer.py`、`knowledge_status.py`、`main.py`、必要的只读 course-outline API 和对应 backend tests，以及实际架构/台账文档。不得修改 legacy pipeline/Wiki 表、`agent.py`、chat/SSE 协议、前端、Qdrant schema、DeepSeek/Qwen 调用或引入图数据库。
+- **身份与持久化契约**：course-scoped job 必须显式持久化 `target_source_revision` 与确定性的 `target_knowledge_revision`；逻辑唯一性按 `(course_id, job_type, target_source_revision)`，不得继续把现有整数 `revision` 误当材料集合身份。为兼容队列字段，store 在持久化同一 target 前原子分配 course job 的整数 revision。新增不可变 `course_compilations` header（供 `KnowledgeStatus` 常数次读取）与 `course_projection_snapshots` payload（供 CourseOutline 查询）；二者显式带 `course_id`、source/knowledge revision、compiler version、job ID、计数与时间戳。每个 Outline section 的材料依据必须由 real `EvidenceRef.from_source_fragment()` 组装。
+- **执行与发布栅栏**：只有所有当前材料 revision 均为 ready、各自的 `index_material` job succeeded 且 fragment 可验证时，才允许创建/执行 compile job。材料 index handler 可在自己已发布 fragment、但尚未被 worker 标记 succeeded 的短窗口中受控地 enqueue 下一条 course job；compiler handler 在开始和同一 SQLite 发布事务中都重新计算 canonical source manifest。任一不匹配以可见 `stale_course_source_revision` 结束且不得写 snapshot；同 source revision 重试不得重复 snapshot。主 worker 必须注册真实 compile handler，不能再落入 `unsupported_knowledge_job_type`。
+- **D0 输出与非目标**：D0 只发布基于 material/heading path/ordinal 的稳定 CourseOutline，并提供只读 current-outline endpoint；无标题材料仍要以材料级 fallback section 可定位。`SemanticAtom`、术语别名/定义、KC、Relation、章节摘要、模型调用审计、VLM 与前端消费留给后续 D1/E/F；不得为了填满课程地图生成无证据概念。
+- **验收**：两份合成线性代数材料可得到稳定的 Outline 和可打开的 current `EvidenceRef`；相同术语或 fragment 在两门课中绝不跨 course snapshot；未完全 ready 的 source 不创建/不运行 compilation；入队后或发布前材料 revision 改变时 job 可见 stale failure 且无 snapshot；同 source 重试不重复写；current source 与 succeeded header 相等才 `projection_status=ready`，不等时 `stale`，current target queued/running 时 `processing`。course-outline endpoint 拒绝 old/stale/跨课程 snapshot。所有 D0 tests 断言零 LLM/VLM/embedding 调用。
+- **成本与时延**：只读 SQLite fragments + 确定性分组 + SQLite payload/header 写入；不调用模型、embedding、Qdrant 或网络服务。每次编译对当前 fragment 数线性，header/status 查询不得读取 outline JSON 或原始 Markdown；source-ready 后由持久 job 异步完成，UI 可先继续使用 fragment 问答。
+
 ## 4. 成本、等待和“自然生长”的调度门槛
 
 1. **先确定性，后模型**：解析、标题树、fragment、内容 hash、失效范围和基础索引先完成；不能为了“看起来聪明”对整门课无差别烧 token。
@@ -156,6 +167,7 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-C3 | `active → review` | `da2a0b3`、`5355ece` 已完成 types/API、真实状态与 current-fragment citation 边界；对抗审查通过，`npm run typecheck`、`npm run build` 均通过。 | `5355ece` |
 | 2026-07-11 | V2-C3 | `review → complete` | 临时 SQLite/Qdrant/uploads 的隔离浏览器验收：创建并直接刷新合成线性代数课程，SourcesPanel 显示 `尚无证据`、`已就绪 0/0`、`0 个片段` 和 `课程地图尚未编译`；`/api/courses/{course_id}/knowledge-status` 的四次请求均为 200，浏览器无错误。生产 chat 尚不产生 V2 citation，故该点击路径不伪称已人工验收。 | this commit |
 | 2026-07-11 | V2-C | `active → complete` | C1～C3 的实现、定向测试、前端构建和隔离浏览器验收均完成；后续课程投影从 V2-D 开始。 | this commit |
+| 2026-07-11 | V2-D / V2-D0 | `ready → active` | 领取 zero-model course compilation snapshot；范围、source identity、发布栅栏、非目标、验收和成本上限见 §3.7。当前 `compile_course` 尚无 handler，不能宣称已可运行。 | pending |
 
 ## 6. 交接检查
 
