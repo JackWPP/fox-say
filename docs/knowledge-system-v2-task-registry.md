@@ -73,7 +73,7 @@ active / review → blocked → active; complete → reopened → active
 | V2-C2 | `complete` | V2-C1 | fragment-first 混合检索、CRAG 结果与服务器侧 `AnswerEnvelope`；仅修改 retrieval/service/query tests，不新增 HTTP/SSE/chat/Agent/frontend 接入 | `0f8d592`、`8060137`、`2209b08`、`056d050`、`02940bd`、`2603bf5`、`0c495f1`、`2b1c319`；canonical rehydrate、availability/error、citation 与成本短路回归通过。 |
 | V2-C3 | `complete` | V2-C1, V2-C2 | 前端 V2 public types、可复用的 evidence-aware CitationCard、SourcesPanel 的真实证据状态 | `da2a0b3`、`5355ece`；`npm run typecheck`、`npm run build` 通过。隔离浏览器创建/刷新合成线性代数课程后，`KnowledgeStatus` 以 200 响应驱动“尚无证据”和“课程地图尚未编译”。没有生产 AnswerEnvelope/chat citation，因此 V2 citation 点击仍由 C1/C2 endpoint 测试覆盖。不得把 legacy chat citation/CRAG 映射成 V2。 |
 | V2-D | `active` | V2-C | 课程级 `compile_course`、Outline、SemanticAtom、Term、KC、关系及 revision 依赖 | 先由 D0 把 source-pinned、零模型的 CourseOutline snapshot 与状态发布栅栏做成可运行垂直切片；模型 Atom/Term/KC/关系随后拆分，不得跳过身份和审计边界。 |
-| V2-D0 | `review` | V2-C | 将占位 `compile_course` 变成 source-pinned、确定性的 CourseOutline 编译与读取边界；只写 V2 projection tables | D0 course job target/identity、compiler handler、immutable header/payload、current-outline API 与 `KnowledgeStatus` ready/stale/processing 已验证；56 个 V2 聚焦回归、270 个 backend tests 与相关 Ruff 通过，等待实际代码 commit 后才能标记完成。零 LLM/VLM/embedding 调用。 |
+| V2-D0 | `complete` | V2-C | 将占位 `compile_course` 变成 source-pinned、确定性的 CourseOutline 编译与读取边界；只写 V2 projection tables | `33b3869`；D0 course job target/identity、compiler handler、immutable header/payload、current-outline API 与 `KnowledgeStatus` ready/stale/processing 已验证；56 个 V2 聚焦回归、270 个 backend tests 与相关 Ruff 通过。零 LLM/VLM/embedding 调用。 |
 | V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
 | V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
@@ -168,7 +168,8 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-C3 | `review → complete` | 临时 SQLite/Qdrant/uploads 的隔离浏览器验收：创建并直接刷新合成线性代数课程，SourcesPanel 显示 `尚无证据`、`已就绪 0/0`、`0 个片段` 和 `课程地图尚未编译`；`/api/courses/{course_id}/knowledge-status` 的四次请求均为 200，浏览器无错误。生产 chat 尚不产生 V2 citation，故该点击路径不伪称已人工验收。 | this commit |
 | 2026-07-11 | V2-C | `active → complete` | C1～C3 的实现、定向测试、前端构建和隔离浏览器验收均完成；后续课程投影从 V2-D 开始。 | this commit |
 | 2026-07-11 | V2-D / V2-D0 | `ready → active` | 领取 zero-model course compilation snapshot；范围、source identity、发布栅栏、非目标、验收和成本上限见 §3.7。当前 `compile_course` 尚无 handler，不能宣称已可运行。 | pending |
-| 2026-07-11 | V2-D0 | `active → review` | `compile_course` 现在以 explicit source/knowledge target 入队，实际 worker handler 生成 deterministic CourseOutline；状态、API、stale fence、automatic enqueue 和跨课程隔离由合成线性代数回归覆盖。 | pending |
+| 2026-07-11 | V2-D0 | `active → review` | `compile_course` 现在以 explicit source/knowledge target 入队，实际 worker handler 生成 deterministic CourseOutline；状态、API、stale fence、automatic enqueue 和跨课程隔离由合成线性代数回归覆盖。 | `33b3869` |
+| 2026-07-11 | V2-D0 | `review → complete` | 56 个 D0/C1/C2 聚焦 backend tests、270 个完整 backend pytest 和相关 Ruff 通过；targeted mypy 没有 D0 新增错误，剩余 12 项为 `foxsay.py`、legacy `sqlite_store.py`、worker 的既有 strict baseline。未调用 DeepSeek、Qwen、embedding 或 Qdrant。 | this commit |
 
 ## 6. 交接检查
 
