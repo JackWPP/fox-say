@@ -2,9 +2,11 @@
 
 ## Knowledge System V2 Foundation (2026-07-11)
 
-> V2 now owns public material upload → durable indexing → source-fragment/Qdrant evidence,
-> plus read-only evidence status and current-fragment preview. It does **not** yet replace
-> chat retrieval, course-level compilation, legacy Wiki build, or the frontend status UI.
+> V2 owns public material upload → durable indexing → source-fragment/Qdrant evidence,
+> plus read-only evidence status and current-fragment preview. V2-C2 additionally provides a
+> backend-only fragment-retrieval and `AnswerEnvelope` contract; it does **not** call a
+> generation model or replace `/chat`, Agent, SSE, chat persistence, course compilation,
+> legacy Wiki build, or the frontend status UI.
 
 - `knowledge_jobs` is a separate SQLite-backed, course-scoped queue for V2 work. It has
   explicit revision, idempotency key, attempt, lease, error and token-budget fields.
@@ -36,8 +38,22 @@
 - `list_current_ready_source_fragments(...)` is the canonical store boundary for V2 retrieval.
   It filters by `course_id`, current material revision, ready material and succeeded index job;
   Qdrant may only provide candidates that are rehydrated through this boundary.
+- `retrieve_current_fragments(...)` first performs deterministic heading/original-text recall.
+  When enough grounded exact evidence is available, it does not call the embedding provider or
+  Qdrant. Otherwise Qdrant is only a candidate index: a result must match `type`, `course_id`,
+  material/revision and `content_hash`, then be rehydrated by fragment ID through the canonical
+  SQLite boundary before it can become a citation.
+- `retrieval_availability="available"` carries a CRAG confidence; `out_of_scope` therefore
+  means retrieval completed but found insufficient material evidence.
+- `retrieval_availability="unavailable"` carries `confidence=null` and a structured error for
+  not-ready/failed retrieval. It must not be presented as a claim that the course material does
+  not cover the question. A vector fallback failure after exact evidence remains an available
+  answer with a warning.
 - The target evidence-first model, incremental revision policy and migration sequence are in
   [knowledge-system-v2-implementation-plan.md](knowledge-system-v2-implementation-plan.md).
+
+> The MVP Architecture and Data Flow below describe the still-running legacy path. They do not
+> mean V2-C2 has been wired into chat or Agent behavior.
 
 ## MVP Architecture
 ```text
@@ -126,6 +142,9 @@ Course creation
 - MinerU V4 有 daily quota (1000 pages/day), 额度耗尽时自动降级到 V1 或 fallback 链。
 - MinerU fallback failures return (None, error_message) tuple — errors are visible, not silently swallowed (HEC-1).
 - Retrieval failures must not fall back to model-only answers.
+- For V2, `unavailable` is an error/retry state, not an `out_of_scope` result. Its mandatory
+  `answer_source="supplementary"` only prevents a material claim from being forged; a future
+  consumer must surface the error/retry state rather than silently generating a model-only answer.
 - CRAG score < 0.55: 不再硬拒答。允许基于通用知识补充回答, 但必须强制标注 `answer_source: "supplementary"` + 声明"课程材料中未覆盖此内容, 以下为通用理解, 建议对照教材确认"。
 - Missing citations should block normal answers or mark them as invalid for debugging.
 - 批量上传中不支持的文件类型会被跳过并记录日志 (HEC-1), 不阻塞其他文件。
@@ -144,5 +163,7 @@ features/
 ```
 
 ## Testing
-- 168 tests (18 files) covering: API endpoints, Agent loop, query tools, wiki builder, DMAP, Merkle, CRAG, PR0 contracts, eval framework, prerequisites alignment.
+- Backend tests cover API endpoints, durable V2 indexing/status, fragment retrieval and citation
+  contracts, Agent loop, query tools, wiki builder, DMAP, Merkle, CRAG, PR0 contracts, eval
+  framework and prerequisites alignment. Do not treat a historical test count as a current claim.
 - End-to-end scripts in `scripts/` (e2e_7tools, e2e_btw, e2e_errors, e2e_incremental, e2e_pdf, playwright_frontend_audit).

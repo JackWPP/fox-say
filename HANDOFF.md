@@ -1,5 +1,7 @@
 # FoxSay — HANDOFF 文档
 
+> **已过时（2026-07-11）**：本文记录的是 2026-07-10 的 legacy Wiki/Agent 链路，不能描述当前证据优先 V2 的实际边界。继续开发前请以 [docs/architecture.md](docs/architecture.md)、[V2 实施蓝图](docs/knowledge-system-v2-implementation-plan.md) 与 [V2 任务台账](docs/knowledge-system-v2-task-registry.md) 为准。
+
 > **写这份文档的人**:上一任 Claude(当前 session 的 main agent,已完成三线并行集成 + 全部验收)
 > **文档目的**:用户换电脑后,新 agent 无任何上下文,通过这份文档 **+ 仓库自身** 即可继续开发
 > **目标读者**:下一任 Claude agent(可能不同的模型/版本)

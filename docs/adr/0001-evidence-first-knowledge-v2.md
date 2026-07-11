@@ -24,6 +24,8 @@
 - `VisualAtom` 表示图、表、公式截图、流程图、幻灯片视觉布局等无法可靠由文本解析恢复的证据单元，同样必须关联 `EvidenceRef`，并保留其生成方式与置信信息。
 - Atom 不是新的无来源“知识真相”；它们是可替换、可重建、可审计的索引层。
 
+全文或向量索引（包括 Qdrant）只能产生候选；任何可展示的材料证据都必须以当前 `course_id`、material revision 与 fragment identity 回到 canonical `SourceFragment` 重新验证和水合。索引 payload 中的文本、locator 或文件名不是事实源。
+
 ### 3. Outline、Term、KC 与关系均从 Atom/证据派生
 
 - `CourseOutline` 是前端唯一的课程导航事实视图：章节/小节及其证据覆盖。它取代多个并列、互相竞争的骨架表示。
@@ -44,6 +46,8 @@
 - 前端以 `KnowledgeStatus` 快照作为状态事实源；SSE 仅负责提示刷新，不能是唯一状态通道。
 - 支持部分可用：已完成材料可以被透明地用于问答，但响应与 UI 必须说明当前覆盖范围。
 
+检索可用性与 CRAG 置信度正交：`available + out_of_scope` 是成功检索后的材料边界；`unavailable` 是未就绪或操作失败，必须携带结构化错误、没有 CRAG 置信度和材料引用，不能叙述为“材料未覆盖”。
+
 ### 6. 模型职责按证据类型分工
 
 - **DeepSeek** 负责以文本为中心的生成与抽取：基于已检索证据生成课程回答、文本语义 Atom、摘要及教学表达。它的输出是派生内容，不取代原始证据。
@@ -54,6 +58,8 @@
 
 - V2 的证据、状态、Outline、检索和 AnswerEnvelope 契约应可在没有复杂 Agent 编排时独立工作。
 - ReAct 工具链、动态 Skill、工具调用时间线、自动讲义/闪卡/复杂出题等作为后续消费者重构；它们必须消费既定的 EvidenceRef、revision、scope 和 AnswerEnvelope，而不能另建旁路知识体系。
+
+独立的后端 `RetrievalOutcome` / `AnswerEnvelope` 契约不构成 chat、Agent、SSE 或前端迁移；这些消费者必须在后续任务显式接入后，才能宣称使用 V2。
 
 ## 实施后果
 
