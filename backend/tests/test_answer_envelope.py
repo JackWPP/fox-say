@@ -15,6 +15,7 @@ from app.schemas.retrieval_answer import (
     AnswerEnvelope,
     RetrievalHit,
     RetrievalOutcome,
+    RetrievalWarning,
 )
 from app.services.answer_envelope import assemble_answer_envelope
 
@@ -179,6 +180,39 @@ def test_invalid_material_selection_falls_back_to_the_allowed_evidence_pack():
         "unknown_citation_selection",
         "fallback_to_allowed_evidence",
     ]
+
+
+def test_assembler_preserves_retrieval_degradation_warnings_separately():
+    outcome = _outcome()
+    outcome.warnings = [
+        RetrievalWarning(
+            warning_code="vector_unavailable",
+            warning_detail="Exact retrieval succeeded but vector search timed out",
+        )
+    ]
+
+    envelope = assemble_answer_envelope(
+        outcome,
+        answer="特征值定义见课程材料。",
+        citation_fragment_ids=["la-r2-eigenvalue-definition"],
+    )
+
+    assert envelope.warnings == []
+    assert envelope.retrieval_warnings == outcome.warnings
+    assert envelope.retrieval_warnings[0].warning_code == "vector_unavailable"
+
+
+@pytest.mark.parametrize("confidence", ["grounded", "ambiguous"])
+def test_high_confidence_outcomes_require_canonical_hits(confidence: str):
+    with pytest.raises(ValidationError, match="require canonical material hits"):
+        RetrievalOutcome(
+            course_id="linear-algebra",
+            source_revision="source-r2",
+            knowledge_revision=None,
+            confidence=confidence,
+            relevance=0.8,
+            coverage=0.5,
+        )
 
 
 def test_out_of_scope_outcome_cannot_expose_material_hits():

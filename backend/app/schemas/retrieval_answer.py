@@ -98,6 +98,10 @@ class RetrievalOutcome(BaseModel):
 
         if self.confidence == "out_of_scope" and self.hits:
             raise ValueError("out_of_scope RetrievalOutcome must not expose material hits")
+        if self.confidence in ("grounded", "ambiguous") and not self.hits:
+            raise ValueError(
+                "grounded and ambiguous RetrievalOutcome values require canonical material hits"
+            )
         return self
 
 
@@ -152,6 +156,11 @@ class AnswerEnvelope(BaseModel):
     relevance: float = Field(ge=0.0, le=1.0)
     coverage: float = Field(ge=0.0, le=1.0)
     error: RetrievalError | None = None
+    # Retrieval degradation (for example an unavailable vector channel) must
+    # remain visible after answer assembly.  It is deliberately separate from
+    # citation-selection warnings so callers can distinguish system state from
+    # a model selecting an invalid fragment ID.
+    retrieval_warnings: list[RetrievalWarning] = Field(default_factory=list)
     warnings: list[AnswerAssemblyWarning] = Field(default_factory=list)
 
     @model_validator(mode="after")

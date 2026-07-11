@@ -131,5 +131,6 @@ def _build_envelope(
         relevance=outcome.relevance,
         coverage=outcome.coverage,
         error=outcome.error,
+        retrieval_warnings=list(outcome.warnings),
         warnings=warnings,
     )
