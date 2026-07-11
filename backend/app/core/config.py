@@ -13,7 +13,8 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_api_base: str = "https://api.siliconflow.cn/v1"
     embedding_model: str = "BAAI/bge-m3"
-    # 图片 VLM 与 embedding/生成模型独立配置，避免语义和预算混用。
+    # VLM has an explicit model/configuration surface. It may deliberately
+    # reuse SiliconFlow's credential, but has its own model/job/audit budget.
     vlm_api_key: str = ""
     vlm_api_base: str = "https://api.siliconflow.cn/v1"
     vlm_model: str = "Qwen/Qwen3.6-27B"
@@ -23,6 +24,15 @@ class Settings(BaseSettings):
     knowledge_visual_analysis_enabled: bool = False
     knowledge_visual_max_assets_per_job: int = Field(default=3, gt=0, le=12)
     knowledge_visual_input_token_reserve: int = Field(default=6000, gt=0)
+
+    @property
+    def resolved_vlm_api_key(self) -> str:
+        """Allow the explicitly shared SiliconFlow credential as a safe fallback."""
+        return self.vlm_api_key or self.embedding_api_key
+
+    @property
+    def resolved_vlm_api_base(self) -> str:
+        return self.vlm_api_base or self.embedding_api_base
     # Qdrant 启动模式:
     #   - qdrant_url 为空字符串 → 进程内 local mode (文件持久化, 无需 Docker, 默认)
     #   - qdrant_url = "http://host:port" → 远程模式 (Qdrant 单独容器/服务器)

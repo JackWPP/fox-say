@@ -206,8 +206,8 @@ async def _run_e1(*, real: bool) -> E1Result:
         store = SqliteStore(temporary_root / "e1.sqlite")
         try:
             with _temporary_visual_settings(temporary_root / "uploads", offline=not real):
-                if real and not settings.vlm_api_key.strip():
-                    raise RuntimeError("--real requires configured VLM_API_KEY")
+                if real and not settings.resolved_vlm_api_key.strip():
+                    raise RuntimeError("--real requires configured VLM_API_KEY or EMBEDDING_API_KEY")
                 _seed_visual_input(store, Path(settings.upload_root))
                 job = store.enqueue_visual_analysis_job(
                     course_id=_COURSE_ID,

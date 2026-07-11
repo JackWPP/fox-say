@@ -84,7 +84,7 @@ active / review → blocked → active; complete → reopened → active
 | V2-D2a | `complete` | V2-D1d | Atom → Term seed 的零模型、证据可追溯投影 | `c32fc54`；Term 只能从 current Atom 的 literal/evidence 生成；header/term/link 发布受 source/semantic/lease fence 保护，禁止 legacy term/Qdrant 写路径。 |
 | V2-D3a | `complete` | V2-D2a | Term → KC 的零模型、可复习知识组件投影 | `b42cd2b`；一 Term 一 KC，复用定义、章节和证据；KC child 与 parent gate 均持久化，零模型/网络。 |
 | V2-D3b | `complete` | V2-D3a | 基于 current fragment literal 共现的受审计 KC 关系抽取 | `bc880d9`、`df34c77`；默认关闭自动付费调用，单 job 单模型请求、候选/证据/lease/source/audit 栅栏与合法/伪证据候选回归已完成。 |
-| V2-E | `review` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | `86d358c`；显式 asset selection、持久 job、SiliconFlow VLM 审计/预算/lease 与默认关闭 guard 已实现；尚未做真实 VLM 验证。 |
+| V2-E | `complete` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | `86d358c`；显式 asset selection、持久 job、SiliconFlow VLM 审计/预算/lease 与默认关闭 guard 已实现；E1 合成真实验证成功。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
 | V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
 | V2-M1 | `complete` | — | 隔离修复 legacy raw-text fallback 的 `_text_overlap_score` 未定义 lint 缺陷；仅修改该 helper 与其回归测试 | `5b29a0d`；恢复历史 Jaccard 评分语义；`ruff check app/services/retrieval.py` 通过，未改 V2-C2 行为或 legacy 检索排序策略。 |
@@ -272,6 +272,7 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-D3b | `ready → review` | `bc880d9`；严格候选的 audited KC relation job、持久 header/edges、lease/source/audit fence 与 opt-in 调度已提交。 | `bc880d9` |
 | 2026-07-11 | V2-D3b / V2-D | `review / active → complete` | `df34c77`；最小关系候选证据门回归通过；D0→Atom→Term→KC→Relation 的持久、revision-pinned 投影链关闭。 | `bc880d9` / `df34c77` |
 | 2026-07-11 | V2-E | `ready → review` | `86d358c`；VLM 显式资产任务、默认关闭、审计/预算/lease 与 disabled guard 已提交，未产生外部视觉调用。 | `86d358c` |
+| 2026-07-11 | V2-E | `review → complete` | E1 合成视觉真实调用成功：1 SiliconFlow Qwen 请求，208 tokens，3105 ms，任务/audit/result 成功，临时资源清理；见 postmortem。 | pending docs commit |
 | 2026-07-11 | V2-G1 | `ready → complete` | `79ea30c` 的 `--real` 合成自动链路实际执行：1 DeepSeek 请求，421 tokens，3295 ms，D0/Semantic/Term/KC 全 succeeded，临时库清理。 | `79ea30c` / postmortem |
 
 ## 6. 交接检查
