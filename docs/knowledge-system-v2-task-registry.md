@@ -77,6 +77,7 @@ active / review → blocked → active; complete → reopened → active
 | V2-D0a | `complete` | V2-D0, V2-D1a | 补齐 D0 projection publication 的 lease-expiry/owner 栅栏；只修复已发现的 worker 写入边界 | `3adfbf4`；原子 attempt/owner/expiry/revision publication guard 与失租回归已提交，零模型/向量/网络调用。 |
 | V2-D1a | `complete` | V2-D0 | course-scoped DeepSeek text-call audit、course/job budget reservation、retry ceiling 与 audited wrapper；不生成知识投影 | `d1ee488`；持久 audit/reservation、预算可见性、retry ceiling 与 fake-provider 回归已提交。没有调用真实外部模型，也未迁移 material embedding 或 legacy 路径。 |
 | V2-D1b0 | `complete` | V2-D0, V2-D1a | 为语义原子抽取预留独立的 course job type 与 SQLite enum 迁移；不 enqueue、不调用模型、不写 Atom | `0304f91`；独立 identity、旧 `CHECK` 表重建迁移和 unsupported-handler boundary 均已提交，零模型/embedding/VLM/网络调用。 |
+| V2-D1b1 | `active` | V2-D0, V2-D0a, V2-D1a, V2-D1b0 | SemanticAtom schema、候选验证与 source/outline/lease-pinned 原子发布；不调用模型、不注册 handler | 只接受可由当前 fragment + D0 outline 重水合的候选；Atom/编译 header 不得在 stale 或失租时发布。 |
 | V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
 | V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
@@ -162,6 +163,14 @@ active / review → blocked → active; complete → reopened → active
 - **验收**：fresh DB 的 schema/type 都接受新 job；含 D0 header 和 D1a audit 的合成旧 DB 重开后保留数据并可 enqueue 新 job；相同 course/source 的 D0 和 semantic job 各自只一条、跨 course 隔离；D1b0 不会被 material indexer 自动入队，worker 未注册 handler 时的失败仍可见；零模型/embedding/VLM/网络调用。
 - **成本与时延**：一次性本地 SQLite migration；运行时仅复用现有 identity-index 查询。没有 handler，不产生 token、Qdrant 或用户等待。
 
+### 3.11 活动任务包：V2-D1b1
+
+- **目标**：建立可重建的 `SemanticAtom` projection，但不调用模型。候选含 type、短 statement、section ID 与 fragment IDs；服务端只从 current-ready `SourceFragment` 重新组装 `EvidenceRef`，并验证它们都属于当前 D0 `CourseOutline` 的同一 section。候选不合格时计入 warning/rejected count，绝不能入库为无来源 Atom。
+- **依赖与范围**：依赖 D0/D0a/D1a/D1b0；允许新增 V2 atom/compilation schema、SQLite tables/store/service、当前 atoms 只读 API（如需要）、相关 tests 与实际架构/台账文档。不得注册 extractor worker、调用 DeepSeek/Qwen/embedding、自动 enqueue、写 Term/KC/Relation、读取 legacy Wiki/DMAP/KC 或改变 D0 outline 格式。
+- **身份与发布契约**：`semantic_atom_compilations` 和 `semantic_atoms` 均显式带 course/source/knowledge revision、job ID 与 model call ID（候选的调用关联只可为审计中相同 course/job/revision 的成功 call）。Atom ID 由 course/source/knowledge/section/type/statement/排序后的 canonical fragment IDs 稳定哈希生成。SQLite 发布在一个事务内重新校验 job attempt/lease、当前 source manifest、成功 D0 header/outline、canonical fragment 与 model-call audit；任何一项不匹配则零写入。
+- **验收**：合成线性代数 current outline + fake audit 可发布稳定 Atom 和真实 EvidenceRef；跨课程/旧 revision/非本 section/未知 fragment/错误 audit call 的候选被拒绝；stale source、失租或 job 回收时 header/Atom 均不写；同 target retry 幂等且不重复；零外部模型调用。
+- **成本与时延**：本地 SQLite + Pydantic 校验，按候选和引用数线性；没有 worker handler，不产生 token、embedding、Qdrant 或用户等待。
+
 ## 4. 成本、等待和“自然生长”的调度门槛
 
 1. **先确定性，后模型**：解析、标题树、fragment、内容 hash、失效范围和基础索引先完成；不能为了“看起来聪明”对整门课无差别烧 token。
@@ -207,6 +216,7 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-D1b0 | `ready → active` | 领取 semantic-atom 独立 job type 与旧 SQLite enum migration；范围、非目标、验收与零成本限制见 §3.10。 | pending |
 | 2026-07-11 | V2-D1b0 | `active → review` | schema/store 已接受独立 `extract_semantic_atoms`；D0/D1a facts 的合成旧 SQLite migration、course/source identity、未注册 handler 的可见失败均已回归覆盖。等待最终 diff/commit 核对。 | pending |
 | 2026-07-11 | V2-D1b0 | `review → complete` | `0304f91`；38 个 job/worker/indexer/compiler/status 聚焦回归与相关 Ruff 通过。定向 mypy 仅为既有 `foxsay.py`、legacy `sqlite_store.py` strict baseline，无本任务新增项。 | `0304f91` |
+| 2026-07-11 | V2-D1b1 | `ready → active` | 领取 SemanticAtom schema、candidate validation 与 revision/lease-pinned publication；范围、非目标、验收和零成本限制见 §3.11。 | pending |
 
 ## 6. 交接检查
 
