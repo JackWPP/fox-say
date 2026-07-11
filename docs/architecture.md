@@ -3,10 +3,11 @@
 ## Knowledge System V2 Foundation (2026-07-11)
 
 > V2 owns public material upload → durable indexing → source-fragment/Qdrant evidence,
-> plus read-only evidence status and current-fragment preview. V2-C2 additionally provides a
-> backend-only fragment-retrieval and `AnswerEnvelope` contract; it does **not** call a
-> generation model or replace `/chat`, Agent, SSE, chat persistence, course compilation,
-> legacy Wiki build, or the frontend status UI.
+> read-only evidence status and current-fragment preview. V2-C3 has completed its frontend
+> boundary and isolated browser acceptance for that status and for explicit fragment citations.
+> V2-C2's fragment-retrieval and `AnswerEnvelope` contract still does **not** call
+> a generation model or replace `/chat`, Agent, SSE, chat persistence, course compilation or
+> legacy Wiki build.
 
 - `knowledge_jobs` is a separate SQLite-backed, course-scoped queue for V2 work. It has
   explicit revision, idempotency key, attempt, lease, error and token-budget fields.
@@ -35,6 +36,20 @@
 - `GET /courses/{course_id}/source-fragments/{fragment_id}` is the V2 citation preview path.
   It joins course, material revision, material readiness and succeeded `index_material` job in
   one current-evidence boundary; it never falls back to legacy DMAP locators or old chunks.
+- `useKnowledgeStatus(...)` reads that durable snapshot on mount/course switch and after a
+  material upload or retry. A `course_ready` SSE event is only a refresh hint. While any
+  material evidence is `processing`, it performs a bounded serial poll; the UI exposes a paused
+  automatic refresh rather than inventing a terminal state. Course/request fences prevent an
+  old course's poll or event from writing into a newly opened course.
+- `SourcesPanel` renders the V2 snapshot's source coverage, fragment count and per-material
+  job/error details. In particular, source-ready plus projection-not-started says that material
+  evidence is ready while the course map has not been compiled; it must not imply that Fox has
+  fully digested the course.
+- `CitationCard` keeps legacy citations on their legacy preview path. An evidence-bearing V2
+  citation may use the current-fragment endpoint only with an explicit opaque `fragment_id`, and
+  verifies the returned course/material/revision/fragment tuple. A 404, scope mismatch or V2
+  request failure is visible and never falls back to a filename or locator-derived legacy lookup.
+  No production chat response currently emits these V2 citations.
 - `list_current_ready_source_fragments(...)` is the canonical store boundary for V2 retrieval.
   It filters by `course_id`, current material revision, ready material and succeeded index job;
   Qdrant may only provide candidates that are rehydrated through this boundary.
@@ -52,8 +67,9 @@
 - The target evidence-first model, incremental revision policy and migration sequence are in
   [knowledge-system-v2-implementation-plan.md](knowledge-system-v2-implementation-plan.md).
 
-> The MVP Architecture and Data Flow below describe the still-running legacy path. They do not
-> mean V2-C2 has been wired into chat or Agent behavior.
+> The MVP Architecture and Data Flow below describe the still-running legacy path. The narrow
+> C3 SourcesPanel/CitationCard boundary does not mean V2-C2 has been wired into chat or Agent
+> behavior.
 
 ## MVP Architecture
 ```text
@@ -155,7 +171,9 @@ features/
   bookshelf/     书架页 (课程列表 + 导入课程表 + 创建课程)
   course/        课程详情 (24 文件)
     ChatWorkspace.tsx     统一聊天工作区 (课程概述 + 对话 + 工具调用)
-    SourcesPanel.tsx      左侧来源面板 (材料选择 + 进度)
+    SourcesPanel.tsx      左侧来源面板（材料选择 + legacy 列表 + V2 证据状态）
+    useKnowledgeStatus.ts 课程级 V2 `KnowledgeStatus` 快照、受限轮询与刷新围栏
+    CitationCard.tsx      legacy 预览与 explicit-fragment V2 预览的隔离边界
     StudioPanel.tsx       右侧 Studio 面板 (课程详情 + 笔记 + 复习入口)
     KnowledgeGraphTab.tsx 知识图谱 (reactflow + dagre)
     ReviewTab.tsx         超级备考模式
