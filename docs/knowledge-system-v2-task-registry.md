@@ -80,7 +80,7 @@ active / review → blocked → active; complete → reopened → active
 | V2-D1b1 | `complete` | V2-D0, V2-D0a, V2-D1a, V2-D1b0 | SemanticAtom schema、候选验证与 source/outline/lease-pinned 原子发布；不调用模型、不注册 handler | `75a77c2`；candidate rehydrate、stable ID、audit/source/outline/lease atomic fence 与 current read boundary 已提交，零外部模型调用。 |
 | V2-D1c | `complete` | V2-D1a, V2-D1b0, V2-D1b1 | audited DeepSeek SemanticAtom handler 与严格 JSON candidate parsing；不自动 enqueue | `c46c9fb`；explicit-job handler、strict JSON parsing 和 fake-model publish/failure 回归已提交；无真实模型调用、无自动 enqueue。 |
 | V2-G0 | `complete` | V2-D1c | 合成线性代数的真实 DeepSeek semantic-atom smoke；只记录脱敏审计证据 | `23424cf`；真实 endpoint/model/usage/elapsed/Atom 的脱敏验证记录已提交，临时材料/DB 未保留。 |
-| V2-D1d | `review` | V2-D1c, V2-G0 | D0 → semantic job 自动调度与可见状态；受配置和 D1a 预算门保护 | 已修复 parent/child atomicity：同一事务发布 D0 + child，claim 仅允许 succeeded parent；状态/UI/轮询已接入，等待协调者核对并提交。 |
+| V2-D1d | `complete` | V2-D1c, V2-G0 | D0 → semantic job 自动调度与可见状态；受配置和 D1a 预算门保护 | `205b1ea`；parent/child atomic scheduling、claim gate、status/UI polling 与测试已提交。显式开关默认关闭，避免本地上传意外成本。 |
 | V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
 | V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
@@ -253,6 +253,7 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-G0 | `review → complete` | `23424cf`；真实 DeepSeek smoke 的脱敏 endpoint/model/usage/elapsed/Atom 证据已提交。一次性调用未触发自动重试或自动调度。 | `23424cf` |
 | 2026-07-11 | V2-D1d | `ready → active` | 领取 D0 后 auto enqueue、semantic projection status 与 SourcesPanel 可见性；范围、成本门和验收见 §3.14。 | pending |
 | 2026-07-11 | V2-D1d | `active → review` | 并行审查发现 parent publish 后 child enqueue 的 P0 状态撕裂，已改为同一 SQLite transaction 创建 child、claim 门禁止 parent 未 succeeded 时执行；补齐 semantic stale/status/UI polling。31 个 backend 聚焦回归、Ruff、前端 typecheck/build 通过。 | pending |
+| 2026-07-11 | V2-D1d | `review → complete` | `205b1ea`；31 个 backend 聚焦回归、相关 Ruff、前端 typecheck/build 通过。并行审查提出的 parent/child race、默认开关、stale status、UI polling 和 header join 均已纳入实现/验证。 | `205b1ea` |
 
 ## 6. 交接检查
 
