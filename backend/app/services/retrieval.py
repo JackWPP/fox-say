@@ -907,6 +907,18 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+def _text_overlap_score(query: str, text: str) -> float:
+    """Return lowercase character-set Jaccard similarity for legacy fallback."""
+    if not query or not text:
+        return 0.0
+    query_characters = set(query.lower())
+    text_characters = set(text.lower())
+    if not query_characters or not text_characters:
+        return 0.0
+    union = query_characters | text_characters
+    return len(query_characters & text_characters) / len(union) if union else 0.0
+
+
 # 章节 embedding 缓存（避免每次查询都重新 embed 所有章节）
 _chapter_embedding_cache: dict[str, list[float]] = {}
 
