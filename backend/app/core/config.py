@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # audited text request. It is deliberately independent from a single job.
     knowledge_course_default_token_budget: int = 36000
     knowledge_model_timeout_seconds: float = Field(default=60.0, gt=0)
+    # Explicit opt-in prevents an ordinary local/test upload from unexpectedly
+    # spending tokens; production can enable it once G0-like budgets are set.
+    knowledge_semantic_auto_enqueue: bool = False
     # SQLite MVP 只运行一个受控 worker；lease 需要覆盖较慢的文档解析并由 heartbeat 续约。
     knowledge_worker_lease_seconds: int = Field(default=900, gt=0)
     knowledge_worker_poll_interval_seconds: float = Field(default=0.5, gt=0)

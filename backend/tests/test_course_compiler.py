@@ -164,6 +164,84 @@ async def test_compiler_publishes_source_pinned_outline_and_ready_status(store: 
 
 
 @pytest.mark.asyncio
+async def test_compiler_auto_enqueues_one_semantic_job_only_when_enabled(store: SqliteStore) -> None:
+    _seed_ready_material(
+        store,
+        course_id="linear",
+        material_id="vectors",
+        fragments=[
+            _fragment(
+                course_id="linear",
+                material_id="vectors",
+                ordinal=0,
+                heading_path=["向量空间"],
+                text="向量空间对加法封闭。",
+            )
+        ],
+    )
+    manifest = store.get_compilable_source_manifest("linear")
+    assert manifest is not None
+    outline_job = enqueue_course_compile_job(
+        store, course_id="linear", source_revision=manifest[0]
+    )
+    worker = KnowledgeJobWorker(
+        store,
+        worker_id="compiler-worker",
+        handlers={"compile_course": CourseCompiler(store, auto_enqueue_semantic=True)},
+    )
+
+    await worker.run_once()
+    semantic_jobs = [
+        job for job in store.list_knowledge_jobs("linear") if job.job_type == "extract_semantic_atoms"
+    ]
+
+    assert len(semantic_jobs) == 1
+    assert semantic_jobs[0].status == "queued"
+    assert semantic_jobs[0].target_source_revision == manifest[0]
+    assert semantic_jobs[0].target_knowledge_revision == outline_job.target_knowledge_revision
+
+    duplicate = enqueue_course_compile_job(
+        store, course_id="linear", source_revision=manifest[0]
+    )
+    assert duplicate.job_id == outline_job.job_id
+    assert len(
+        [job for job in store.list_knowledge_jobs("linear") if job.job_type == "extract_semantic_atoms"]
+    ) == 1
+
+
+@pytest.mark.asyncio
+async def test_semantic_child_cannot_be_claimed_until_its_d0_parent_succeeds(store: SqliteStore) -> None:
+    _seed_ready_material(
+        store,
+        course_id="linear",
+        material_id="vectors",
+        fragments=[
+            _fragment(
+                course_id="linear",
+                material_id="vectors",
+                ordinal=0,
+                heading_path=["向量空间"],
+                text="向量空间对加法封闭。",
+            )
+        ],
+    )
+    manifest = store.get_compilable_source_manifest("linear")
+    assert manifest is not None
+    outline_job = enqueue_course_compile_job(
+        store, course_id="linear", source_revision=manifest[0]
+    )
+    claimed = store.claim_next_knowledge_job("outline-worker", lease_seconds=60)
+    assert claimed is not None and claimed.job_id == outline_job.job_id
+
+    await CourseCompiler(store, auto_enqueue_semantic=True)(claimed)
+    assert store.claim_next_knowledge_job("semantic-worker", lease_seconds=60) is None
+
+    store.complete_knowledge_job("linear", outline_job.job_id, "outline-worker")
+    semantic = store.claim_next_knowledge_job("semantic-worker", lease_seconds=60)
+    assert semantic is not None and semantic.job_type == "extract_semantic_atoms"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("lease_failure", ["expired", "owner_mismatch", "reclaimed_attempt"])
 async def test_compiler_never_publishes_after_its_lease_is_lost(
     store: SqliteStore, lease_failure: str

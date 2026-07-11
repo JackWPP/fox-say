@@ -62,8 +62,18 @@ def build_course_outline(
 class CourseCompiler:
     """Compile an immutable outline only when its source target is still current."""
 
-    def __init__(self, store: SqliteStore) -> None:
+    def __init__(
+        self,
+        store: SqliteStore,
+        *,
+        auto_enqueue_semantic: bool = False,
+        semantic_token_budget: int | None = None,
+        semantic_max_attempts: int = 3,
+    ) -> None:
         self._store = store
+        self._auto_enqueue_semantic = auto_enqueue_semantic
+        self._semantic_token_budget = semantic_token_budget
+        self._semantic_max_attempts = semantic_max_attempts
 
     async def __call__(self, job: KnowledgeJob) -> None:
         if job.job_type != "compile_course" or job.material_id is not None:
@@ -110,6 +120,9 @@ class CourseCompiler:
             outline=outline,
             source_manifest_json=manifest_json,
             compiler_version=COURSE_OUTLINE_COMPILER_VERSION,
+            enqueue_semantic=self._auto_enqueue_semantic,
+            semantic_token_budget=self._semantic_token_budget,
+            semantic_max_attempts=self._semantic_max_attempts,
         )
         if not published:
             if not self._store.has_current_knowledge_job_lease(

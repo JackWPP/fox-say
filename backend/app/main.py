@@ -38,7 +38,12 @@ async def lifespan(app: FastAPI):
         worker_id=worker_id,
         handlers={
             **build_material_index_handlers(store),
-            "compile_course": CourseCompiler(store),
+            "compile_course": CourseCompiler(
+                store,
+                auto_enqueue_semantic=settings.knowledge_semantic_auto_enqueue,
+                semantic_token_budget=settings.knowledge_job_default_token_budget,
+                semantic_max_attempts=settings.knowledge_job_default_max_attempts,
+            ),
             "extract_semantic_atoms": SemanticAtomExtractor(store),
         },
         lease_seconds=settings.knowledge_worker_lease_seconds,

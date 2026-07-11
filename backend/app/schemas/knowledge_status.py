@@ -23,6 +23,7 @@ KnowledgeLifecycleStatus = Literal[
 ]
 SourceEvidenceStatus = Literal["empty", "processing", "partial", "ready", "failed"]
 ProjectionStatus = Literal["not_started", "processing", "ready", "stale", "failed"]
+SemanticProjectionStatus = Literal["not_started", "processing", "ready", "stale", "failed"]
 MaterialEvidenceState = Literal[
     "processing",
     "ready",
@@ -76,6 +77,10 @@ class KnowledgeStatus(BaseModel):
     # Keeping it explicit prevents a bare integer job revision from being
     # mistaken for a material-set revision when stale detection arrives.
     compiled_from_source_revision: str | None = None
+    semantic_status: SemanticProjectionStatus = "not_started"
+    semantic_atom_count: int = Field(default=0, ge=0)
+    semantic_error_code: str | None = None
+    semantic_error_detail: str | None = None
     # Only present after a V2 audited model call has established a durable
     # course/source budget. It never reports legacy model usage.
     model_budget: CourseModelBudget | None = None

@@ -21,6 +21,7 @@ from app.services.knowledge_jobs import (
 from app.services.knowledge_worker import KnowledgeJobWorker
 from app.services.semantic_atom_compiler import build_semantic_atoms
 from app.services.semantic_atom_extractor import SemanticAtomExtractor
+from app.services.knowledge_status import build_knowledge_status
 
 
 class FakeAuditedTextModel:
@@ -180,6 +181,9 @@ async def test_semantic_atom_publish_rehydrates_current_evidence_and_is_idempote
     assert persisted[0].evidence[0].fragment_id == fragments[0].fragment_id
     assert persisted[0].evidence[0].course_id == "linear"
     assert store._conn.execute("SELECT COUNT(*) FROM semantic_atoms").fetchone()[0] == 1
+    status = build_knowledge_status(store, "linear")
+    assert status.semantic_status == "ready"
+    assert status.semantic_atom_count == 1
 
 
 async def test_invalid_candidates_are_rejected_before_any_projection_write(store: SqliteStore) -> None:

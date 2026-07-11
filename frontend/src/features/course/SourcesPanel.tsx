@@ -117,6 +117,14 @@ const PROJECTION_STATUS_LABEL: Record<ProjectionStatus, string> = {
   failed: "课程地图编译失败",
 };
 
+const SEMANTIC_STATUS_LABEL: Record<ProjectionStatus, string> = {
+  not_started: "深度理解尚未安排",
+  processing: "Fox 正在用受预算保护的模型提炼核心知识",
+  ready: "深度理解已就绪",
+  stale: "深度理解需要重建",
+  failed: "深度理解处理失败",
+};
+
 function MaterialEvidenceIcon({ status }: { status: MaterialEvidenceState | undefined }) {
   if (status === "processing") {
     return <Loader2 className="w-3.5 h-3.5 text-foxAmber animate-spin shrink-0" />;
@@ -267,9 +275,9 @@ function KnowledgeEvidenceSummary({
         {coverage.retryable_materials > 0 && <span>待重试 {coverage.retryable_materials}</span>}
         {coverage.failed_materials > 0 && <span className="text-red-500">异常 {coverage.failed_materials}</span>}
       </div>
-      {autoRefreshPaused && coverage.processing_materials > 0 && (
+      {autoRefreshPaused && (coverage.processing_materials > 0 || snapshot.semantic_status === "processing") && (
         <p className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs leading-relaxed text-amber-700" role="status">
-          自动刷新已暂停，可手动刷新。
+          知识处理的自动刷新已暂停，可手动刷新。
         </p>
       )}
       {sourceReadyWithoutProjection ? (
@@ -278,6 +286,16 @@ function KnowledgeEvidenceSummary({
         </p>
       ) : (
         <p className="mt-2 text-xs text-slate-500">{PROJECTION_STATUS_LABEL[snapshot.projection_status]}</p>
+      )}
+      <p className="mt-2 text-xs text-slate-500">
+        {SEMANTIC_STATUS_LABEL[snapshot.semantic_status]}
+        {snapshot.semantic_status === "ready" ? `（${snapshot.semantic_atom_count} 个原子）` : ""}
+      </p>
+      {snapshot.semantic_error_code && (
+        <p className="mt-1 rounded-md bg-red-50 px-2 py-1.5 text-xs text-red-700" role="alert">
+          {snapshot.semantic_error_code}
+          {snapshot.semantic_error_detail ? `：${snapshot.semantic_error_detail}` : ""}
+        </p>
       )}
       {modelBudget && (
         <div className={`mt-2 rounded-md px-2 py-1.5 text-xs leading-relaxed ${

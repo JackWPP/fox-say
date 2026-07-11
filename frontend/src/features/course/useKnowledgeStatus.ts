@@ -11,8 +11,11 @@ interface InFlightRefresh {
   promise: Promise<KnowledgeStatus | null>;
 }
 
-function hasProcessingSourceMaterial(snapshot: KnowledgeStatus | null): boolean {
-  return Boolean(snapshot?.materials.some((material) => material.status === "processing"));
+function hasProcessingKnowledgeWork(snapshot: KnowledgeStatus | null): boolean {
+  return Boolean(
+    snapshot?.materials.some((material) => material.status === "processing")
+    || snapshot?.semantic_status === "processing",
+  );
 }
 
 /**
@@ -111,10 +114,10 @@ export function useKnowledgeStatus(courseId: string) {
     void refresh();
   }, [refresh]);
 
-  const sourceProcessing = hasProcessingSourceMaterial(knowledgeStatus);
+  const knowledgeProcessing = hasProcessingKnowledgeWork(knowledgeStatus);
 
   useEffect(() => {
-    if (!sourceProcessing) {
+    if (!knowledgeProcessing) {
       setAutoRefreshPaused(false);
       return;
     }
@@ -145,7 +148,7 @@ export function useKnowledgeStatus(courseId: string) {
       // A failed status read does not fabricate completion. The last durable
       // snapshot still says processing, so retry within the same bounded loop.
       const stillProcessing = snapshot
-        ? hasProcessingSourceMaterial(snapshot)
+        ? hasProcessingKnowledgeWork(snapshot)
         : true;
       if (!stillProcessing) {
         setAutoRefreshPaused(false);
@@ -159,7 +162,7 @@ export function useKnowledgeStatus(courseId: string) {
       cancelled = true;
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
-  }, [courseId, refresh, sourceProcessing]);
+  }, [courseId, refresh, knowledgeProcessing]);
 
   return { knowledgeStatus, loading, error, autoRefreshPaused, refresh };
 }

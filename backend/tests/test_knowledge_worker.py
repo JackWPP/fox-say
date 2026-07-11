@@ -123,7 +123,7 @@ async def test_worker_marks_unknown_job_type_failed(store: SqliteStore) -> None:
     assert persisted.error_code == "unsupported_knowledge_job_type"
 
 
-async def test_semantic_atom_job_is_not_scheduled_before_a_d1b_handler_exists(
+async def test_semantic_atom_job_waits_for_a_succeeded_d0_parent(
     store: SqliteStore,
 ) -> None:
     enqueued = enqueue_semantic_atom_extraction_job(
@@ -138,8 +138,8 @@ async def test_semantic_atom_job_is_not_scheduled_before_a_d1b_handler_exists(
     persisted = store.get_knowledge_job("course-a", enqueued.job_id)
 
     assert persisted is not None
-    assert persisted.status == "failed"
-    assert persisted.error_code == "unsupported_knowledge_job_type"
+    assert persisted.status == "queued"
+    assert persisted.error_code is None
 
 
 async def test_worker_renews_lease_while_handler_is_running(

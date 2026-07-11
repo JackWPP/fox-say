@@ -242,6 +242,10 @@ export interface KnowledgeStatus {
   source_revision: string | null;
   knowledge_revision: string | null;
   compiled_from_source_revision: string | null;
+  semantic_status: ProjectionStatus;
+  semantic_atom_count: number;
+  semantic_error_code: string | null;
+  semantic_error_detail: string | null;
   model_budget: CourseModelBudget | null;
   coverage: KnowledgeCoverage;
   materials: MaterialEvidenceStatus[];

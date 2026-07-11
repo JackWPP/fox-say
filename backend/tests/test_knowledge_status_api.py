@@ -100,6 +100,10 @@ async def test_knowledge_status_distinguishes_source_ready_from_course_ready(
         "source_revision": None,
         "knowledge_revision": None,
         "compiled_from_source_revision": None,
+        "semantic_status": "not_started",
+        "semantic_atom_count": 0,
+        "semantic_error_code": None,
+        "semantic_error_detail": None,
         "model_budget": None,
         "coverage": {
             "total_materials": 0,

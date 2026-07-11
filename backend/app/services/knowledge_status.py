@@ -63,6 +63,12 @@ def build_knowledge_status(store: SqliteStore, course_id: str) -> KnowledgeStatu
         source_status=source_status,
         source_revision=source_revision,
     )
+    semantic_status, semantic_atom_count, semantic_error_code, semantic_error_detail = _semantic_status(
+        store,
+        course_id=course_id,
+        source_status=source_status,
+        source_revision=source_revision,
+    )
     return KnowledgeStatus(
         course_id=course_id,
         status=_overall_status(source_status, projection_status),
@@ -73,6 +79,10 @@ def build_knowledge_status(store: SqliteStore, course_id: str) -> KnowledgeStatu
         compiled_from_source_revision=(
             compilation.source_revision if compilation is not None else None
         ),
+        semantic_status=semantic_status,
+        semantic_atom_count=semantic_atom_count,
+        semantic_error_code=semantic_error_code,
+        semantic_error_detail=semantic_error_detail,
         model_budget=(
             store.get_course_model_budget(course_id, source_revision)
             if source_revision is not None
@@ -195,6 +205,33 @@ def _overall_status(
     if source_status == "failed":
         return "failed"
     return "partial"
+
+
+def _semantic_status(
+    store: SqliteStore,
+    *,
+    course_id: str,
+    source_status: SourceEvidenceStatus,
+    source_revision: str | None,
+) -> tuple[ProjectionStatus, int, str | None, str | None]:
+    if source_revision is None or source_status != "ready":
+        latest = store.get_latest_semantic_atom_compilation(course_id)
+        if latest is not None:
+            return "stale", 0, None, None
+        return "not_started", 0, None, None
+    compilation = store.get_current_semantic_atom_compilation(course_id, source_revision)
+    if compilation is not None:
+        return "ready", compilation.atom_count, None, None
+    job = store.get_semantic_atom_job_for_source(course_id, source_revision)
+    if job is not None:
+        if job.status in {"queued", "running"}:
+            return "processing", 0, None, None
+        if job.status in {"retryable", "failed"}:
+            return "failed", 0, job.error_code, job.error_detail
+    latest = store.get_latest_semantic_atom_compilation(course_id)
+    if latest is not None and latest.source_revision != source_revision:
+        return "stale", 0, None, None
+    return "not_started", 0, None, None
 
 
 def _source_revision(rows: Sequence[Mapping[str, Any]]) -> str | None:

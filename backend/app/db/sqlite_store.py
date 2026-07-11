@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import threading
+import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,7 @@ from app.schemas.model_calls import (
     ModelCallReservationRequest,
     ModelCallUsage,
 )
-from app.schemas.semantic_atoms import SemanticAtom
+from app.schemas.semantic_atoms import SemanticAtom, SemanticAtomCompilation
 from app.services.semantic_atom_compiler import (
     SEMANTIC_ATOM_COMPILER_VERSION,
     build_semantic_atom_id,
@@ -1138,6 +1139,50 @@ class SqliteStore:
         ).fetchall()
         return [self._row_to_semantic_atom(row) for row in rows]
 
+    def get_current_semantic_atom_compilation(
+        self, course_id: str, source_revision: str
+    ) -> SemanticAtomCompilation | None:
+        row = self._conn.execute(
+            """
+            SELECT compilation.* FROM semantic_atom_compilations AS compilation
+            INNER JOIN knowledge_jobs AS job
+                ON job.job_id = compilation.job_id
+               AND job.course_id = compilation.course_id
+               AND job.status = 'succeeded'
+               AND job.target_source_revision = compilation.source_revision
+               AND job.target_knowledge_revision = compilation.knowledge_revision
+            WHERE compilation.course_id = ? AND compilation.source_revision = ?
+            """,
+            (course_id, source_revision),
+        ).fetchone()
+        return self._row_to_semantic_atom_compilation(row) if row is not None else None
+
+    def get_semantic_atom_job_for_source(
+        self, course_id: str, source_revision: str
+    ) -> KnowledgeJob | None:
+        row = self._conn.execute(
+            """
+            SELECT * FROM knowledge_jobs
+            WHERE course_id = ? AND material_id IS NULL
+              AND job_type = 'extract_semantic_atoms' AND target_source_revision = ?
+            ORDER BY created_at DESC, job_id DESC LIMIT 1
+            """,
+            (course_id, source_revision),
+        ).fetchone()
+        return self._row_to_knowledge_job(row) if row is not None else None
+
+    def get_latest_semantic_atom_compilation(
+        self, course_id: str
+    ) -> SemanticAtomCompilation | None:
+        row = self._conn.execute(
+            """
+            SELECT * FROM semantic_atom_compilations
+            WHERE course_id = ? ORDER BY created_at DESC, knowledge_revision DESC LIMIT 1
+            """,
+            (course_id,),
+        ).fetchone()
+        return self._row_to_semantic_atom_compilation(row) if row is not None else None
+
     def publish_course_compilation_if_current(
         self,
         *,
@@ -1150,12 +1195,17 @@ class SqliteStore:
         outline: CourseOutline,
         source_manifest_json: str,
         compiler_version: str,
+        enqueue_semantic: bool = False,
+        semantic_token_budget: int | None = None,
+        semantic_max_attempts: int = 3,
     ) -> bool:
         """Atomically publish an immutable outline only for the current source set."""
         if outline.course_id != course_id:
             raise ValueError("Course outline course_id does not match compilation scope")
         if job_attempt < 1 or not lease_owner.strip():
             raise ValueError("Course compilation publication requires the claimed job attempt and lease owner")
+        if semantic_max_attempts < 1:
+            raise ValueError("semantic_max_attempts must be positive")
         if outline.source_revision != target_source_revision:
             raise ValueError("Course outline source revision does not match compilation target")
         if outline.knowledge_revision != target_knowledge_revision:
@@ -1233,6 +1283,47 @@ class SqliteStore:
                     """,
                     (course_id, target_knowledge_revision, outline.model_dump_json()),
                 )
+                if enqueue_semantic:
+                    existing_semantic = self._conn.execute(
+                        """
+                        SELECT job_id FROM knowledge_jobs
+                        WHERE course_id = ? AND job_type = 'extract_semantic_atoms'
+                          AND target_source_revision = ?
+                        """,
+                        (course_id, target_source_revision),
+                    ).fetchone()
+                    if existing_semantic is None:
+                        next_revision = self._conn.execute(
+                            """
+                            SELECT COALESCE(MAX(revision), -1) + 1 AS next_revision
+                            FROM knowledge_jobs
+                            WHERE course_id = ? AND material_id IS NULL
+                              AND job_type = 'extract_semantic_atoms'
+                            """,
+                            (course_id,),
+                        ).fetchone()
+                        if next_revision is None:
+                            raise RuntimeError("Could not allocate semantic extraction job revision")
+                        self._conn.execute(
+                            """
+                            INSERT INTO knowledge_jobs (
+                                job_id, course_id, material_id, job_type, revision, scope, status,
+                                attempt, max_attempts, idempotency_key, token_budget,
+                                target_source_revision, target_knowledge_revision
+                            ) VALUES (?, ?, NULL, 'extract_semantic_atoms', ?, 'course', 'queued',
+                                      0, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                str(uuid.uuid4()),
+                                course_id,
+                                int(next_revision["next_revision"]),
+                                semantic_max_attempts,
+                                f"knowledge:extract_semantic_atoms:{course_id}:source:{target_source_revision}",
+                                semantic_token_budget,
+                                target_source_revision,
+                                target_knowledge_revision,
+                            ),
+                        )
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
@@ -2473,6 +2564,17 @@ class SqliteStore:
                     SELECT job_id FROM knowledge_jobs
                     WHERE attempt < max_attempts
                       AND (
+                           job_type != 'extract_semantic_atoms'
+                           OR EXISTS (
+                               SELECT 1 FROM knowledge_jobs AS parent
+                               WHERE parent.course_id = knowledge_jobs.course_id
+                                 AND parent.job_type = 'compile_course'
+                                 AND parent.status = 'succeeded'
+                                 AND parent.target_source_revision = knowledge_jobs.target_source_revision
+                                 AND parent.target_knowledge_revision = knowledge_jobs.target_knowledge_revision
+                           )
+                      )
+                      AND (
                            status = 'queued'
                        OR (status = 'running'
                            AND lease_expires_at IS NOT NULL
@@ -2718,6 +2820,20 @@ class SqliteStore:
             evidence=[EvidenceRef.model_validate(item) for item in json.loads(row["evidence_json"])],
             model_call_id=row["model_call_id"],
             generation_method=row["generation_method"],
+            created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _row_to_semantic_atom_compilation(row: sqlite3.Row) -> SemanticAtomCompilation:
+        return SemanticAtomCompilation(
+            course_id=row["course_id"],
+            source_revision=row["source_revision"],
+            knowledge_revision=row["knowledge_revision"],
+            compiler_version=row["compiler_version"],
+            job_id=row["job_id"],
+            atom_count=row["atom_count"],
+            rejected_candidate_count=row["rejected_candidate_count"],
+            model_call_count=row["model_call_count"],
             created_at=row["created_at"],
         )
 
