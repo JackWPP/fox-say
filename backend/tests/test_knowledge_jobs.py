@@ -187,7 +187,11 @@ def test_store_migrates_pre_d0_course_job_schema_and_uses_source_identity(tmp_pa
             row["name"]
             for row in store._conn.execute("PRAGMA table_info(knowledge_jobs)").fetchall()
         }
-        assert {"target_source_revision", "target_knowledge_revision"} <= column_names
+        assert {
+            "target_source_revision",
+            "target_knowledge_revision",
+            "max_attempts",
+        } <= column_names
         store.create_course(Course(id="course-a", title="课程 A", status="empty"))
         first = enqueue_course_compile_job(
             store, course_id="course-a", source_revision="src_pre_d0_a"
@@ -307,3 +311,44 @@ def test_complete_fail_and_retry_preserve_explicit_state(store: SqliteStore):
     assert terminal.status == "failed"
     assert terminal.error_code == "unsupported_source"
     assert terminal.finished_at is not None
+
+
+def test_retry_ceiling_is_persisted_and_exhausted_jobs_are_not_reclaimed(
+    store: SqliteStore,
+) -> None:
+    job = enqueue_material_index_job(
+        store,
+        course_id="course-a",
+        material_id="material-a",
+        revision=9,
+        max_attempts=2,
+    )
+    first = store.claim_next_knowledge_job("worker-a", lease_seconds=60)
+    assert first is not None and first.job_id == job.job_id and first.attempt == 1
+    retryable = store.fail_knowledge_job(
+        "course-a",
+        job.job_id,
+        "worker-a",
+        "temporary provider outage",
+        retryable=True,
+        error_code="provider_timeout",
+    )
+    assert retryable.status == "retryable"
+    store.retry_knowledge_job("course-a", job.job_id)
+
+    second = store.claim_next_knowledge_job("worker-b", lease_seconds=60)
+    assert second is not None and second.job_id == job.job_id and second.attempt == 2
+    exhausted = store.fail_knowledge_job(
+        "course-a",
+        job.job_id,
+        "worker-b",
+        "temporary provider outage again",
+        retryable=True,
+        error_code="provider_timeout",
+    )
+    assert exhausted.status == "failed"
+    assert exhausted.error_code == "retry_limit_exhausted"
+    assert exhausted.error_detail == "temporary provider outage again"
+    with pytest.raises(ValueError, match="Only failed or retryable"):
+        store.retry_knowledge_job("course-a", job.job_id)
+    assert store.claim_next_knowledge_job("worker-c", lease_seconds=60) is None

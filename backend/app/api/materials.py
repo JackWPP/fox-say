@@ -194,7 +194,13 @@ async def retry_material(course_id: str, material_id: str, store: SqliteStore = 
         revision=material.revision,
     )
     if job.status in ("failed", "retryable"):
-        store.retry_knowledge_job(course_id, job.job_id)
+        try:
+            store.retry_knowledge_job(course_id, job.job_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="The current material retry limit has been reached; upload a replacement or adjust the job budget",
+            ) from exc
     elif job.status == "succeeded":
         raise HTTPException(
             status_code=409,

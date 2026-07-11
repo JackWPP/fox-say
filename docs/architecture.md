@@ -12,7 +12,9 @@
 - `knowledge_jobs` is a separate SQLite-backed, course-scoped queue for V2 work. Material jobs
   use their explicit material revision; D0 course jobs additionally persist canonical
   `target_source_revision` and `target_knowledge_revision`, alongside idempotency, lease,
-  attempt, error and token-budget fields.
+  attempt, immutable `max_attempts`, error and token-budget fields. A queued or expired lease
+  that has exhausted its persisted retry ceiling becomes a visible `failed/retry_limit_exhausted`
+  fact rather than an indefinitely claimable job.
 - `source_fragments` is the V2 material evidence fact layer. Each fragment has an explicit
   `fragment_id`, course/material/revision scope, title path, source offsets and page/slide
   location; `EvidenceRef` resolves material claims through that ID rather than a filename.
@@ -45,6 +47,18 @@
 - `GET /courses/{course_id}/course-outline` returns only the current succeeded D0 outline. It
   rejects uncompiled, stale and cross-course snapshots rather than falling back to legacy course
   structure.
+- V2-D1a adds `model_call_audits` and `course_model_budgets` before any model-derived knowledge
+  projection. `AuditedDeepSeekTextModel` reserves a conservative input upper bound plus explicit
+  output limit under `BEGIN IMMEDIATE`, then makes one OpenAI-compatible request with SDK retries
+  disabled. It stores only a SHA-256 request fingerprint—not prompts or course text—and settles
+  provider usage, elapsed time and visible errors. Failed calls and responses without usage keep
+  their reservation charged; they are never silently counted as zero. The cap is locked per
+  `(course_id, source_revision)` and checked together with the job cap before the provider is
+  contacted. D1a does not invoke this wrapper from a worker yet and does not audit/migrate legacy
+  Wiki, Agent, VLM or material-embedding calls.
+- `KnowledgeStatus` exposes the current source revision's V2 model-budget aggregate and latest
+  audited warning/error when one exists. `SourcesPanel` shows it as an explicit token budget; an
+  absent budget means no V2 audited model request has run, not that legacy model usage is free.
 - `GET /courses/{course_id}/source-fragments/{fragment_id}` is the V2 citation preview path.
   It joins course, material revision, material readiness and succeeded `index_material` job in
   one current-evidence boundary; it never falls back to legacy DMAP locators or old chunks.

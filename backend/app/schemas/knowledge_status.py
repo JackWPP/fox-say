@@ -10,6 +10,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.model_calls import CourseModelBudget
+
 
 KnowledgeLifecycleStatus = Literal[
     "empty",
@@ -74,5 +76,8 @@ class KnowledgeStatus(BaseModel):
     # Keeping it explicit prevents a bare integer job revision from being
     # mistaken for a material-set revision when stale detection arrives.
     compiled_from_source_revision: str | None = None
+    # Only present after a V2 audited model call has established a durable
+    # course/source budget. It never reports legacy model usage.
+    model_budget: CourseModelBudget | None = None
     coverage: KnowledgeCoverage
     materials: list[MaterialEvidenceStatus] = Field(default_factory=list)

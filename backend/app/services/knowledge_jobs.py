@@ -44,6 +44,7 @@ def enqueue_material_index_job(
     material_id: str,
     revision: int,
     token_budget: int | None = None,
+    max_attempts: int | None = None,
 ) -> KnowledgeJob:
     """Persist one idempotent material indexing job for a source revision."""
     return _enqueue(
@@ -54,6 +55,11 @@ def enqueue_material_index_job(
         revision=revision,
         scope="material",
         token_budget=token_budget,
+        max_attempts=(
+            settings.knowledge_job_default_max_attempts
+            if max_attempts is None
+            else max_attempts
+        ),
     )
 
 
@@ -63,6 +69,7 @@ def enqueue_course_compile_job(
     course_id: str,
     source_revision: str,
     token_budget: int | None = None,
+    max_attempts: int | None = None,
 ) -> KnowledgeJob:
     """Persist one idempotent course compiler job for a course revision."""
     return _enqueue(
@@ -82,6 +89,11 @@ def enqueue_course_compile_job(
             if token_budget is None
             else token_budget
         ),
+        max_attempts=(
+            settings.knowledge_job_default_max_attempts
+            if max_attempts is None
+            else max_attempts
+        ),
     )
 
 
@@ -94,6 +106,7 @@ def _enqueue(
     revision: int | None,
     scope: KnowledgeJobScope,
     token_budget: int | None,
+    max_attempts: int,
     target_source_revision: str | None = None,
     target_knowledge_revision: str | None = None,
 ) -> KnowledgeJob:
@@ -113,6 +126,7 @@ def _enqueue(
         scope=scope,
         idempotency_key=idempotency_key,
         token_budget=token_budget,
+        max_attempts=max_attempts,
         target_source_revision=target_source_revision,
         target_knowledge_revision=target_knowledge_revision,
     )

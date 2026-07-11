@@ -73,6 +73,11 @@ def build_knowledge_status(store: SqliteStore, course_id: str) -> KnowledgeStatu
         compiled_from_source_revision=(
             compilation.source_revision if compilation is not None else None
         ),
+        model_budget=(
+            store.get_course_model_budget(course_id, source_revision)
+            if source_revision is not None
+            else None
+        ),
         coverage=KnowledgeCoverage(
             total_materials=len(material_statuses),
             ready_materials=ready_materials,

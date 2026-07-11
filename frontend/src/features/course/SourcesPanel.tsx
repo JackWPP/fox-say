@@ -238,6 +238,7 @@ function KnowledgeEvidenceSummary({
     snapshot.source_status === "ready" &&
     snapshot.status === "partial" &&
     snapshot.projection_status === "not_started";
+  const modelBudget = snapshot.model_budget;
 
   return (
     <section className="mx-3 mt-3 rounded-lg border border-slate-200 bg-white p-3" aria-label="课程材料证据状态">
@@ -277,6 +278,24 @@ function KnowledgeEvidenceSummary({
         </p>
       ) : (
         <p className="mt-2 text-xs text-slate-500">{PROJECTION_STATUS_LABEL[snapshot.projection_status]}</p>
+      )}
+      {modelBudget && (
+        <div className={`mt-2 rounded-md px-2 py-1.5 text-xs leading-relaxed ${
+          modelBudget.status === "exhausted"
+            ? "bg-red-50 text-red-700"
+            : "bg-slate-50 text-slate-600"
+        }`}>
+          <p>
+            V2 模型预算：{modelBudget.accounted_tokens}/{modelBudget.token_budget} tokens
+            （剩余 {modelBudget.available_tokens}）
+          </p>
+          {modelBudget.last_error_code && (
+            <p className="mt-1" role="alert">
+              {modelBudget.last_error_code}
+              {modelBudget.last_error_detail ? `：${modelBudget.last_error_detail}` : ""}
+            </p>
+          )}
+        </div>
       )}
       {error && (
         <p className="mt-2 text-xs text-red-600" role="alert">

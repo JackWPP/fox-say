@@ -38,6 +38,11 @@ class Settings(BaseSettings):
 
     # V2 持久知识任务：课程级编译任务使用显式 token budget。
     knowledge_job_default_token_budget: int = 12000
+    knowledge_job_default_max_attempts: int = Field(default=3, gt=0)
+    # D1a locks this cap to one (course_id, source_revision) on the first
+    # audited text request. It is deliberately independent from a single job.
+    knowledge_course_default_token_budget: int = 36000
+    knowledge_model_timeout_seconds: float = Field(default=60.0, gt=0)
     # SQLite MVP 只运行一个受控 worker；lease 需要覆盖较慢的文档解析并由 heartbeat 续约。
     knowledge_worker_lease_seconds: int = Field(default=900, gt=0)
     knowledge_worker_poll_interval_seconds: float = Field(default=0.5, gt=0)

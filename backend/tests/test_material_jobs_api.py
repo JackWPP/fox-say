@@ -75,6 +75,42 @@ async def test_retry_requeues_failed_current_revision_job(client: AsyncClient) -
 
 
 @pytest.mark.asyncio
+async def test_retry_limit_is_a_visible_conflict_not_an_internal_error(client: AsyncClient) -> None:
+    course_id = await _create_course(client, "线性代数重试上限")
+    response = await client.post(
+        f"/courses/{course_id}/materials",
+        files={"file": ("rank.md", b"# Rank", "text/markdown")},
+        data={"kind": "text_note"},
+    )
+    assert response.status_code == 200
+    material = response.json()
+    store = app.state.store
+    job = store.list_knowledge_jobs(course_id, material_id=material["id"])[0]
+    claimed = store.claim_next_knowledge_job("test-worker", lease_seconds=60)
+    assert claimed is not None and claimed.job_id == job.job_id
+    store.fail_knowledge_job(
+        course_id,
+        job.job_id,
+        "test-worker",
+        "synthetic parser error",
+        retryable=False,
+        error_code="synthetic_error",
+    )
+    store._conn.execute(
+        "UPDATE knowledge_jobs SET max_attempts = 1 WHERE job_id = ?", (job.job_id,)
+    )
+    store._conn.commit()
+    store.update_material_status_if_revision(
+        course_id, material["id"], material["revision"], "failed"
+    )
+
+    retried = await client.post(f"/courses/{course_id}/materials/{material['id']}/retry")
+
+    assert retried.status_code == 409
+    assert "retry limit" in retried.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_source_preview_uses_current_fragment_id_not_legacy_locator(
     client: AsyncClient,
 ) -> None:

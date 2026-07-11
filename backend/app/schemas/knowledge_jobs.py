@@ -34,6 +34,7 @@ class KnowledgeJobCreate(BaseModel):
     scope: KnowledgeJobScope
     idempotency_key: str = Field(min_length=1)
     token_budget: int | None = Field(default=None, gt=0)
+    max_attempts: int = Field(default=3, ge=1)
     target_source_revision: str | None = Field(default=None, min_length=1)
     target_knowledge_revision: str | None = Field(default=None, min_length=1)
 
@@ -76,6 +77,7 @@ class KnowledgeJob(BaseModel):
     attempt: int = Field(ge=0)
     idempotency_key: str
     token_budget: int | None = Field(default=None, gt=0)
+    max_attempts: int = Field(ge=1)
     target_source_revision: str | None = None
     target_knowledge_revision: str | None = None
     lease_owner: str | None = None

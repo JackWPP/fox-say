@@ -100,6 +100,7 @@ async def test_knowledge_status_distinguishes_source_ready_from_course_ready(
         "source_revision": None,
         "knowledge_revision": None,
         "compiled_from_source_revision": None,
+        "model_budget": None,
         "coverage": {
             "total_materials": 0,
             "ready_materials": 0,

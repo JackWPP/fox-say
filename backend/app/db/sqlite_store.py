@@ -18,6 +18,12 @@ from app.schemas.foxsay import (
     ReviewPlan,
 )
 from app.schemas.knowledge_jobs import KnowledgeJob, KnowledgeJobCreate
+from app.schemas.model_calls import (
+    CourseModelBudget,
+    ModelCallAudit,
+    ModelCallReservationRequest,
+    ModelCallUsage,
+)
 from app.schemas.course_projection import CourseCompilation, CourseOutline
 from app.schemas.evidence import SourceFragment
 from app.services.source_revision import build_source_revision
@@ -244,6 +250,7 @@ CREATE TABLE IF NOT EXISTS knowledge_jobs (
     scope TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'queued',
     attempt INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
     idempotency_key TEXT NOT NULL UNIQUE,
     token_budget INTEGER,
     target_source_revision TEXT,
@@ -264,6 +271,7 @@ CREATE TABLE IF NOT EXISTS knowledge_jobs (
     CHECK (status IN ('queued', 'running', 'succeeded', 'retryable', 'failed')),
     CHECK (revision >= 0),
     CHECK (attempt >= 0),
+    CHECK (max_attempts > 0),
     CHECK (token_budget IS NULL OR token_budget > 0),
     CHECK (
         (scope = 'material' AND material_id IS NOT NULL)
@@ -274,6 +282,71 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_jobs_claim
     ON knowledge_jobs(status, lease_expires_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_knowledge_jobs_course
     ON knowledge_jobs(course_id, revision, created_at);
+
+-- ===== Knowledge System V2: model-call audit and budget reservations =====
+
+CREATE TABLE IF NOT EXISTS course_model_budgets (
+    course_id TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    token_budget INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (course_id, source_revision),
+    FOREIGN KEY (course_id) REFERENCES courses(id),
+    CHECK (token_budget > 0)
+);
+
+CREATE TABLE IF NOT EXISTS model_call_audits (
+    call_id TEXT PRIMARY KEY,
+    course_id TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    job_attempt INTEGER NOT NULL,
+    source_revision TEXT NOT NULL,
+    knowledge_revision TEXT NOT NULL,
+    call_kind TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL,
+    input_token_upper_bound INTEGER NOT NULL,
+    max_output_tokens INTEGER NOT NULL,
+    reserved_tokens INTEGER NOT NULL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    reasoning_tokens INTEGER,
+    total_tokens INTEGER,
+    usage_source TEXT NOT NULL,
+    accounted_tokens INTEGER NOT NULL,
+    course_budget_tokens INTEGER NOT NULL,
+    job_budget_tokens INTEGER,
+    elapsed_ms INTEGER,
+    error_code TEXT,
+    error_detail TEXT,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at TEXT,
+    FOREIGN KEY (course_id) REFERENCES courses(id),
+    FOREIGN KEY (job_id) REFERENCES knowledge_jobs(job_id),
+    CHECK (job_attempt > 0),
+    CHECK (call_kind IN ('text', 'embedding', 'vision')),
+    CHECK (status IN ('reserved', 'succeeded', 'failed', 'rejected')),
+    CHECK (input_token_upper_bound > 0),
+    CHECK (max_output_tokens > 0),
+    CHECK (reserved_tokens >= 0),
+    CHECK (input_tokens IS NULL OR input_tokens >= 0),
+    CHECK (output_tokens IS NULL OR output_tokens >= 0),
+    CHECK (reasoning_tokens IS NULL OR reasoning_tokens >= 0),
+    CHECK (total_tokens IS NULL OR total_tokens >= 0),
+    CHECK (usage_source IN ('provider', 'estimated', 'unavailable')),
+    CHECK (accounted_tokens >= 0),
+    CHECK (course_budget_tokens > 0),
+    CHECK (job_budget_tokens IS NULL OR job_budget_tokens > 0),
+    CHECK (elapsed_ms IS NULL OR elapsed_ms >= 0)
+);
+CREATE INDEX IF NOT EXISTS idx_model_call_audits_course_source
+    ON model_call_audits(course_id, source_revision, started_at DESC, call_id DESC);
+CREATE INDEX IF NOT EXISTS idx_model_call_audits_job
+    ON model_call_audits(job_id, started_at DESC, call_id DESC);
 
 CREATE TABLE IF NOT EXISTS course_compilations (
     course_id TEXT NOT NULL,
@@ -347,6 +420,7 @@ class SqliteStore:
             "ALTER TABLE courses ADD COLUMN icon TEXT NOT NULL DEFAULT '📚'",
             "ALTER TABLE knowledge_jobs ADD COLUMN target_source_revision TEXT",
             "ALTER TABLE knowledge_jobs ADD COLUMN target_knowledge_revision TEXT",
+            "ALTER TABLE knowledge_jobs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3",
         ]
         for sql in migrations:
             try:
@@ -1475,9 +1549,9 @@ class SqliteStore:
                     """
                     INSERT INTO knowledge_jobs
                         (job_id, course_id, material_id, job_type, revision, scope,
-                         status, attempt, idempotency_key, token_budget,
+                         status, attempt, max_attempts, idempotency_key, token_budget,
                          target_source_revision, target_knowledge_revision)
-                    VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?)
                     ON CONFLICT(idempotency_key) DO NOTHING
                     """,
                     (
@@ -1487,6 +1561,7 @@ class SqliteStore:
                         persisted_job.job_type,
                         persisted_job.revision,
                         persisted_job.scope,
+                        persisted_job.max_attempts,
                         persisted_job.idempotency_key,
                         persisted_job.token_budget,
                         persisted_job.target_source_revision,
@@ -1516,6 +1591,7 @@ class SqliteStore:
             persisted.job_type,
             persisted.revision,
             persisted.scope,
+            persisted.max_attempts,
             persisted.target_source_revision,
             persisted.target_knowledge_revision,
         )
@@ -1525,6 +1601,7 @@ class SqliteStore:
             persisted_job.job_type,
             persisted_job.revision,
             persisted_job.scope,
+            persisted_job.max_attempts,
             persisted_job.target_source_revision,
             persisted_job.target_knowledge_revision,
         )
@@ -1591,6 +1668,391 @@ class SqliteStore:
         ).fetchall()
         return [self._row_to_knowledge_job(row) for row in rows]
 
+    # --- V2 model-call audit and course/job budget reservations ---
+
+    def reserve_model_call(self, request: ModelCallReservationRequest) -> ModelCallAudit:
+        """Atomically reserve a conservative provider-call budget.
+
+        A reservation is recorded *before* the wrapper may make a network
+        request. Both budget scopes aggregate every previous attempt for this
+        job/source revision, including unresolved or unknown-billing calls.
+        """
+        with self._knowledge_job_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                job = self._conn.execute(
+                    """
+                    SELECT * FROM knowledge_jobs
+                    WHERE job_id = ? AND course_id = ?
+                    """,
+                    (request.job_id, request.course_id),
+                ).fetchone()
+                if job is None:
+                    raise ValueError("Cannot reserve model call for an unknown course job")
+                if (
+                    job["scope"] != "course"
+                    or job["status"] != "running"
+                    or job["attempt"] != request.job_attempt
+                    or job["lease_owner"] != request.lease_owner
+                    or job["lease_expires_at"] is None
+                    or job["lease_expires_at"] <= self._conn.execute("SELECT datetime('now')").fetchone()[0]
+                    or job["target_source_revision"] != request.source_revision
+                    or job["target_knowledge_revision"] != request.knowledge_revision
+                ):
+                    raise ValueError(
+                        "Cannot reserve model call without the current course job lease and revision"
+                    )
+
+                self._conn.execute(
+                    """
+                    INSERT INTO course_model_budgets (course_id, source_revision, token_budget)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(course_id, source_revision) DO NOTHING
+                    """,
+                    (
+                        request.course_id,
+                        request.source_revision,
+                        request.course_budget_tokens,
+                    ),
+                )
+                budget_row = self._conn.execute(
+                    """
+                    SELECT token_budget FROM course_model_budgets
+                    WHERE course_id = ? AND source_revision = ?
+                    """,
+                    (request.course_id, request.source_revision),
+                ).fetchone()
+                if budget_row is None:
+                    raise RuntimeError("Course model budget was not persisted")
+                persisted_course_budget = int(budget_row["token_budget"])
+
+                current_manifest = self.get_compilable_source_manifest(request.course_id)
+                rejection_code: str | None = None
+                rejection_detail: str | None = None
+                if current_manifest is None or current_manifest[0] != request.source_revision:
+                    rejection_code = "stale_course_source_revision"
+                    rejection_detail = "Current course material no longer matches this model-call source revision"
+                elif persisted_course_budget != request.course_budget_tokens:
+                    rejection_code = "course_budget_configuration_conflict"
+                    rejection_detail = (
+                        "The source revision already has a different persisted course token budget"
+                    )
+
+                course_used = int(
+                    self._conn.execute(
+                        """
+                        SELECT COALESCE(SUM(accounted_tokens), 0) AS used_tokens
+                        FROM model_call_audits
+                        WHERE course_id = ? AND source_revision = ?
+                        """,
+                        (request.course_id, request.source_revision),
+                    ).fetchone()["used_tokens"]
+                )
+                job_used = int(
+                    self._conn.execute(
+                        """
+                        SELECT COALESCE(SUM(accounted_tokens), 0) AS used_tokens
+                        FROM model_call_audits
+                        WHERE course_id = ? AND job_id = ?
+                        """,
+                        (request.course_id, request.job_id),
+                    ).fetchone()["used_tokens"]
+                )
+                if rejection_code is None and course_used + request.reserved_tokens > persisted_course_budget:
+                    rejection_code = "token_budget_exhausted"
+                    rejection_detail = "Course model token budget would be exceeded before this request"
+                job_budget = job["token_budget"]
+                if (
+                    rejection_code is None
+                    and job_budget is not None
+                    and job_used + request.reserved_tokens > int(job_budget)
+                ):
+                    rejection_code = "token_budget_exhausted"
+                    rejection_detail = "Knowledge job token budget would be exceeded before this request"
+
+                if rejection_code is None:
+                    self._insert_model_call_audit(
+                        request,
+                        status="reserved",
+                        accounted_tokens=request.reserved_tokens,
+                        job_budget_tokens=job_budget,
+                    )
+                else:
+                    self._insert_model_call_audit(
+                        request,
+                        status="rejected",
+                        accounted_tokens=0,
+                        job_budget_tokens=job_budget,
+                        error_code=rejection_code,
+                        error_detail=rejection_detail,
+                        finished=True,
+                    )
+                self._conn.execute(
+                    """
+                    UPDATE course_model_budgets SET updated_at = datetime('now')
+                    WHERE course_id = ? AND source_revision = ?
+                    """,
+                    (request.course_id, request.source_revision),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+        audit = self.get_model_call_audit(request.course_id, request.call_id)
+        if audit is None:
+            raise RuntimeError("Model-call reservation could not be reloaded")
+        return audit
+
+    def _insert_model_call_audit(
+        self,
+        request: ModelCallReservationRequest,
+        *,
+        status: str,
+        accounted_tokens: int,
+        job_budget_tokens: int | None,
+        error_code: str | None = None,
+        error_detail: str | None = None,
+        finished: bool = False,
+    ) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO model_call_audits (
+                call_id, course_id, job_id, job_attempt, source_revision, knowledge_revision,
+                call_kind, purpose, provider, model, request_fingerprint, status,
+                input_token_upper_bound, max_output_tokens, reserved_tokens, usage_source,
+                accounted_tokens, course_budget_tokens, job_budget_tokens, error_code,
+                error_detail, finished_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unavailable', ?, ?, ?, ?, ?,
+                      CASE WHEN ? THEN datetime('now') ELSE NULL END)
+            """,
+            (
+                request.call_id,
+                request.course_id,
+                request.job_id,
+                request.job_attempt,
+                request.source_revision,
+                request.knowledge_revision,
+                request.call_kind,
+                request.purpose,
+                request.provider,
+                request.model,
+                request.request_fingerprint,
+                status,
+                request.input_token_upper_bound,
+                request.max_output_tokens,
+                request.reserved_tokens,
+                accounted_tokens,
+                request.course_budget_tokens,
+                job_budget_tokens,
+                error_code,
+                error_detail,
+                finished,
+            ),
+        )
+
+    def complete_model_call(
+        self,
+        course_id: str,
+        call_id: str,
+        *,
+        usage: ModelCallUsage,
+        elapsed_ms: int,
+        warning_code: str | None = None,
+        warning_detail: str | None = None,
+    ) -> ModelCallAudit:
+        """Settle one completed provider response without losing unknown usage."""
+        if elapsed_ms < 0:
+            raise ValueError("elapsed_ms cannot be negative")
+        with self._knowledge_job_lock:
+            audit = self.get_model_call_audit(course_id, call_id)
+            if audit is None or audit.status != "reserved":
+                raise ValueError("Only a reserved model call can be completed")
+            accounted_tokens = (
+                usage.total_tokens if usage.usage_source == "provider" else audit.reserved_tokens
+            )
+            error_code = warning_code
+            error_detail = warning_detail
+            if usage.usage_source == "unavailable" and error_code is None:
+                error_code = "model_usage_unavailable"
+                error_detail = "Provider returned content without token usage; reservation remains charged"
+            elif usage.total_tokens is not None and usage.total_tokens > audit.reserved_tokens:
+                error_code = "model_usage_exceeded_reservation"
+                error_detail = (
+                    "Provider-reported usage exceeded the conservative reservation; "
+                    "the audited actual usage remains charged"
+                )
+            updated = self._conn.execute(
+                """
+                UPDATE model_call_audits
+                SET status = 'succeeded', input_tokens = ?, output_tokens = ?, reasoning_tokens = ?,
+                    total_tokens = ?, usage_source = ?, accounted_tokens = ?, elapsed_ms = ?,
+                    error_code = ?, error_detail = ?, finished_at = datetime('now')
+                WHERE call_id = ? AND course_id = ? AND status = 'reserved'
+                """,
+                (
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.reasoning_tokens,
+                    usage.total_tokens,
+                    usage.usage_source,
+                    accounted_tokens,
+                    elapsed_ms,
+                    error_code,
+                    error_detail,
+                    call_id,
+                    course_id,
+                ),
+            )
+            self._conn.execute(
+                """
+                UPDATE course_model_budgets SET updated_at = datetime('now')
+                WHERE course_id = ? AND source_revision = ?
+                """,
+                (course_id, audit.source_revision),
+            )
+            self._conn.commit()
+        if updated.rowcount != 1:
+            raise ValueError("Reserved model call could not be completed")
+        completed = self.get_model_call_audit(course_id, call_id)
+        if completed is None:
+            raise RuntimeError("Completed model call could not be reloaded")
+        return completed
+
+    def fail_model_call(
+        self,
+        course_id: str,
+        call_id: str,
+        *,
+        error_code: str,
+        error_detail: str,
+        elapsed_ms: int,
+    ) -> ModelCallAudit:
+        """Persist a provider failure while retaining its unknown-billing reservation."""
+        if not error_code.strip() or not error_detail.strip() or elapsed_ms < 0:
+            raise ValueError("Model-call failure requires code, detail, and non-negative elapsed")
+        with self._knowledge_job_lock:
+            audit = self.get_model_call_audit(course_id, call_id)
+            if audit is None or audit.status != "reserved":
+                raise ValueError("Only a reserved model call can be failed")
+            updated = self._conn.execute(
+                """
+                UPDATE model_call_audits
+                SET status = 'failed', usage_source = 'unavailable', elapsed_ms = ?,
+                    error_code = ?, error_detail = ?, finished_at = datetime('now')
+                WHERE call_id = ? AND course_id = ? AND status = 'reserved'
+                """,
+                (elapsed_ms, error_code, error_detail, call_id, course_id),
+            )
+            self._conn.execute(
+                """
+                UPDATE course_model_budgets SET updated_at = datetime('now')
+                WHERE course_id = ? AND source_revision = ?
+                """,
+                (course_id, audit.source_revision),
+            )
+            self._conn.commit()
+        if updated.rowcount != 1:
+            raise ValueError("Only a reserved model call can be failed")
+        failed = self.get_model_call_audit(course_id, call_id)
+        if failed is None:
+            raise RuntimeError("Failed model call could not be reloaded")
+        return failed
+
+    def get_model_call_audit(self, course_id: str, call_id: str) -> ModelCallAudit | None:
+        row = self._conn.execute(
+            "SELECT * FROM model_call_audits WHERE course_id = ? AND call_id = ?",
+            (course_id, call_id),
+        ).fetchone()
+        return self._row_to_model_call_audit(row) if row is not None else None
+
+    def list_model_call_audits(
+        self, course_id: str, *, job_id: str | None = None
+    ) -> list[ModelCallAudit]:
+        clauses = ["course_id = ?"]
+        params: list[Any] = [course_id]
+        if job_id is not None:
+            clauses.append("job_id = ?")
+            params.append(job_id)
+        rows = self._conn.execute(
+            f"SELECT * FROM model_call_audits WHERE {' AND '.join(clauses)} "
+            "ORDER BY started_at, call_id",
+            params,
+        ).fetchall()
+        return [self._row_to_model_call_audit(row) for row in rows]
+
+    def get_course_model_budget(
+        self, course_id: str, source_revision: str
+    ) -> CourseModelBudget | None:
+        row = self._conn.execute(
+            """
+            SELECT token_budget, updated_at FROM course_model_budgets
+            WHERE course_id = ? AND source_revision = ?
+            """,
+            (course_id, source_revision),
+        ).fetchone()
+        if row is None:
+            return None
+        accounted_tokens = int(
+            self._conn.execute(
+                """
+                SELECT COALESCE(SUM(accounted_tokens), 0) AS used_tokens
+                FROM model_call_audits
+                WHERE course_id = ? AND source_revision = ?
+                """,
+                (course_id, source_revision),
+            ).fetchone()["used_tokens"]
+        )
+        last_error = self._conn.execute(
+            """
+            SELECT error_code, error_detail FROM model_call_audits
+            WHERE course_id = ? AND source_revision = ? AND error_code IS NOT NULL
+            ORDER BY started_at DESC, call_id DESC LIMIT 1
+            """,
+            (course_id, source_revision),
+        ).fetchone()
+        token_budget = int(row["token_budget"])
+        return CourseModelBudget(
+            course_id=course_id,
+            source_revision=source_revision,
+            token_budget=token_budget,
+            accounted_tokens=accounted_tokens,
+            available_tokens=max(0, token_budget - accounted_tokens),
+            status="exhausted" if accounted_tokens >= token_budget else "available",
+            last_error_code=last_error["error_code"] if last_error is not None else None,
+            last_error_detail=last_error["error_detail"] if last_error is not None else None,
+            updated_at=row["updated_at"],
+        )
+
+    def has_current_knowledge_job_lease(
+        self,
+        *,
+        course_id: str,
+        job_id: str,
+        attempt: int,
+        lease_owner: str,
+        source_revision: str,
+        knowledge_revision: str,
+    ) -> bool:
+        """Check the lease after I/O before a caller may publish derived data."""
+        row = self._conn.execute(
+            """
+            SELECT 1 FROM knowledge_jobs
+            WHERE job_id = ? AND course_id = ? AND status = 'running' AND attempt = ?
+              AND lease_owner = ? AND lease_expires_at > datetime('now')
+              AND target_source_revision = ? AND target_knowledge_revision = ?
+            """,
+            (
+                job_id,
+                course_id,
+                attempt,
+                lease_owner,
+                source_revision,
+                knowledge_revision,
+            ),
+        ).fetchone()
+        return row is not None
+
     def claim_next_knowledge_job(
         self, lease_owner: str, lease_seconds: int
     ) -> KnowledgeJob | None:
@@ -1609,13 +2071,35 @@ class SqliteStore:
         with self._knowledge_job_lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
+                # A retry ceiling is durable queue state, not a worker-local
+                # convention. Clean up exhausted queued/abandoned work before
+                # choosing the next claim so it never remains a dead queue row.
+                self._conn.execute(
+                    """
+                    UPDATE knowledge_jobs
+                    SET status = 'failed',
+                        lease_owner = NULL,
+                        lease_expires_at = NULL,
+                        error_code = 'retry_limit_exhausted',
+                        error_detail = 'Knowledge job reached its configured retry limit',
+                        error_at = datetime('now'),
+                        finished_at = datetime('now'),
+                        updated_at = datetime('now')
+                    WHERE attempt >= max_attempts
+                      AND status IN ('queued', 'running')
+                      AND (status = 'queued' OR lease_expires_at <= datetime('now'))
+                    """
+                )
                 row = self._conn.execute(
                     """
                     SELECT job_id FROM knowledge_jobs
-                    WHERE status = 'queued'
+                    WHERE attempt < max_attempts
+                      AND (
+                           status = 'queued'
                        OR (status = 'running'
                            AND lease_expires_at IS NOT NULL
                            AND lease_expires_at <= datetime('now'))
+                      )
                     ORDER BY CASE status WHEN 'queued' THEN 0 ELSE 1 END, created_at, job_id
                     LIMIT 1
                     """
@@ -1733,22 +2217,22 @@ class SqliteStore:
         """Persist a visible failure and release the worker lease."""
         if not error_detail.strip():
             raise ValueError("error_detail is required when failing a knowledge job")
-        next_status = "retryable" if retryable else "failed"
         with self._knowledge_job_lock:
             updated = self._conn.execute(
                 """
                 UPDATE knowledge_jobs
-                SET status = ?,
+                SET status = CASE WHEN ? AND attempt < max_attempts THEN 'retryable' ELSE 'failed' END,
                     lease_owner = NULL,
                     lease_expires_at = NULL,
-                    error_code = ?,
+                    error_code = CASE WHEN ? AND attempt >= max_attempts
+                        THEN 'retry_limit_exhausted' ELSE ? END,
                     error_detail = ?,
                     error_at = datetime('now'),
                     finished_at = datetime('now'),
                     updated_at = datetime('now')
                 WHERE job_id = ? AND course_id = ? AND status = 'running' AND lease_owner = ?
                 """,
-                (next_status, error_code, error_detail, job_id, course_id, lease_owner),
+                (retryable, retryable, error_code, error_detail, job_id, course_id, lease_owner),
             )
             self._conn.commit()
         if updated.rowcount != 1:
@@ -1771,6 +2255,7 @@ class SqliteStore:
                     finished_at = NULL,
                     updated_at = datetime('now')
                 WHERE job_id = ? AND course_id = ? AND status IN ('retryable', 'failed')
+                  AND attempt < max_attempts
                 """,
                 (job_id, course_id),
             )
@@ -1795,6 +2280,7 @@ class SqliteStore:
             attempt=row["attempt"],
             idempotency_key=row["idempotency_key"],
             token_budget=row["token_budget"],
+            max_attempts=row["max_attempts"],
             target_source_revision=row["target_source_revision"],
             target_knowledge_revision=row["target_knowledge_revision"],
             lease_owner=row["lease_owner"],
@@ -1804,6 +2290,39 @@ class SqliteStore:
             error_at=row["error_at"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            started_at=row["started_at"],
+            finished_at=row["finished_at"],
+        )
+
+    @staticmethod
+    def _row_to_model_call_audit(row: sqlite3.Row) -> ModelCallAudit:
+        return ModelCallAudit(
+            call_id=row["call_id"],
+            course_id=row["course_id"],
+            job_id=row["job_id"],
+            job_attempt=row["job_attempt"],
+            source_revision=row["source_revision"],
+            knowledge_revision=row["knowledge_revision"],
+            call_kind=row["call_kind"],
+            purpose=row["purpose"],
+            provider=row["provider"],
+            model=row["model"],
+            request_fingerprint=row["request_fingerprint"],
+            status=row["status"],
+            input_token_upper_bound=row["input_token_upper_bound"],
+            max_output_tokens=row["max_output_tokens"],
+            reserved_tokens=row["reserved_tokens"],
+            input_tokens=row["input_tokens"],
+            output_tokens=row["output_tokens"],
+            reasoning_tokens=row["reasoning_tokens"],
+            total_tokens=row["total_tokens"],
+            usage_source=row["usage_source"],
+            accounted_tokens=row["accounted_tokens"],
+            course_budget_tokens=row["course_budget_tokens"],
+            job_budget_tokens=row["job_budget_tokens"],
+            elapsed_ms=row["elapsed_ms"],
+            error_code=row["error_code"],
+            error_detail=row["error_detail"],
             started_at=row["started_at"],
             finished_at=row["finished_at"],
         )

@@ -218,6 +218,21 @@ export interface MaterialEvidenceStatus {
   error_detail: string | null;
 }
 
+export type ModelBudgetAvailability = "available" | "exhausted";
+
+/** Current-source V2 audited model budget; legacy model calls are excluded. */
+export interface CourseModelBudget {
+  course_id: string;
+  source_revision: string;
+  token_budget: number;
+  accounted_tokens: number;
+  available_tokens: number;
+  status: ModelBudgetAvailability;
+  last_error_code: string | null;
+  last_error_detail: string | null;
+  updated_at: string;
+}
+
 /** Durable V2 evidence/projection snapshot, fetched from the API. */
 export interface KnowledgeStatus {
   course_id: string;
@@ -227,6 +242,7 @@ export interface KnowledgeStatus {
   source_revision: string | null;
   knowledge_revision: string | null;
   compiled_from_source_revision: string | null;
+  model_budget: CourseModelBudget | null;
   coverage: KnowledgeCoverage;
   materials: MaterialEvidenceStatus[];
 }
