@@ -79,6 +79,7 @@ active / review → blocked → active; complete → reopened → active
 | V2-D1b0 | `complete` | V2-D0, V2-D1a | 为语义原子抽取预留独立的 course job type 与 SQLite enum 迁移；不 enqueue、不调用模型、不写 Atom | `0304f91`；独立 identity、旧 `CHECK` 表重建迁移和 unsupported-handler boundary 均已提交，零模型/embedding/VLM/网络调用。 |
 | V2-D1b1 | `complete` | V2-D0, V2-D0a, V2-D1a, V2-D1b0 | SemanticAtom schema、候选验证与 source/outline/lease-pinned 原子发布；不调用模型、不注册 handler | `75a77c2`；candidate rehydrate、stable ID、audit/source/outline/lease atomic fence 与 current read boundary 已提交，零外部模型调用。 |
 | V2-D1c | `complete` | V2-D1a, V2-D1b0, V2-D1b1 | audited DeepSeek SemanticAtom handler 与严格 JSON candidate parsing；不自动 enqueue | `c46c9fb`；explicit-job handler、strict JSON parsing 和 fake-model publish/failure 回归已提交；无真实模型调用、无自动 enqueue。 |
+| V2-G0 | `review` | V2-D1c | 合成线性代数的真实 DeepSeek semantic-atom smoke；只记录脱敏审计证据 | 已在临时 SQLite 合成 fragment 上完成一次真实 DeepSeek request，结果待脱敏记录/协调者核对。 |
 | V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
 | V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
@@ -180,6 +181,13 @@ active / review → blocked → active; complete → reopened → active
 - **验收**：fake audited model 的结构化输出生成可读取 Atom，并验证 prompt 不含跨 section fragment；malformed JSON、未知 section/fragment、budget rejection、lease loss/stale 都无 Atom/header 发布且 worker 状态可见；默认 upload/index/D0 路径不创建 semantic job，所有测试零网络。
 - **成本与时延**：一个显式 semantic job 目前使用一个受 budget 上限保护的 course-level text call；超过预算不会出网。后续按 section 分批与自动调度必须以实测线性代数 token/时延为准，另立任务。
 
+### 3.13 活动任务包：V2-G0
+
+- **目标**：使用 `.env` 已配置的真实 DeepSeek endpoint，运行一份合成线性代数 fragment 的 D0 + explicit semantic job 最小链路，验证 endpoint/model、audited usage、耗时、预算、Atom 数与错误路径。它不是用户课程处理，也不等同于 V2-G 完整验收。
+- **范围与安全**：只允许临时 SQLite、内存/临时目录中的合成材料；不读取、打印或提交 API key，不上传用户材料，不提交数据库、模型输出、prompt 或 embedding。允许写入一份脱敏的 `docs/postmortem/` 验证记录（模型/状态/token/elapsed/日期/错误码）。
+- **验收**：真实请求的 audit 行在出网前后状态正确；成功时有至少一个 current Atom 和 provider/usage source，失败时 job/audit 错误可见；报告实际 token/elapsed 或明确 usage unavailable。预算/timeout/请求数保持在 task cap 内。
+- **成本与时延**：单一 course-level request，当前 job cap 12000、course cap 36000、输出上限 1200；只执行一次，失败不得自动重试。若配置/API 不可用，记录失败并停止，不扩大调用范围。
+
 ## 4. 成本、等待和“自然生长”的调度门槛
 
 1. **先确定性，后模型**：解析、标题树、fragment、内容 hash、失效范围和基础索引先完成；不能为了“看起来聪明”对整门课无差别烧 token。
@@ -231,6 +239,8 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-D1c | `ready → active` | 领取 audited semantic handler、strict JSON parsing 与 worker integration；范围、非目标、验收和成本限制见 §3.12。 | pending |
 | 2026-07-11 | V2-D1c | `active → review` | explicit `extract_semantic_atoms` job 通过 audited wrapper 返回 JSON candidate，再经 D1b1 publish；fake model 成功/非 JSON failure 与无自动 enqueue 回归通过。等待最终 diff/commit 核对。 | pending |
 | 2026-07-11 | V2-D1c | `review → complete` | `c46c9fb`；13 个 semantic/worker 聚焦测试和相关 Ruff 通过。定向 mypy 仅为既有 `foxsay.py`、legacy `sqlite_store.py`、worker strict baseline，无本任务新增项；未调用真实 DeepSeek。 | `c46c9fb` |
+| 2026-07-11 | V2-G0 | `ready → active` | 领取一次真实 DeepSeek 合成线性代数 smoke；范围、隐私、单次预算与验收记录见 §3.13。 | pending |
+| 2026-07-11 | V2-G0 | `active → review` | 单请求成功：`deepseek-v4-flash`，154 input / 893 output / 1047 total tokens，10,534 ms，2 Atom，audit/job 均 `succeeded`。临时 DB 和合成材料已销毁；脱敏记录见 `docs/postmortem/knowledge-v2-g0-deepseek-smoke-2026-07-11.md`。 | pending |
 
 ## 6. 交接检查
 
