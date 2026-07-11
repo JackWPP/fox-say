@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     vlm_api_base: str = "https://api.siliconflow.cn/v1"
     vlm_model: str = "Qwen/Qwen3.6-27B"
     vlm_max_tokens: int = Field(default=2048, gt=0)
+    # V2-E is deliberately opt-in: a persisted visual job is visible while
+    # disabled, but it must never turn an ordinary upload into an API call.
+    knowledge_visual_analysis_enabled: bool = False
+    knowledge_visual_max_assets_per_job: int = Field(default=3, gt=0, le=12)
+    knowledge_visual_input_token_reserve: int = Field(default=6000, gt=0)
     # Qdrant 启动模式:
     #   - qdrant_url 为空字符串 → 进程内 local mode (文件持久化, 无需 Docker, 默认)
     #   - qdrant_url = "http://host:port" → 远程模式 (Qdrant 单独容器/服务器)

@@ -26,6 +26,7 @@ from app.services.course_compiler import CourseCompiler
 from app.services.material_indexer import build_material_index_handlers
 from app.services.semantic_atom_extractor import SemanticAtomExtractor
 from app.services.term_compiler import TermCompiler
+from app.services.visual_analysis import VisualAnalysis
 
 
 @asynccontextmanager
@@ -47,6 +48,7 @@ async def lifespan(app: FastAPI):
             ),
             "extract_semantic_atoms": SemanticAtomExtractor(store),
             "compile_terms": TermCompiler(store),
+            "visual_analysis": VisualAnalysis(store),
         },
         lease_seconds=settings.knowledge_worker_lease_seconds,
         poll_interval_seconds=settings.knowledge_worker_poll_interval_seconds,

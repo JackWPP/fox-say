@@ -39,7 +39,7 @@ from app.services.semantic_atom_compiler import (
 )
 from app.schemas.course_projection import CourseCompilation, CourseOutline
 from app.schemas.evidence import EvidenceRef, SourceFragment
-from app.services.source_revision import build_source_revision
+from app.services.source_revision import build_knowledge_revision, build_source_revision
 
 _DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "foxsay.db"
 
@@ -279,7 +279,7 @@ CREATE TABLE IF NOT EXISTS knowledge_jobs (
     finished_at TEXT,
     FOREIGN KEY (course_id) REFERENCES courses(id),
     FOREIGN KEY (material_id) REFERENCES materials(id),
-    CHECK (job_type IN ('index_material', 'compile_course', 'extract_semantic_atoms', 'compile_terms')),
+    CHECK (job_type IN ('index_material', 'compile_course', 'extract_semantic_atoms', 'compile_terms', 'visual_analysis')),
     CHECK (scope IN ('material', 'course')),
     CHECK (status IN ('queued', 'running', 'succeeded', 'retryable', 'failed')),
     CHECK (revision >= 0),
@@ -295,6 +295,40 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_jobs_claim
     ON knowledge_jobs(status, lease_expires_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_knowledge_jobs_course
     ON knowledge_jobs(course_id, revision, created_at);
+
+-- V2-E: an explicit asset selection is immutable job input. Visual output is
+-- intentionally isolated from source facts until a later evidence projection
+-- validates and publishes it.
+CREATE TABLE IF NOT EXISTS visual_analysis_requests (
+    job_id TEXT NOT NULL,
+    course_id TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    knowledge_revision TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    material_id TEXT NOT NULL,
+    storage_path TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    PRIMARY KEY (job_id, asset_id),
+    FOREIGN KEY (job_id) REFERENCES knowledge_jobs(job_id),
+    FOREIGN KEY (course_id) REFERENCES courses(id),
+    CHECK (reason_code IN ('missing_alt_text', 'unreadable_formula', 'unreadable_diagram'))
+);
+CREATE INDEX IF NOT EXISTS idx_visual_requests_course_revision
+    ON visual_analysis_requests(course_id, source_revision, job_id);
+
+CREATE TABLE IF NOT EXISTS visual_analysis_results (
+    job_id TEXT NOT NULL,
+    course_id TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    knowledge_revision TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    model_call_id TEXT NOT NULL,
+    analysis_text TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (job_id, asset_id),
+    FOREIGN KEY (job_id, asset_id) REFERENCES visual_analysis_requests(job_id, asset_id),
+    FOREIGN KEY (model_call_id) REFERENCES model_call_audits(call_id)
+);
 
 -- ===== Knowledge System V2: model-call audit and budget reservations =====
 
@@ -563,7 +597,7 @@ class SqliteStore:
         if row is None:
             raise RuntimeError("knowledge_jobs table is missing during migration")
         table_sql = str(row["sql"] or "")
-        if "compile_terms" in table_sql:
+        if "visual_analysis" in table_sql:
             return
 
         # PRAGMA foreign_keys cannot change inside an active transaction. The
@@ -600,7 +634,7 @@ class SqliteStore:
                     finished_at TEXT,
                     FOREIGN KEY (course_id) REFERENCES courses(id),
                     FOREIGN KEY (material_id) REFERENCES materials(id),
-                    CHECK (job_type IN ('index_material', 'compile_course', 'extract_semantic_atoms', 'compile_terms')),
+                    CHECK (job_type IN ('index_material', 'compile_course', 'extract_semantic_atoms', 'compile_terms', 'visual_analysis')),
                     CHECK (scope IN ('material', 'course')),
                     CHECK (status IN ('queued', 'running', 'succeeded', 'retryable', 'failed')),
                     CHECK (revision >= 0),
@@ -2399,6 +2433,197 @@ class SqliteStore:
         self._conn.commit()
 
     # --- Knowledge jobs (V2 persistent queue; no worker loop here) ---
+
+    def enqueue_visual_analysis_job(
+        self,
+        *,
+        course_id: str,
+        asset_requests: Sequence[dict[str, str]],
+        token_budget: int,
+        max_attempts: int = 3,
+    ) -> KnowledgeJob:
+        """Persist one explicit, current-asset V2-E visual-analysis job.
+
+        This is intentionally not called by material indexing. The caller must
+        name each parser asset and why text extraction is insufficient; stale,
+        cross-course, or non-current assets are rejected before a queue row is
+        created.
+        """
+        if not course_id.strip() or token_budget <= 0 or max_attempts <= 0:
+            raise ValueError("course_id, token_budget, and max_attempts are required")
+        if not asset_requests:
+            raise ValueError("visual analysis requires at least one explicit asset")
+        allowed_reasons = {"missing_alt_text", "unreadable_formula", "unreadable_diagram"}
+        normalized: dict[str, str] = {}
+        for item in asset_requests:
+            asset_id = str(item.get("asset_id", "")).strip()
+            reason_code = str(item.get("reason_code", "")).strip()
+            if not asset_id or reason_code not in allowed_reasons:
+                raise ValueError("Each visual asset needs an asset_id and supported reason_code")
+            if asset_id in normalized and normalized[asset_id] != reason_code:
+                raise ValueError("An asset cannot carry conflicting visual-analysis reasons")
+            normalized[asset_id] = reason_code
+
+        manifest = self.get_compilable_source_manifest(course_id)
+        if manifest is None:
+            raise ValueError("Visual analysis requires a current, indexed course source")
+        source_revision = manifest[0]
+        asset_ids = sorted(normalized)
+        placeholders = ", ".join("?" for _ in asset_ids)
+        rows = self._conn.execute(
+            f"""
+            SELECT asset.asset_id, asset.material_id, asset.storage_path
+            FROM extracted_assets AS asset
+            INNER JOIN materials AS material
+                ON material.id = asset.material_id AND material.course_id = asset.course_id
+            INNER JOIN knowledge_jobs AS index_job
+                ON index_job.course_id = material.course_id
+               AND index_job.material_id = material.id
+               AND index_job.revision = material.revision
+               AND index_job.job_type = 'index_material' AND index_job.status = 'succeeded'
+            WHERE asset.course_id = ? AND asset.asset_id IN ({placeholders})
+              AND material.status = 'ready' AND material.content_hash <> ''
+            """,
+            [course_id, *asset_ids],
+        ).fetchall()
+        by_asset = {row["asset_id"]: row for row in rows}
+        if set(by_asset) != set(asset_ids) or any(not str(row["storage_path"]).strip() for row in rows):
+            raise ValueError("Visual analysis assets must be current, course-owned parsed assets with a storage path")
+
+        knowledge_revision = build_knowledge_revision(
+            source_revision=source_revision, compiler_version="visual-analysis-e1"
+        )
+        idempotency_key = f"knowledge:visual_analysis:{course_id}:source:{source_revision}"
+        with self._knowledge_job_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = self._conn.execute(
+                    """SELECT * FROM knowledge_jobs WHERE course_id = ? AND job_type = 'visual_analysis'
+                       AND target_source_revision = ?""",
+                    (course_id, source_revision),
+                ).fetchone()
+                if existing is not None:
+                    stored = self._conn.execute(
+                        "SELECT asset_id, reason_code FROM visual_analysis_requests WHERE job_id = ? ORDER BY asset_id",
+                        (existing["job_id"],),
+                    ).fetchall()
+                    if [(row["asset_id"], row["reason_code"]) for row in stored] != [
+                        (asset_id, normalized[asset_id]) for asset_id in asset_ids
+                    ]:
+                        raise ValueError("Current visual-analysis job is already bound to a different asset selection")
+                    self._conn.commit()
+                    return self._row_to_knowledge_job(existing)
+                next_revision = self._conn.execute(
+                    """SELECT COALESCE(MAX(revision), -1) + 1 AS next_revision FROM knowledge_jobs
+                       WHERE course_id = ? AND material_id IS NULL AND job_type = 'visual_analysis'""",
+                    (course_id,),
+                ).fetchone()
+                if next_revision is None:
+                    raise RuntimeError("Could not allocate visual analysis job revision")
+                job_id = str(uuid.uuid4())
+                self._conn.execute(
+                    """INSERT INTO knowledge_jobs (
+                        job_id, course_id, material_id, job_type, revision, scope, status, attempt,
+                        max_attempts, idempotency_key, token_budget, target_source_revision,
+                        target_knowledge_revision
+                    ) VALUES (?, ?, NULL, 'visual_analysis', ?, 'course', 'queued', 0, ?, ?, ?, ?, ?)""",
+                    (job_id, course_id, int(next_revision["next_revision"]), max_attempts,
+                     idempotency_key, token_budget, source_revision, knowledge_revision),
+                )
+                self._conn.executemany(
+                    """INSERT INTO visual_analysis_requests (
+                        job_id, course_id, source_revision, knowledge_revision, asset_id, material_id,
+                        storage_path, reason_code
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        (job_id, course_id, source_revision, knowledge_revision, asset_id,
+                         by_asset[asset_id]["material_id"], by_asset[asset_id]["storage_path"],
+                         normalized[asset_id])
+                        for asset_id in asset_ids
+                    ],
+                )
+                row = self._conn.execute("SELECT * FROM knowledge_jobs WHERE job_id = ?", (job_id,)).fetchone()
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        if row is None:
+            raise RuntimeError("Visual analysis job was not persisted")
+        return self._row_to_knowledge_job(row)
+
+    def get_visual_analysis_requests(self, course_id: str, job_id: str) -> list[dict[str, str]]:
+        rows = self._conn.execute(
+            """SELECT asset_id, material_id, storage_path, reason_code FROM visual_analysis_requests
+               WHERE course_id = ? AND job_id = ? ORDER BY asset_id""",
+            (course_id, job_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def publish_visual_analysis_results_if_current(
+        self,
+        *,
+        course_id: str,
+        job_id: str,
+        job_attempt: int,
+        lease_owner: str,
+        source_revision: str,
+        knowledge_revision: str,
+        results: Sequence[dict[str, str]],
+    ) -> bool:
+        """Atomically publish only results matching the immutable asset request."""
+        if not results or any(not item.get("analysis_text", "").strip() for item in results):
+            raise ValueError("Visual analysis publication requires non-empty results")
+        with self._knowledge_job_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                job = self._conn.execute(
+                    """SELECT * FROM knowledge_jobs WHERE job_id = ? AND course_id = ?
+                       AND job_type = 'visual_analysis'""",
+                    (job_id, course_id),
+                ).fetchone()
+                if (
+                    job is None or job["status"] != "running" or job["attempt"] != job_attempt
+                    or job["lease_owner"] != lease_owner or job["lease_expires_at"] is None
+                    or job["lease_expires_at"] <= self._conn.execute("SELECT datetime('now')").fetchone()[0]
+                    or job["target_source_revision"] != source_revision
+                    or job["target_knowledge_revision"] != knowledge_revision
+                    or self.get_compilable_source_manifest(course_id) is None
+                    or self.get_compilable_source_manifest(course_id)[0] != source_revision
+                ):
+                    self._conn.rollback()
+                    return False
+                requested = self._conn.execute(
+                    "SELECT asset_id FROM visual_analysis_requests WHERE job_id = ? AND course_id = ?",
+                    (job_id, course_id),
+                ).fetchall()
+                requested_ids = {row["asset_id"] for row in requested}
+                result_ids = [str(item.get("asset_id", "")) for item in results]
+                if set(result_ids) != requested_ids or len(result_ids) != len(set(result_ids)):
+                    self._conn.rollback()
+                    return False
+                self._conn.executemany(
+                    """INSERT INTO visual_analysis_results (
+                        job_id, course_id, source_revision, knowledge_revision, asset_id, model_call_id, analysis_text
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(job_id, asset_id) DO NOTHING""",
+                    [
+                        (job_id, course_id, source_revision, knowledge_revision, item["asset_id"],
+                         item["model_call_id"], item["analysis_text"])
+                        for item in results
+                    ],
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return True
+
+    def get_visual_analysis_results(self, course_id: str, job_id: str) -> list[dict[str, str]]:
+        rows = self._conn.execute(
+            """SELECT asset_id, model_call_id, analysis_text FROM visual_analysis_results
+               WHERE course_id = ? AND job_id = ? ORDER BY asset_id""",
+            (course_id, job_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def enqueue_knowledge_job(self, job: KnowledgeJobCreate) -> KnowledgeJob:
         """Insert a job once per stable logical identity and idempotency key.
