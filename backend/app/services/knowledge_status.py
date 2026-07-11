@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -14,8 +12,11 @@ from app.schemas.knowledge_status import (
     KnowledgeStatus,
     MaterialEvidenceState,
     MaterialEvidenceStatus,
+    ProjectionStatus,
     SourceEvidenceStatus,
 )
+from app.schemas.course_projection import CourseCompilation
+from app.services.source_revision import build_source_revision
 
 
 def build_knowledge_status(store: SqliteStore, course_id: str) -> KnowledgeStatus:
@@ -55,13 +56,23 @@ def build_knowledge_status(store: SqliteStore, course_id: str) -> KnowledgeStatu
         retryable_materials=retryable_materials,
         failed_materials=failed_materials,
     )
+    source_revision = _source_revision(rows)
+    projection_status, compilation = _projection_status(
+        store,
+        course_id=course_id,
+        source_status=source_status,
+        source_revision=source_revision,
+    )
     return KnowledgeStatus(
         course_id=course_id,
-        status=_overall_status(source_status),
+        status=_overall_status(source_status, projection_status),
         source_status=source_status,
-        projection_status="not_started",
-        source_revision=_source_revision(rows),
-        knowledge_revision=None,
+        projection_status=projection_status,
+        source_revision=source_revision,
+        knowledge_revision=compilation.knowledge_revision if compilation is not None else None,
+        compiled_from_source_revision=(
+            compilation.source_revision if compilation is not None else None
+        ),
         coverage=KnowledgeCoverage(
             total_materials=len(material_statuses),
             ready_materials=ready_materials,
@@ -140,7 +151,38 @@ def _source_status(
     return "failed"
 
 
-def _overall_status(source_status: SourceEvidenceStatus) -> KnowledgeLifecycleStatus:
+def _projection_status(
+    store: SqliteStore,
+    *,
+    course_id: str,
+    source_status: SourceEvidenceStatus,
+    source_revision: str | None,
+) -> tuple[ProjectionStatus, CourseCompilation | None]:
+    if source_revision is None:
+        return "not_started", None
+    current = store.get_current_course_compilation(course_id, source_revision)
+    if source_status == "ready" and current is not None:
+        return "ready", current
+    job = store.get_course_compile_job_for_source(course_id, source_revision)
+    if job is not None:
+        if job.status in {"queued", "running"}:
+            return "processing", None
+        if job.status in {"retryable", "failed"}:
+            return "failed", None
+    latest = store.get_latest_course_compilation(course_id)
+    if latest is not None and latest.source_revision != source_revision:
+        return "stale", latest
+    return "not_started", None
+
+
+def _overall_status(
+    source_status: SourceEvidenceStatus,
+    projection_status: str,
+) -> KnowledgeLifecycleStatus:
+    if projection_status == "ready":
+        return "ready"
+    if projection_status == "stale":
+        return "stale"
     if source_status == "empty":
         return "empty"
     if source_status == "processing":
@@ -153,18 +195,4 @@ def _overall_status(source_status: SourceEvidenceStatus) -> KnowledgeLifecycleSt
 def _source_revision(rows: Sequence[Mapping[str, Any]]) -> str | None:
     if any(not row["content_hash"] for row in rows):
         return None
-    identity = [
-        {
-            "material_id": row["material_id"],
-            "revision": row["material_revision"],
-            "content_hash": row["content_hash"],
-            "kind": row["material_kind"],
-        }
-        for row in sorted(rows, key=lambda item: item["material_id"])
-    ]
-    manifest = {
-        "algorithm": "foxsay-source-manifest-v1",
-        "materials": identity,
-    }
-    canonical = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    return f"src_{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+    return build_source_revision(rows)[0]

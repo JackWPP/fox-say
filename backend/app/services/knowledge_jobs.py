@@ -16,6 +16,7 @@ from app.schemas.knowledge_jobs import (
     KnowledgeJobScope,
     KnowledgeJobType,
 )
+from app.services.source_revision import build_knowledge_revision
 
 
 def build_knowledge_job_idempotency_key(
@@ -23,11 +24,17 @@ def build_knowledge_job_idempotency_key(
     course_id: str,
     material_id: str | None,
     job_type: KnowledgeJobType,
-    revision: int,
+    revision: int | None,
+    target_source_revision: str | None = None,
 ) -> str:
     """Build the stable identity used to deduplicate a logical V2 job."""
-    target = material_id if material_id is not None else "course"
-    return f"knowledge:{job_type}:{course_id}:{target}:r{revision}"
+    if material_id is None:
+        if target_source_revision is None:
+            raise ValueError("course knowledge jobs require target_source_revision")
+        return f"knowledge:{job_type}:{course_id}:source:{target_source_revision}"
+    if revision is None:
+        raise ValueError("material knowledge jobs require revision")
+    return f"knowledge:{job_type}:{course_id}:{material_id}:r{revision}"
 
 
 def enqueue_material_index_job(
@@ -54,7 +61,7 @@ def enqueue_course_compile_job(
     store: SqliteStore,
     *,
     course_id: str,
-    revision: int,
+    source_revision: str,
     token_budget: int | None = None,
 ) -> KnowledgeJob:
     """Persist one idempotent course compiler job for a course revision."""
@@ -63,8 +70,13 @@ def enqueue_course_compile_job(
         course_id=course_id,
         material_id=None,
         job_type="compile_course",
-        revision=revision,
+        revision=None,
         scope="course",
+        target_source_revision=source_revision,
+        target_knowledge_revision=build_knowledge_revision(
+            source_revision=source_revision,
+            compiler_version="course-outline-d0",
+        ),
         token_budget=(
             settings.knowledge_job_default_token_budget
             if token_budget is None
@@ -79,15 +91,18 @@ def _enqueue(
     course_id: str,
     material_id: str | None,
     job_type: KnowledgeJobType,
-    revision: int,
+    revision: int | None,
     scope: KnowledgeJobScope,
     token_budget: int | None,
+    target_source_revision: str | None = None,
+    target_knowledge_revision: str | None = None,
 ) -> KnowledgeJob:
     idempotency_key = build_knowledge_job_idempotency_key(
         course_id=course_id,
         material_id=material_id,
         job_type=job_type,
         revision=revision,
+        target_source_revision=target_source_revision,
     )
     job = KnowledgeJobCreate(
         job_id=str(uuid.uuid4()),
@@ -98,5 +113,7 @@ def _enqueue(
         scope=scope,
         idempotency_key=idempotency_key,
         token_budget=token_budget,
+        target_source_revision=target_source_revision,
+        target_knowledge_revision=target_knowledge_revision,
     )
     return store.enqueue_knowledge_job(job)

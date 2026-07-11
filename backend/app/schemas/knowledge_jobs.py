@@ -27,10 +27,15 @@ class KnowledgeJobCreate(BaseModel):
     course_id: str = Field(min_length=1)
     material_id: str | None = None
     job_type: KnowledgeJobType
-    revision: int = Field(ge=0)
+    # Material jobs use their source material revision. Course jobs receive an
+    # integer revision from the store only when their source-manifest identity
+    # is persisted atomically; callers must not guess it from a source hash.
+    revision: int | None = Field(default=None, ge=0)
     scope: KnowledgeJobScope
     idempotency_key: str = Field(min_length=1)
     token_budget: int | None = Field(default=None, gt=0)
+    target_source_revision: str | None = Field(default=None, min_length=1)
+    target_knowledge_revision: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def validate_scope(self) -> "KnowledgeJobCreate":
@@ -45,6 +50,16 @@ class KnowledgeJobCreate(BaseModel):
             raise ValueError("material-scoped knowledge jobs require material_id")
         if self.scope == "course" and self.material_id is not None:
             raise ValueError("course-scoped knowledge jobs must not include material_id")
+        if self.scope == "material":
+            if self.revision is None:
+                raise ValueError("material-scoped knowledge jobs require revision")
+            if self.target_source_revision is not None or self.target_knowledge_revision is not None:
+                raise ValueError("material-scoped knowledge jobs must not carry course targets")
+        else:
+            if self.revision is not None:
+                raise ValueError("course-scoped knowledge jobs receive revision from the store")
+            if self.target_source_revision is None or self.target_knowledge_revision is None:
+                raise ValueError("course-scoped knowledge jobs require source and knowledge targets")
         return self
 
 
@@ -61,6 +76,8 @@ class KnowledgeJob(BaseModel):
     attempt: int = Field(ge=0)
     idempotency_key: str
     token_budget: int | None = Field(default=None, gt=0)
+    target_source_revision: str | None = None
+    target_knowledge_revision: str | None = None
     lease_owner: str | None = None
     lease_expires_at: str | None = None
     error_code: str | None = None

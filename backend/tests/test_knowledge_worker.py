@@ -61,7 +61,9 @@ async def test_worker_completes_registered_job(store: SqliteStore) -> None:
 
 
 async def test_worker_persists_declared_failure(store: SqliteStore) -> None:
-    enqueued = enqueue_course_compile_job(store, course_id="course-a", revision=1)
+    enqueued = enqueue_course_compile_job(
+        store, course_id="course-a", source_revision="src_declared_failure"
+    )
 
     async def fail(_job):
         raise KnowledgeJobExecutionError(
@@ -84,7 +86,9 @@ async def test_worker_persists_declared_failure(store: SqliteStore) -> None:
 
 
 async def test_worker_retries_unexpected_failure(store: SqliteStore) -> None:
-    enqueued = enqueue_course_compile_job(store, course_id="course-a", revision=2)
+    enqueued = enqueue_course_compile_job(
+        store, course_id="course-a", source_revision="src_unexpected_failure"
+    )
 
     async def explode(_job):
         raise RuntimeError("temporary provider outage")
@@ -105,7 +109,9 @@ async def test_worker_retries_unexpected_failure(store: SqliteStore) -> None:
 
 
 async def test_worker_marks_unknown_job_type_failed(store: SqliteStore) -> None:
-    enqueued = enqueue_course_compile_job(store, course_id="course-a", revision=3)
+    enqueued = enqueue_course_compile_job(
+        store, course_id="course-a", source_revision="src_unknown_handler"
+    )
     worker = KnowledgeJobWorker(store, worker_id="worker-a", handlers={})
 
     await worker.run_once()
@@ -119,7 +125,9 @@ async def test_worker_marks_unknown_job_type_failed(store: SqliteStore) -> None:
 async def test_worker_renews_lease_while_handler_is_running(
     store: SqliteStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    enqueued = enqueue_course_compile_job(store, course_id="course-a", revision=4)
+    enqueued = enqueue_course_compile_job(
+        store, course_id="course-a", source_revision="src_heartbeat"
+    )
     original_renew = store.renew_knowledge_job_lease
     renew_calls = 0
 

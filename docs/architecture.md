@@ -5,12 +5,14 @@
 > V2 owns public material upload → durable indexing → source-fragment/Qdrant evidence,
 > read-only evidence status and current-fragment preview. V2-C3 has completed its frontend
 > boundary and isolated browser acceptance for that status and for explicit fragment citations.
-> V2-C2's fragment-retrieval and `AnswerEnvelope` contract still does **not** call
-> a generation model or replace `/chat`, Agent, SSE, chat persistence, course compilation or
+> V2-D0 additionally compiles a deterministic, evidence-backed CourseOutline without any model
+> call. `AnswerEnvelope` still does **not** replace `/chat`, Agent, SSE, chat persistence or
 > legacy Wiki build.
 
-- `knowledge_jobs` is a separate SQLite-backed, course-scoped queue for V2 work. It has
-  explicit revision, idempotency key, attempt, lease, error and token-budget fields.
+- `knowledge_jobs` is a separate SQLite-backed, course-scoped queue for V2 work. Material jobs
+  use their explicit material revision; D0 course jobs additionally persist canonical
+  `target_source_revision` and `target_knowledge_revision`, alongside idempotency, lease,
+  attempt, error and token-budget fields.
 - `source_fragments` is the V2 material evidence fact layer. Each fragment has an explicit
   `fragment_id`, course/material/revision scope, title path, source offsets and page/slide
   location; `EvidenceRef` resolves material claims through that ID rather than a filename.
@@ -21,18 +23,28 @@
   or legacy chunks.
 - The current V2 job types are `index_material` and `compile_course`. Store operations can
   atomically enqueue, claim, reclaim an expired lease, complete, fail and requeue a job.
-- SQLite also enforces one logical job per explicit material/course scope and revision with
-  partial unique indexes. A historical duplicate is a visible startup integrity error rather
-  than a silently selected row that could inflate coverage or authorize stale evidence.
+- SQLite enforces one logical material job per material/revision and one D0 course job per
+  course/source revision with partial unique indexes. The store atomically assigns a numeric
+  course queue revision only after resolving that source identity. A historical duplicate is a
+  visible startup integrity error rather than a silently selected row that could inflate coverage
+  or authorize stale evidence.
 - `KnowledgeJobWorker` is a controlled, single-worker consumer with injected handlers and a
-  managed lease heartbeat. FastAPI starts it in its lifespan; uploads only enqueue the durable
-  `index_material` job, and material progress reads the durable job snapshot. SQLite MVP must
-  run one API/worker process. The legacy pipeline remains in the repository for later migration,
-  but public material uploads no longer launch it with `asyncio.create_task()`.
+  managed lease heartbeat. FastAPI starts it in its lifespan; uploads enqueue only durable
+  `index_material` work. Once an indexer has published the final current evidence for a course,
+  it deterministically enqueues a source-pinned `compile_course` job; the controlled worker owns
+  the actual compilation. SQLite MVP must run one API/worker process. The legacy pipeline remains
+  in the repository for later migration, but public material uploads no longer launch it with
+  `asyncio.create_task()`.
 - `GET /courses/{course_id}/knowledge-status` is a no-model SQLite snapshot of current
-  material revisions, their `index_material` jobs and fragment counts. Source-ready remains
-  `partial` until V2-D persists a compiler snapshot; it must not be shown as a fully digested
-  course.
+  material revisions, index jobs, compiler header and fragment counts. Source-ready remains
+  `partial` while compilation is `not_started` or `processing`; a source-pinned succeeded D0
+  snapshot makes the projection `ready`, while changed material manifests make it `stale`.
+- `course_compilations` is the small immutable header used by status reads; its matching
+  `course_projection_snapshots` payload currently stores only the deterministic `CourseOutline`.
+  Both are course/source/knowledge revision scoped and are never sourced from legacy Wiki/DMAP.
+- `GET /courses/{course_id}/course-outline` returns only the current succeeded D0 outline. It
+  rejects uncompiled, stale and cross-course snapshots rather than falling back to legacy course
+  structure.
 - `GET /courses/{course_id}/source-fragments/{fragment_id}` is the V2 citation preview path.
   It joins course, material revision, material readiness and succeeded `index_material` job in
   one current-evidence boundary; it never falls back to legacy DMAP locators or old chunks.
@@ -67,9 +79,9 @@
 - The target evidence-first model, incremental revision policy and migration sequence are in
   [knowledge-system-v2-implementation-plan.md](knowledge-system-v2-implementation-plan.md).
 
-> The MVP Architecture and Data Flow below describe the still-running legacy path. The narrow
-> C3 SourcesPanel/CitationCard boundary does not mean V2-C2 has been wired into chat or Agent
-> behavior.
+> The MVP Architecture and Data Flow below describe the still-running legacy path. D0's outline
+> snapshot and the narrow C3 SourcesPanel/CitationCard boundary do not mean V2 evidence has been
+> wired into chat or Agent behavior.
 
 ## MVP Architecture
 ```text

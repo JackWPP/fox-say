@@ -15,6 +15,7 @@ from pathlib import Path
 from app.db.sqlite_store import SqliteStore
 from app.schemas.knowledge_jobs import KnowledgeJob
 from app.services.embedding import embed_texts
+from app.services.knowledge_jobs import enqueue_course_compile_job
 from app.services.knowledge_worker import KnowledgeJobExecutionError
 from app.services.normalizer import NormalizationEngine
 from app.services.parser_interface import DocumentParsingException, UnifiedParserOutput
@@ -172,6 +173,24 @@ class MaterialIndexer:
 
         if not published:
             raise self._stale_revision_error(job, None)
+
+        compile_manifest = self._store.get_compilable_source_manifest(
+            job.course_id,
+            allow_running_index_job_id=job.job_id,
+        )
+        if compile_manifest is not None:
+            try:
+                enqueue_course_compile_job(
+                    self._store,
+                    course_id=job.course_id,
+                    source_revision=compile_manifest[0],
+                )
+            except Exception as exc:
+                raise KnowledgeJobExecutionError(
+                    f"Could not enqueue current course compilation: {exc}",
+                    code="course_compile_enqueue_failed",
+                    retryable=True,
+                ) from exc
 
     async def _mark_failed_if_current(self, job: KnowledgeJob) -> None:
         if job.material_id is None:

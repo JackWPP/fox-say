@@ -18,7 +18,9 @@ from app.schemas.foxsay import (
     ReviewPlan,
 )
 from app.schemas.knowledge_jobs import KnowledgeJob, KnowledgeJobCreate
+from app.schemas.course_projection import CourseCompilation, CourseOutline
 from app.schemas.evidence import SourceFragment
+from app.services.source_revision import build_source_revision
 
 _DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "foxsay.db"
 
@@ -244,6 +246,8 @@ CREATE TABLE IF NOT EXISTS knowledge_jobs (
     attempt INTEGER NOT NULL DEFAULT 0,
     idempotency_key TEXT NOT NULL UNIQUE,
     token_budget INTEGER,
+    target_source_revision TEXT,
+    target_knowledge_revision TEXT,
     lease_owner TEXT,
     lease_expires_at TEXT,
     error_code TEXT,
@@ -270,6 +274,41 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_jobs_claim
     ON knowledge_jobs(status, lease_expires_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_knowledge_jobs_course
     ON knowledge_jobs(course_id, revision, created_at);
+
+CREATE TABLE IF NOT EXISTS course_compilations (
+    course_id TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    knowledge_revision TEXT NOT NULL,
+    compiler_version TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    source_manifest_json TEXT NOT NULL,
+    source_fragment_count INTEGER NOT NULL,
+    outline_section_count INTEGER NOT NULL,
+    warning_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (course_id, knowledge_revision),
+    UNIQUE (course_id, source_revision, compiler_version),
+    UNIQUE (job_id),
+    FOREIGN KEY (course_id) REFERENCES courses(id),
+    FOREIGN KEY (job_id) REFERENCES knowledge_jobs(job_id),
+    CHECK (source_fragment_count >= 0),
+    CHECK (outline_section_count >= 0),
+    CHECK (warning_count >= 0)
+);
+CREATE INDEX IF NOT EXISTS idx_course_compilations_current
+    ON course_compilations(course_id, source_revision, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS course_projection_snapshots (
+    course_id TEXT NOT NULL,
+    knowledge_revision TEXT NOT NULL,
+    projection_kind TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (course_id, knowledge_revision, projection_kind),
+    FOREIGN KEY (course_id, knowledge_revision)
+        REFERENCES course_compilations(course_id, knowledge_revision),
+    CHECK (projection_kind IN ('course_outline'))
+);
 """
 
 
@@ -306,6 +345,8 @@ class SqliteStore:
             "ALTER TABLE materials ADD COLUMN revision INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE materials ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE courses ADD COLUMN icon TEXT NOT NULL DEFAULT '📚'",
+            "ALTER TABLE knowledge_jobs ADD COLUMN target_source_revision TEXT",
+            "ALTER TABLE knowledge_jobs ADD COLUMN target_knowledge_revision TEXT",
         ]
         for sql in migrations:
             try:
@@ -422,10 +463,18 @@ class SqliteStore:
             """
             CREATE UNIQUE INDEX IF NOT EXISTS uq_knowledge_jobs_course_identity
             ON knowledge_jobs(course_id, job_type, revision)
-            WHERE material_id IS NULL
+            WHERE material_id IS NULL AND target_source_revision IS NULL
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_knowledge_jobs_course_target_identity
+            ON knowledge_jobs(course_id, job_type, target_source_revision)
+            WHERE material_id IS NULL AND target_source_revision IS NOT NULL
             """,
         )
         try:
+            # Historic course jobs use only their integer revision.  D0 course
+            # jobs are instead idempotent by the explicit source manifest.
+            self._conn.execute("DROP INDEX IF EXISTS uq_knowledge_jobs_course_identity")
             for statement in statements:
                 self._conn.execute(statement)
             self._conn.commit()
@@ -499,6 +548,244 @@ class SqliteStore:
             (course_id, course_id),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_compilable_source_manifest(
+        self,
+        course_id: str,
+        *,
+        allow_running_index_job_id: str | None = None,
+    ) -> tuple[str, str] | None:
+        """Return the complete current source manifest only when it is compilable.
+
+        ``allow_running_index_job_id`` exists solely for the material indexer:
+        after it has atomically published its fragments but before the worker
+        marks that same index job succeeded, it may enqueue the next durable
+        course job.  The compiler itself never uses this relaxation.
+        """
+        if not course_id.strip():
+            raise ValueError("course_id is required for source manifest")
+        rows = self._conn.execute(
+            """
+            SELECT
+                m.id AS material_id,
+                m.revision AS material_revision,
+                m.content_hash AS content_hash,
+                m.kind AS material_kind,
+                m.status AS material_status,
+                COALESCE(fragment_counts.fragment_count, 0) AS fragment_count,
+                job.job_id AS job_id,
+                job.status AS job_status
+            FROM materials AS m
+            LEFT JOIN (
+                SELECT material_id, material_revision, COUNT(*) AS fragment_count
+                FROM source_fragments
+                WHERE course_id = ?
+                GROUP BY material_id, material_revision
+            ) AS fragment_counts
+                ON fragment_counts.material_id = m.id
+               AND fragment_counts.material_revision = m.revision
+            LEFT JOIN knowledge_jobs AS job
+                ON job.course_id = m.course_id
+               AND job.material_id = m.id
+               AND job.revision = m.revision
+               AND job.job_type = 'index_material'
+            WHERE m.course_id = ?
+            ORDER BY m.id
+            """,
+            (course_id, course_id),
+        ).fetchall()
+        if not rows:
+            return None
+        normalized_rows = [dict(row) for row in rows]
+        for row in normalized_rows:
+            current_or_allowed = (
+                row["job_status"] == "succeeded"
+                or (
+                    allow_running_index_job_id is not None
+                    and row["job_id"] == allow_running_index_job_id
+                    and row["job_status"] == "running"
+                )
+            )
+            if (
+                row["material_status"] != "ready"
+                or not row["content_hash"]
+                or int(row["fragment_count"]) <= 0
+                or not current_or_allowed
+            ):
+                return None
+        return build_source_revision(normalized_rows)
+
+    def get_current_course_compilation(
+        self, course_id: str, source_revision: str
+    ) -> CourseCompilation | None:
+        """Read a succeeded compiler header for this exact current source set."""
+        row = self._conn.execute(
+            """
+            SELECT cc.*
+            FROM course_compilations AS cc
+            INNER JOIN knowledge_jobs AS job
+                ON job.job_id = cc.job_id
+               AND job.course_id = cc.course_id
+               AND job.status = 'succeeded'
+               AND job.target_source_revision = cc.source_revision
+               AND job.target_knowledge_revision = cc.knowledge_revision
+            WHERE cc.course_id = ? AND cc.source_revision = ?
+            """,
+            (course_id, source_revision),
+        ).fetchone()
+        return self._row_to_course_compilation(row) if row is not None else None
+
+    def get_latest_course_compilation(self, course_id: str) -> CourseCompilation | None:
+        """Return the latest succeeded compilation header for stale-state audit."""
+        row = self._conn.execute(
+            """
+            SELECT cc.*
+            FROM course_compilations AS cc
+            INNER JOIN knowledge_jobs AS job
+                ON job.job_id = cc.job_id
+               AND job.course_id = cc.course_id
+               AND job.status = 'succeeded'
+            WHERE cc.course_id = ?
+            ORDER BY cc.created_at DESC, cc.knowledge_revision DESC
+            LIMIT 1
+            """,
+            (course_id,),
+        ).fetchone()
+        return self._row_to_course_compilation(row) if row is not None else None
+
+    def get_course_compile_job_for_source(
+        self, course_id: str, source_revision: str
+    ) -> KnowledgeJob | None:
+        row = self._conn.execute(
+            """
+            SELECT * FROM knowledge_jobs
+            WHERE course_id = ?
+              AND material_id IS NULL
+              AND job_type = 'compile_course'
+              AND target_source_revision = ?
+            ORDER BY created_at DESC, job_id DESC
+            LIMIT 1
+            """,
+            (course_id, source_revision),
+        ).fetchone()
+        return self._row_to_knowledge_job(row) if row is not None else None
+
+    def get_current_course_outline(
+        self, course_id: str, source_revision: str
+    ) -> CourseOutline | None:
+        """Read only the current, successfully compiled D0 outline snapshot."""
+        compilation = self.get_current_course_compilation(course_id, source_revision)
+        if compilation is None:
+            return None
+        row = self._conn.execute(
+            """
+            SELECT payload_json FROM course_projection_snapshots
+            WHERE course_id = ? AND knowledge_revision = ? AND projection_kind = 'course_outline'
+            """,
+            (course_id, compilation.knowledge_revision),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("Succeeded course compilation has no course_outline snapshot")
+        outline = CourseOutline.model_validate_json(row["payload_json"])
+        if (
+            outline.course_id != course_id
+            or outline.source_revision != source_revision
+            or outline.knowledge_revision != compilation.knowledge_revision
+        ):
+            raise RuntimeError("Course outline snapshot identity does not match compilation header")
+        return outline
+
+    def publish_course_compilation_if_current(
+        self,
+        *,
+        course_id: str,
+        job_id: str,
+        target_source_revision: str,
+        target_knowledge_revision: str,
+        outline: CourseOutline,
+        source_manifest_json: str,
+        compiler_version: str,
+    ) -> bool:
+        """Atomically publish an immutable outline only for the current source set."""
+        if outline.course_id != course_id:
+            raise ValueError("Course outline course_id does not match compilation scope")
+        if outline.source_revision != target_source_revision:
+            raise ValueError("Course outline source revision does not match compilation target")
+        if outline.knowledge_revision != target_knowledge_revision:
+            raise ValueError("Course outline knowledge revision does not match compilation target")
+        if outline.compiler_version != compiler_version:
+            raise ValueError("Course outline compiler version does not match compilation target")
+
+        with self._knowledge_job_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                job = self._conn.execute(
+                    """
+                    SELECT status, target_source_revision, target_knowledge_revision
+                    FROM knowledge_jobs
+                    WHERE job_id = ? AND course_id = ? AND job_type = 'compile_course'
+                    """,
+                    (job_id, course_id),
+                ).fetchone()
+                if (
+                    job is None
+                    or job["status"] != "running"
+                    or job["target_source_revision"] != target_source_revision
+                    or job["target_knowledge_revision"] != target_knowledge_revision
+                ):
+                    self._conn.rollback()
+                    return False
+                current_manifest = self.get_compilable_source_manifest(course_id)
+                if current_manifest != (target_source_revision, source_manifest_json):
+                    self._conn.rollback()
+                    return False
+
+                self._conn.execute(
+                    """
+                    INSERT INTO course_compilations (
+                        course_id, source_revision, knowledge_revision, compiler_version, job_id,
+                        source_manifest_json, source_fragment_count, outline_section_count, warning_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+                    ON CONFLICT(course_id, source_revision, compiler_version) DO NOTHING
+                    """,
+                    (
+                        course_id,
+                        target_source_revision,
+                        target_knowledge_revision,
+                        compiler_version,
+                        job_id,
+                        source_manifest_json,
+                        outline.fragment_count,
+                        len(outline.sections),
+                    ),
+                )
+                header = self._conn.execute(
+                    """
+                    SELECT knowledge_revision, job_id FROM course_compilations
+                    WHERE course_id = ? AND source_revision = ? AND compiler_version = ?
+                    """,
+                    (course_id, target_source_revision, compiler_version),
+                ).fetchone()
+                if (
+                    header is None
+                    or header["knowledge_revision"] != target_knowledge_revision
+                    or header["job_id"] != job_id
+                ):
+                    raise RuntimeError("Course compilation target is already bound to another snapshot")
+                self._conn.execute(
+                    """
+                    INSERT INTO course_projection_snapshots (
+                        course_id, knowledge_revision, projection_kind, payload_json
+                    ) VALUES (?, ?, 'course_outline', ?)
+                    ON CONFLICT(course_id, knowledge_revision, projection_kind) DO NOTHING
+                    """,
+                    (course_id, target_knowledge_revision, outline.model_dump_json()),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return True
 
     def update_material(self, course_id: str, material_id: str, material: Material) -> Material | None:
         existing = self.get_material(course_id, material_id)
@@ -1166,24 +1453,44 @@ class SqliteStore:
                 raise ValueError(
                     "Knowledge job logical identity is already bound to another idempotency key"
                 )
+            persisted_job = job
+            if job.scope == "course":
+                next_revision_row = self._conn.execute(
+                    """
+                    SELECT COALESCE(MAX(revision), -1) + 1 AS next_revision
+                    FROM knowledge_jobs
+                    WHERE course_id = ? AND material_id IS NULL AND job_type = 'compile_course'
+                    """,
+                    (job.course_id,),
+                ).fetchone()
+                if next_revision_row is None:
+                    raise RuntimeError("Could not allocate course compile revision")
+                persisted_job = job.model_copy(
+                    update={"revision": int(next_revision_row["next_revision"])}
+                )
+            if persisted_job.revision is None:
+                raise RuntimeError("Knowledge job revision was not assigned")
             try:
                 self._conn.execute(
                     """
                     INSERT INTO knowledge_jobs
                         (job_id, course_id, material_id, job_type, revision, scope,
-                         status, attempt, idempotency_key, token_budget)
-                    VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)
+                         status, attempt, idempotency_key, token_budget,
+                         target_source_revision, target_knowledge_revision)
+                    VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?)
                     ON CONFLICT(idempotency_key) DO NOTHING
                     """,
                     (
-                        job.job_id,
-                        job.course_id,
-                        job.material_id,
-                        job.job_type,
-                        job.revision,
-                        job.scope,
-                        job.idempotency_key,
-                        job.token_budget,
+                        persisted_job.job_id,
+                        persisted_job.course_id,
+                        persisted_job.material_id,
+                        persisted_job.job_type,
+                        persisted_job.revision,
+                        persisted_job.scope,
+                        persisted_job.idempotency_key,
+                        persisted_job.token_budget,
+                        persisted_job.target_source_revision,
+                        persisted_job.target_knowledge_revision,
                     ),
                 )
                 self._conn.commit()
@@ -1209,13 +1516,17 @@ class SqliteStore:
             persisted.job_type,
             persisted.revision,
             persisted.scope,
+            persisted.target_source_revision,
+            persisted.target_knowledge_revision,
         )
         requested_identity = (
-            job.course_id,
-            job.material_id,
-            job.job_type,
-            job.revision,
-            job.scope,
+            persisted_job.course_id,
+            persisted_job.material_id,
+            persisted_job.job_type,
+            persisted_job.revision,
+            persisted_job.scope,
+            persisted_job.target_source_revision,
+            persisted_job.target_knowledge_revision,
         )
         if immutable_identity != requested_identity:
             raise ValueError("Knowledge job idempotency key is already bound to another job identity")
@@ -1226,14 +1537,21 @@ class SqliteStore:
         job: KnowledgeJobCreate,
     ) -> KnowledgeJob | None:
         if job.material_id is None:
+            if job.target_source_revision is None:
+                raise ValueError("course knowledge job requires target_source_revision")
             row = self._conn.execute(
                 """
                 SELECT * FROM knowledge_jobs
-                WHERE course_id = ? AND material_id IS NULL AND job_type = ? AND revision = ?
+                WHERE course_id = ?
+                  AND material_id IS NULL
+                  AND job_type = ?
+                  AND target_source_revision = ?
                 """,
-                (job.course_id, job.job_type, job.revision),
+                (job.course_id, job.job_type, job.target_source_revision),
             ).fetchone()
         else:
+            if job.revision is None:
+                raise ValueError("material knowledge job requires revision")
             row = self._conn.execute(
                 """
                 SELECT * FROM knowledge_jobs
@@ -1477,6 +1795,8 @@ class SqliteStore:
             attempt=row["attempt"],
             idempotency_key=row["idempotency_key"],
             token_budget=row["token_budget"],
+            target_source_revision=row["target_source_revision"],
+            target_knowledge_revision=row["target_knowledge_revision"],
             lease_owner=row["lease_owner"],
             lease_expires_at=row["lease_expires_at"],
             error_code=row["error_code"],
@@ -1486,6 +1806,21 @@ class SqliteStore:
             updated_at=row["updated_at"],
             started_at=row["started_at"],
             finished_at=row["finished_at"],
+        )
+
+    @staticmethod
+    def _row_to_course_compilation(row: sqlite3.Row) -> CourseCompilation:
+        return CourseCompilation(
+            course_id=row["course_id"],
+            source_revision=row["source_revision"],
+            knowledge_revision=row["knowledge_revision"],
+            compiler_version=row["compiler_version"],
+            job_id=row["job_id"],
+            source_manifest_json=row["source_manifest_json"],
+            source_fragment_count=row["source_fragment_count"],
+            outline_section_count=row["outline_section_count"],
+            warning_count=row["warning_count"],
+            created_at=row["created_at"],
         )
 
     # --- Chat Sessions ---

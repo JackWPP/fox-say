@@ -22,6 +22,7 @@ from app.api.skeleton import router as skeleton_router
 from app.core.config import settings
 from app.db.sqlite_store import SqliteStore
 from app.services.knowledge_worker import KnowledgeJobWorker
+from app.services.course_compiler import CourseCompiler
 from app.services.material_indexer import build_material_index_handlers
 
 
@@ -34,7 +35,10 @@ async def lifespan(app: FastAPI):
     worker = KnowledgeJobWorker(
         store,
         worker_id=worker_id,
-        handlers=build_material_index_handlers(store),
+        handlers={
+            **build_material_index_handlers(store),
+            "compile_course": CourseCompiler(store),
+        },
         lease_seconds=settings.knowledge_worker_lease_seconds,
         poll_interval_seconds=settings.knowledge_worker_poll_interval_seconds,
     )

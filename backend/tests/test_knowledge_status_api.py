@@ -6,7 +6,9 @@ from httpx import AsyncClient
 
 from app.main import app
 from app.schemas.foxsay import Material
-from app.services.knowledge_jobs import enqueue_material_index_job
+from app.services.course_compiler import CourseCompiler
+from app.services.knowledge_jobs import enqueue_course_compile_job, enqueue_material_index_job
+from app.services.knowledge_worker import KnowledgeJobWorker
 from app.services.source_fragments import build_source_fragments
 
 
@@ -138,6 +140,49 @@ async def test_knowledge_status_distinguishes_source_ready_from_course_ready(
     assert payload["materials"][0]["status"] == "ready"
     assert payload["source_revision"].startswith("src_")
     assert repeated.json()["source_revision"] == payload["source_revision"]
+
+
+async def test_current_course_outline_endpoint_rejects_uncompiled_and_stale_snapshots(
+    client: AsyncClient,
+) -> None:
+    course_id = await _create_course(client, "线性代数 Outline")
+    material = await _upload_markdown(client, course_id, "outline.md")
+    _complete_current_index(
+        course_id,
+        material,
+        markdown="# 向量空间\n\n向量空间对加法封闭。\n\n## 子空间\n\n子空间包含零向量。",
+    )
+    missing = await client.get(f"/courses/{course_id}/course-outline")
+    assert missing.status_code == 404
+
+    store = app.state.store
+    manifest = store.get_compilable_source_manifest(course_id)
+    assert manifest is not None
+    job = enqueue_course_compile_job(
+        store, course_id=course_id, source_revision=manifest[0]
+    )
+    worker = KnowledgeJobWorker(
+        store,
+        worker_id="outline-api-worker",
+        handlers={"compile_course": CourseCompiler(store)},
+    )
+    processed = await worker.run_once()
+    assert processed is not None and processed.job_id == job.job_id
+
+    current = await client.get(f"/courses/{course_id}/course-outline")
+    assert current.status_code == 200
+    payload = current.json()
+    assert payload["course_id"] == course_id
+    assert payload["source_revision"] == manifest[0]
+    assert payload["fragment_count"] == 2
+    assert all(ref["course_id"] == course_id for section in payload["sections"] for ref in section["evidence"])
+
+    advanced = store.advance_material_revision(
+        course_id, material["id"], "stale-outline-source", status="processing"
+    )
+    assert advanced is not None
+    stale = await client.get(f"/courses/{course_id}/course-outline")
+    assert stale.status_code == 404
 
 
 async def test_knowledge_status_uses_only_current_revision_and_exposes_retryable_failure(

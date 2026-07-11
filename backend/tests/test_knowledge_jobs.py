@@ -75,15 +75,19 @@ def test_enqueue_rejects_different_idempotency_key_for_same_logical_job(
     assert store.get_knowledge_job("course-a", material_job.job_id) is not None
     assert len(store.list_knowledge_jobs("course-a")) == 1
 
-    course_job = enqueue_course_compile_job(store, course_id="course-a", revision=9)
+    course_job = enqueue_course_compile_job(
+        store, course_id="course-a", source_revision="src_duplicate_course"
+    )
     duplicate_course = KnowledgeJobCreate(
         job_id=str(uuid.uuid4()),
         course_id="course-a",
         material_id=None,
         job_type="compile_course",
-        revision=9,
+        revision=None,
         scope="course",
         idempotency_key="different-course-key",
+        target_source_revision="src_duplicate_course",
+        target_knowledge_revision="kn_duplicate_course",
     )
     with pytest.raises(ValueError, match="logical identity"):
         store.enqueue_knowledge_job(duplicate_course)
@@ -144,6 +148,61 @@ def test_store_refuses_existing_duplicate_logical_identity_on_startup(tmp_path: 
         connection.close()
 
 
+def test_store_migrates_pre_d0_course_job_schema_and_uses_source_identity(tmp_path: Path):
+    db_path = tmp_path / "pre-d0-knowledge-jobs.db"
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(
+            """
+            CREATE TABLE knowledge_jobs (
+                job_id TEXT PRIMARY KEY,
+                course_id TEXT NOT NULL,
+                material_id TEXT,
+                job_type TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                attempt INTEGER NOT NULL DEFAULT 0,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                token_budget INTEGER,
+                lease_owner TEXT,
+                lease_expires_at TEXT,
+                error_code TEXT,
+                error_detail TEXT,
+                error_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                started_at TEXT,
+                finished_at TEXT
+            )
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    store = SqliteStore(db_path)
+    try:
+        column_names = {
+            row["name"]
+            for row in store._conn.execute("PRAGMA table_info(knowledge_jobs)").fetchall()
+        }
+        assert {"target_source_revision", "target_knowledge_revision"} <= column_names
+        store.create_course(Course(id="course-a", title="课程 A", status="empty"))
+        first = enqueue_course_compile_job(
+            store, course_id="course-a", source_revision="src_pre_d0_a"
+        )
+        second = enqueue_course_compile_job(
+            store, course_id="course-a", source_revision="src_pre_d0_b"
+        )
+        assert first.revision == 0
+        assert second.revision == 1
+        assert first.target_source_revision == "src_pre_d0_a"
+        assert second.target_source_revision == "src_pre_d0_b"
+    finally:
+        store.close()
+
+
 def test_enqueue_rejects_material_from_another_course(store: SqliteStore):
     with pytest.raises(ValueError, match="does not belong to course"):
         enqueue_material_index_job(
@@ -152,7 +211,9 @@ def test_enqueue_rejects_material_from_another_course(store: SqliteStore):
 
 
 def test_claim_honors_lease_and_reclaims_expired_job(store: SqliteStore):
-    queued = enqueue_course_compile_job(store, course_id="course-a", revision=7)
+    queued = enqueue_course_compile_job(
+        store, course_id="course-a", source_revision="src_claim"
+    )
 
     first_claim = store.claim_next_knowledge_job("worker-a", lease_seconds=60)
     assert first_claim is not None
@@ -179,7 +240,9 @@ def test_claim_honors_lease_and_reclaims_expired_job(store: SqliteStore):
 
 
 def test_renew_lease_requires_current_owner(store: SqliteStore):
-    queued = enqueue_course_compile_job(store, course_id="course-a", revision=8)
+    queued = enqueue_course_compile_job(
+        store, course_id="course-a", source_revision="src_renew"
+    )
     claimed = store.claim_next_knowledge_job("worker-a", lease_seconds=60)
     assert claimed is not None and claimed.job_id == queued.job_id
 
@@ -194,7 +257,9 @@ def test_renew_lease_requires_current_owner(store: SqliteStore):
 
 
 def test_complete_fail_and_retry_preserve_explicit_state(store: SqliteStore):
-    completed_job = enqueue_course_compile_job(store, course_id="course-a", revision=1)
+    completed_job = enqueue_course_compile_job(
+        store, course_id="course-a", source_revision="src_completed"
+    )
     claimed = store.claim_next_knowledge_job("worker-a", lease_seconds=60)
     assert claimed is not None and claimed.job_id == completed_job.job_id
 
@@ -203,7 +268,9 @@ def test_complete_fail_and_retry_preserve_explicit_state(store: SqliteStore):
     assert completed.finished_at is not None
     assert completed.lease_owner is None
 
-    retry_job = enqueue_course_compile_job(store, course_id="course-a", revision=2)
+    retry_job = enqueue_course_compile_job(
+        store, course_id="course-a", source_revision="src_retry"
+    )
     claimed_retry_job = store.claim_next_knowledge_job("worker-b", lease_seconds=60)
     assert claimed_retry_job is not None and claimed_retry_job.job_id == retry_job.job_id
 

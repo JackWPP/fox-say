@@ -117,6 +117,11 @@ async def test_index_job_persists_markdown_fragments_and_stable_vector_payload(
         material.course_id, material_id=material.id, material_revision=material.revision
     )
     persisted_job = store.get_knowledge_job(material.course_id, job.job_id)
+    compile_jobs = [
+        queued
+        for queued in store.list_knowledge_jobs(material.course_id)
+        if queued.job_type == "compile_course"
+    ]
 
     assert persisted_material is not None and persisted_material.status == "ready"
     assert store.get_parsed_text(material.course_id, material.id) is not None
@@ -126,6 +131,10 @@ async def test_index_job_persists_markdown_fragments_and_stable_vector_payload(
     assert len(vector_store.upserts) == 1
     assert vector_store.upserts[0][1][0].fragment_id == fragments[0].fragment_id
     assert persisted_job is not None and persisted_job.status == "succeeded"
+    assert len(compile_jobs) == 1
+    assert compile_jobs[0].status == "queued"
+    assert compile_jobs[0].target_source_revision is not None
+    assert compile_jobs[0].target_knowledge_revision is not None
 
 
 async def test_indexed_assets_are_current_only_and_revision_advance_clears_them(
