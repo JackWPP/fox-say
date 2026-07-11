@@ -9,6 +9,7 @@ import pytest
 from app.schemas.course_projection import CourseOutline
 from app.schemas.evidence import EvidenceRef, SourceFragment
 from app.schemas.knowledge_components import KnowledgeComponent
+from app.schemas.kc_relations import KCRelation
 from app.schemas.retrieval_answer import RetrievalOutcome
 from app.schemas.terms import Term
 from app.services import v2_agent_tools
@@ -226,3 +227,29 @@ def test_current_terms_and_components_hide_incomplete_projection(
 
     assert tools.get_current_terms("linear") == []
     assert tools.get_current_knowledge_components("linear") == []
+
+
+def test_current_relations_are_filtered_to_status_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = _evidence(_fragment())
+    current = KCRelation(
+        relation_id="relation-current", course_id="linear", source_revision="source-r1",
+        knowledge_revision="knowledge-r1", source_kc_id="kc-a", target_kc_id="kc-b",
+        relation_type="related", evidence=evidence, model_call_id="audit-1",
+    )
+    stale = current.model_copy(update={"relation_id": "relation-stale", "knowledge_revision": "old"})
+
+    class Store:
+        def get_current_kc_relations(self, course_id: str, source_revision: str) -> list[KCRelation]:
+            assert (course_id, source_revision) == ("linear", "source-r1")
+            return [current, stale]
+
+    monkeypatch.setattr(
+        v2_agent_tools,
+        "build_knowledge_status",
+        lambda _store, _course_id: SimpleNamespace(
+            projection_status="ready", source_revision="source-r1", knowledge_revision="knowledge-r1"
+        ),
+    )
+    assert V2AgentTools(Store()).get_current_kc_relations("linear") == [current]

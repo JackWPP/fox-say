@@ -27,7 +27,7 @@ Use `app.services.v2_agent_tools.V2AgentTools` only within a supplied `course_id
 - `get_current_outline`：D0 current outline。
 - `get_knowledge_status`：持久任务、revision、预算状态。
 - `get_current_terms` / `get_current_knowledge_components`：只返回当前 source + knowledge revision 的投影。
-- 关系工具接入前必须同样按 current revision 过滤 `get_current_kc_relations`。
+- `get_current_kc_relations`：只返回当前 source + knowledge revision 的有证据关系。
 
 所有工具必须显式接收 `course_id`；不能从 filename、chapter 字符串、session 或模型上下文反推范围。
 
