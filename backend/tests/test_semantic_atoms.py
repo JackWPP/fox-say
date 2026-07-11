@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from app.schemas.evidence import SourceFragment
 from app.schemas.foxsay import Course, Material
 from app.schemas.semantic_atoms import SemanticAtomCandidate
 from app.services.course_compiler import CourseCompiler
+from app.services.audited_text_model import AuditedTextResult
 from app.services.knowledge_jobs import (
     enqueue_course_compile_job,
     enqueue_material_index_job,
@@ -18,6 +20,18 @@ from app.services.knowledge_jobs import (
 )
 from app.services.knowledge_worker import KnowledgeJobWorker
 from app.services.semantic_atom_compiler import build_semantic_atoms
+from app.services.semantic_atom_extractor import SemanticAtomExtractor
+
+
+class FakeAuditedTextModel:
+    def __init__(self, content: str, call_id: str = "audit-semantic") -> None:
+        self.content = content
+        self.call_id = call_id
+        self.messages: list[dict[str, str]] | None = None
+
+    async def complete(self, _job, **kwargs) -> AuditedTextResult:
+        self.messages = kwargs["messages"]
+        return AuditedTextResult(content=self.content, call_id=self.call_id, usage_source="provider")
 
 
 @pytest.fixture
@@ -283,4 +297,45 @@ async def test_semantic_atom_rejects_an_audit_from_another_job(store: SqliteStor
             atoms=atoms,
             rejected_candidate_count=0,
         )
+    assert store._conn.execute("SELECT COUNT(*) FROM semantic_atom_compilations").fetchone()[0] == 0
+
+
+async def test_extractor_uses_fake_audited_json_and_only_current_section_fragments(
+    store: SqliteStore,
+) -> None:
+    job, outline, fragments = await _claimed_semantic_job(store)
+    model = FakeAuditedTextModel(
+        json.dumps(
+            {
+                "atoms": [
+                    {
+                        "atom_type": "definition",
+                        "statement": "向量空间对线性组合封闭。",
+                        "section_id": outline.sections[0].section_id,
+                        "evidence_fragment_ids": [fragments[0].fragment_id],
+                    }
+                ]
+            }
+        )
+    )
+
+    await SemanticAtomExtractor(store, text_model=model)(job)
+    store.complete_knowledge_job("linear", job.job_id, "semantic-worker")
+
+    atoms = store.get_current_semantic_atoms("linear", job.target_source_revision or "")
+    assert len(atoms) == 1
+    assert model.messages is not None
+    prompt = model.messages[1]["content"]
+    assert fragments[0].fragment_id in prompt
+    assert "not-current" not in prompt
+
+
+async def test_extractor_malformed_json_fails_without_a_projection(store: SqliteStore) -> None:
+    job, _, _ = await _claimed_semantic_job(store)
+    model = FakeAuditedTextModel("not-json")
+
+    with pytest.raises(Exception, match="not valid JSON") as exc_info:
+        await SemanticAtomExtractor(store, text_model=model)(job)
+
+    assert getattr(exc_info.value, "code") == "semantic_atom_output_invalid"
     assert store._conn.execute("SELECT COUNT(*) FROM semantic_atom_compilations").fetchone()[0] == 0

@@ -54,7 +54,9 @@
   fragments, and its `model_call_id` is a succeeded audit for the same course job/revisions.
   Publication repeats source, attempt, owner and unexpired-lease checks in one SQLite transaction;
   stale, cross-section, ungrounded or wrongly-audited candidates leave no atom/header. No D1b
-  worker or real model call exists yet.
+  automatic enqueue exists. D1c registers a handler for an explicitly queued semantic job; it
+  makes one D1a-audited DeepSeek request, accepts JSON candidates only, then enters the same D1b1
+  validation path. Upload/index/D0 completion still never enqueues this paid job by itself.
 - `GET /courses/{course_id}/course-outline` returns only the current succeeded D0 outline. It
   rejects uncompiled, stale and cross-course snapshots rather than falling back to legacy course
   structure.

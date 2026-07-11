@@ -24,6 +24,7 @@ from app.db.sqlite_store import SqliteStore
 from app.services.knowledge_worker import KnowledgeJobWorker
 from app.services.course_compiler import CourseCompiler
 from app.services.material_indexer import build_material_index_handlers
+from app.services.semantic_atom_extractor import SemanticAtomExtractor
 
 
 @asynccontextmanager
@@ -38,6 +39,7 @@ async def lifespan(app: FastAPI):
         handlers={
             **build_material_index_handlers(store),
             "compile_course": CourseCompiler(store),
+            "extract_semantic_atoms": SemanticAtomExtractor(store),
         },
         lease_seconds=settings.knowledge_worker_lease_seconds,
         poll_interval_seconds=settings.knowledge_worker_poll_interval_seconds,
