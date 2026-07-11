@@ -77,7 +77,7 @@ active / review → blocked → active; complete → reopened → active
 | V2-D0a | `complete` | V2-D0, V2-D1a | 补齐 D0 projection publication 的 lease-expiry/owner 栅栏；只修复已发现的 worker 写入边界 | `3adfbf4`；原子 attempt/owner/expiry/revision publication guard 与失租回归已提交，零模型/向量/网络调用。 |
 | V2-D1a | `complete` | V2-D0 | course-scoped DeepSeek text-call audit、course/job budget reservation、retry ceiling 与 audited wrapper；不生成知识投影 | `d1ee488`；持久 audit/reservation、预算可见性、retry ceiling 与 fake-provider 回归已提交。没有调用真实外部模型，也未迁移 material embedding 或 legacy 路径。 |
 | V2-D1b0 | `complete` | V2-D0, V2-D1a | 为语义原子抽取预留独立的 course job type 与 SQLite enum 迁移；不 enqueue、不调用模型、不写 Atom | `0304f91`；独立 identity、旧 `CHECK` 表重建迁移和 unsupported-handler boundary 均已提交，零模型/embedding/VLM/网络调用。 |
-| V2-D1b1 | `review` | V2-D0, V2-D0a, V2-D1a, V2-D1b0 | SemanticAtom schema、候选验证与 source/outline/lease-pinned 原子发布；不调用模型、不注册 handler | 已实现 candidate rehydrate、stable ID、audit/source/outline/lease atomic fence 与只读 current boundary，等待协调者核对并提交。 |
+| V2-D1b1 | `complete` | V2-D0, V2-D0a, V2-D1a, V2-D1b0 | SemanticAtom schema、候选验证与 source/outline/lease-pinned 原子发布；不调用模型、不注册 handler | `75a77c2`；candidate rehydrate、stable ID、audit/source/outline/lease atomic fence 与 current read boundary 已提交，零外部模型调用。 |
 | V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
 | V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
@@ -218,6 +218,7 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-D1b0 | `review → complete` | `0304f91`；38 个 job/worker/indexer/compiler/status 聚焦回归与相关 Ruff 通过。定向 mypy 仅为既有 `foxsay.py`、legacy `sqlite_store.py` strict baseline，无本任务新增项。 | `0304f91` |
 | 2026-07-11 | V2-D1b1 | `ready → active` | 领取 SemanticAtom schema、candidate validation 与 revision/lease-pinned publication；范围、非目标、验收和零成本限制见 §3.11。 | pending |
 | 2026-07-11 | V2-D1b1 | `active → review` | semantic atom candidate 只能由 current D0 outline section + canonical fragment 重水合；发布重复验证 succeeded audit、source target、attempt/owner/lease。合成线性代数成功、invalid candidate、stale、失租、错误 audit 和幂等回归已通过，等待最终 diff/commit 核对。 | pending |
+| 2026-07-11 | V2-D1b1 | `review → complete` | `75a77c2`；44 个 D0/D1a/D1b1 聚焦 backend tests、相关 Ruff 通过；新 schema/compiler 定向 mypy 无错误。全量 pytest 曾出现一次非确定失败，立即 `-xvv` 重跑未复现且未归因于 D1b1；因此此项不声称全量套件绿，后续 G 基线需复跑并隔离。 | `75a77c2` |
 
 ## 6. 交接检查
 
