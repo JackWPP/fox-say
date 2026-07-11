@@ -13,8 +13,10 @@ from collections.abc import Sequence
 from app.db.sqlite_store import SqliteStore
 from app.schemas.course_projection import CourseOutline
 from app.schemas.evidence import EvidenceRef, SourceFragmentPreview
+from app.schemas.knowledge_components import KnowledgeComponent
 from app.schemas.knowledge_status import KnowledgeStatus
 from app.schemas.retrieval_answer import RetrievalOutcome
+from app.schemas.terms import Term
 from app.services.knowledge_status import build_knowledge_status
 from app.services.retrieval import retrieve_current_fragments
 
@@ -99,6 +101,46 @@ class V2AgentTools:
         if status.projection_status != "ready" or status.source_revision is None:
             return None
         return self._store.get_current_course_outline(course_id, status.source_revision)
+
+    def get_current_terms(self, course_id: str) -> list[Term]:
+        """Return only terms from the current successful V2 projection."""
+        status = self.get_knowledge_status(course_id)
+        if (
+            status.projection_status != "ready"
+            or status.source_revision is None
+            or status.knowledge_revision is None
+        ):
+            return []
+        return [
+            term
+            for term in self._store.get_current_terms(course_id, status.source_revision)
+            if (
+                term.course_id == course_id
+                and term.source_revision == status.source_revision
+                and term.knowledge_revision == status.knowledge_revision
+            )
+        ]
+
+    def get_current_knowledge_components(self, course_id: str) -> list[KnowledgeComponent]:
+        """Return only current course-scoped V2 knowledge components."""
+        status = self.get_knowledge_status(course_id)
+        if (
+            status.projection_status != "ready"
+            or status.source_revision is None
+            or status.knowledge_revision is None
+        ):
+            return []
+        return [
+            component
+            for component in self._store.get_current_knowledge_components(
+                course_id, status.source_revision
+            )
+            if (
+                component.course_id == course_id
+                and component.source_revision == status.source_revision
+                and component.knowledge_revision == status.knowledge_revision
+            )
+        ]
 
     def get_knowledge_status(self, course_id: str) -> KnowledgeStatus:
         """Return the durable V2 availability snapshot for one course."""
