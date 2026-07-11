@@ -70,12 +70,13 @@ active / review → blocked → active; complete → reopened → active
 | V2-B | `complete` | V2-A | `index_material` 受控 worker、材料上传 enqueue、持久进度与重试入口 | `f794f44`；31 个 V2 窄测试、Ruff 与前端 typecheck 通过。旧 revision 不能写回 fragment、向量或 parser assets。 |
 | V2-C | `active` | V2-B | fragment preview、`EvidenceRef`、`KnowledgeStatus`、精确/向量/Outline 邻域检索与前端真实状态 | 两门合成课程不跨 `course_id`；每个 citation 以 fragment ID 打开正确位置；重连后状态来自 API 而非 SSE。由 C1～C3 串行交付。 |
 | V2-C1 | `complete` | V2-B | 后端 `KnowledgeStatus`、当前 revision fragment preview 和公共证据 DTO；仅修改 schema/store/API/tests | `881b2d4`；状态由持久材料/job/fragment 计算；跨课程、旧 revision、未知 fragment 均不能预览；不调用模型。 |
-| V2-C2 | `active` | V2-C1 | fragment-first 混合检索、CRAG 结果与服务器侧 `AnswerEnvelope`；仅修改 retrieval/service/query tests | 只检索当前 course/current revision 的 `source_fragment`；无效 Qdrant payload 丢弃；模型不能伪造 citation。 |
+| V2-C2 | `active` | V2-C1 | fragment-first 混合检索、CRAG 结果与服务器侧 `AnswerEnvelope`；仅修改 retrieval/service/query tests，不新增 HTTP/SSE/chat/Agent/frontend 接入 | 只检索当前 course/current revision 的 `source_fragment`；无效 Qdrant payload 丢弃；模型不能伪造 citation。 |
 | V2-C3 | `ready` | V2-C1, V2-C2 | 前端 public types、CitationCard、SourcesPanel/Chat 状态呈现 | 引用按 `fragment_id` 打开；`supplementary` 不被展示为拒答；状态重连来自 API。 |
 | V2-D | `ready` | V2-C | 课程级 `compile_course`、Outline、SemanticAtom、Term、KC、关系及 revision 依赖 | 模型输出的 fragment ID 均经代码校验；坏引用只丢弃该候选并留下 warning；增量与全量重建决策可审计。 |
 | V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
 | V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
+| V2-M1 | `ready` | — | 隔离修复 legacy raw-text fallback 的 `_text_overlap_score` 未定义 lint 缺陷；仅修改该 helper 与其回归测试 | 恢复历史 Jaccard 评分语义；`ruff check app/services/retrieval.py` 不再报 F821；不改 V2-C2 行为或 legacy 检索排序策略。 |
 
 ### 3.1 当前契约差异必须显式关闭
 
@@ -105,8 +106,15 @@ active / review → blocked → active; complete → reopened → active
 
 - **目标**：建立不依赖旧 Wiki/KC/DMAP 的 fragment-first 检索与答案证据契约。精确标题/原文召回与 Qdrant 只产生候选；所有最终 hit 必须由 C1 的 current-ready SQLite boundary 重新水合，`EvidenceRef`、文件名和 locator 一律从该 canonical fragment 组装。
 - **依赖与范围**：依赖 `881b2d4`；允许修改 V2 retrieval/answer schema、`backend/app/services/retrieval.py`、`vectorstore.py`、必要的 query tool 与对应 tests。不得接入或重写 `agent.py`、`chat.py`、SSE、聊天持久化、前端、legacy `search_wiki_layer()` 或 legacy term 索引。
-- **验收**：exact 命中不依赖 embedding；vector payload 的跨课程、错误 type、历史 revision、错误 material/revision 对、未知 fragment 都会被丢弃；同文本的不同材料保留为不同证据；CRAG 三阈值、partial coverage、vector 故障可见；`out_of_scope` 不带材料 citation。Qdrant filter 必须按成对 material/revision scope 过滤，不能用两个独立 `MatchAny` 造成交叉泄漏。
-- **成本与时延**：检索阶段不调用 DeepSeek/Qwen；向量只在已有 embedding 上查询并 over-fetch 后验证。模型正文生成、SSE 和聊天写库留给后续任务；失败不得被伪装为课程未覆盖。
+- **验收**：exact 命中不依赖 embedding；vector payload 的跨课程、错误 type、历史 revision、错误 material/revision 对、未知 fragment、错误 content hash 都会被丢弃；同文本的不同材料保留为不同证据；CRAG 三阈值、partial coverage、vector 故障可见；`available + out_of_scope` 不带材料 citation。`unavailable` 必须为 `confidence=null + error + 无 material hit`，不能伪装为课程未覆盖；已有 canonical exact evidence 时向量失败必须保留 `available` 与 warning。Qdrant filter 必须按成对 material/revision scope 过滤，不能用两个独立 `MatchAny` 造成交叉泄漏。
+- **成本与时延**：检索阶段不调用 DeepSeek/Qwen。先做本地/SQLite 的 exact-first 召回；只有 exact 未同时满足足量 `grounded` evidence 时，才生成 query embedding 并查询 Qdrant。Qdrant 只在已有 embedding 上 over-fetch 候选，候选经 payload 校验和 canonical rehydrate 后才可输出。模型正文生成、SSE 和聊天写库留给后续任务；失败不得被伪装为课程未覆盖。
+
+### 3.5 活动任务包：V2-M1
+
+- **目标**：将 V2-C2 审查发现的 legacy `_text_overlap_score` 缺失从 C2 范围中隔离出来，恢复旧 raw-text fallback 的可运行性，而不借机重写 legacy `search_wiki_layer()`。
+- **依赖与范围**：允许修改 `backend/app/services/retrieval.py` 中该私有 helper 及一个最小回归测试文件；必须保持 `6d6ce1a` 之前的 Jaccard 语义（字符集合交集除以并集）。不得修改 V2-C2 的 `retrieve_current_fragments`、schema、CRAG 阈值、Agent/chat、Qdrant schema 或前端。
+- **验收**：空输入返回 `0.0`；已知字符集合样例保持 Jaccard 分数；`uv run ruff check app/services/retrieval.py` 不再有 F821；相关 pytest 通过。全量 mypy 的其他既存 legacy baseline 不得被声称为已修复。
+- **成本与时延**：纯本地私有函数修复，不调用模型、embedding、Qdrant 或 SQLite。
 
 ## 4. 成本、等待和“自然生长”的调度门槛
 
@@ -131,6 +139,7 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-A / V2-A1 | `reopened / active → complete` | `881b2d4`；partial unique indexes、可见迁移错误与 enqueue 回归覆盖完成。 | `881b2d4` |
 | 2026-07-11 | V2-C1 | `active → complete` | `881b2d4`；当前证据状态、current-ready source preview、legacy/hash/revision/course isolation 测试完成。 | `881b2d4` |
 | 2026-07-11 | V2-C2 | `ready → active` | 领取纯 fragment-first 检索与 AnswerEnvelope 契约；范围、非目标、验收和成本限制见 §3.4。 | pending |
+| 2026-07-11 | V2-M1 | `proposed → ready` | C2 审查发现 `retrieval.py` 的 legacy raw-text fallback 在 C2 之前已有未定义 helper；单列最小修复，避免与证据检索契约混入同一提交。 | this commit |
 
 ## 6. 交接检查
 
