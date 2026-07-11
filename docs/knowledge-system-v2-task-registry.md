@@ -65,12 +65,12 @@ active / review → blocked → active; complete → reopened → active
 | ID | 状态 | 依赖 | 可修改范围 / 交付物 | 完成证据 |
 | --- | --- | --- | --- | --- |
 | V2-00 | `complete` | ADR-0001 | `AGENTS.md`、本台账、实施蓝图中的命名一致性 | 两条持久化链路和调度规则已写明；链接可读；文档 commit。 |
-| V2-A | `reopened` | ADR-0001 | 证据对象、revision 防护、持久 job schema/store 与 lease 基础 | 历史基础见 `262bd37`、`5079c50`、`647670f`、`bf98b74`；V2-A1 正在关闭 logical job identity 的唯一性缺口。 |
-| V2-A1 | `active` | V2-A | `knowledge_jobs` 的 material/course logical identity 唯一性、enqueue 防护与迁移安全 | 任一 course/material/revision/job_type 只能有一个 durable job；状态/证据查询不受伪造 idempotency key 影响。 |
+| V2-A | `complete` | ADR-0001 | 证据对象、revision 防护、持久 job schema/store 与 lease 基础 | 历史基础见 `262bd37`、`5079c50`、`647670f`、`bf98b74`；`881b2d4` 补齐 logical job identity 唯一性。 |
+| V2-A1 | `complete` | V2-A | `knowledge_jobs` 的 material/course logical identity 唯一性、enqueue 防护与迁移安全 | `881b2d4`；数据库 partial unique indexes、可见历史重复错误和回归测试已覆盖。 |
 | V2-B | `complete` | V2-A | `index_material` 受控 worker、材料上传 enqueue、持久进度与重试入口 | `f794f44`；31 个 V2 窄测试、Ruff 与前端 typecheck 通过。旧 revision 不能写回 fragment、向量或 parser assets。 |
 | V2-C | `active` | V2-B | fragment preview、`EvidenceRef`、`KnowledgeStatus`、精确/向量/Outline 邻域检索与前端真实状态 | 两门合成课程不跨 `course_id`；每个 citation 以 fragment ID 打开正确位置；重连后状态来自 API 而非 SSE。由 C1～C3 串行交付。 |
-| V2-C1 | `active` | V2-B | 后端 `KnowledgeStatus`、当前 revision fragment preview 和公共证据 DTO；仅修改 schema/store/API/tests | 状态由持久材料/job/fragment 计算；跨课程、旧 revision、未知 fragment 均不能预览；不调用模型。 |
-| V2-C2 | `ready` | V2-C1 | fragment-first 混合检索、CRAG 结果与服务器侧 `AnswerEnvelope`；仅修改 retrieval/service/query tests | 只检索当前 course/current revision 的 `source_fragment`；无效 Qdrant payload 丢弃；模型不能伪造 citation。 |
+| V2-C1 | `complete` | V2-B | 后端 `KnowledgeStatus`、当前 revision fragment preview 和公共证据 DTO；仅修改 schema/store/API/tests | `881b2d4`；状态由持久材料/job/fragment 计算；跨课程、旧 revision、未知 fragment 均不能预览；不调用模型。 |
+| V2-C2 | `active` | V2-C1 | fragment-first 混合检索、CRAG 结果与服务器侧 `AnswerEnvelope`；仅修改 retrieval/service/query tests | 只检索当前 course/current revision 的 `source_fragment`；无效 Qdrant payload 丢弃；模型不能伪造 citation。 |
 | V2-C3 | `ready` | V2-C1, V2-C2 | 前端 public types、CitationCard、SourcesPanel/Chat 状态呈现 | 引用按 `fragment_id` 打开；`supplementary` 不被展示为拒答；状态重连来自 API。 |
 | V2-D | `ready` | V2-C | 课程级 `compile_course`、Outline、SemanticAtom、Term、KC、关系及 revision 依赖 | 模型输出的 fragment ID 均经代码校验；坏引用只丢弃该候选并留下 warning；增量与全量重建决策可审计。 |
 | V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
@@ -101,6 +101,13 @@ active / review → blocked → active; complete → reopened → active
 - **验收**：不同 idempotency key 的重复逻辑 job 被明确去重或拒绝；新 SQLite 库有数据库级唯一约束；历史数据库若存在冲突，启动错误必须可见且指出修复方向，不能静默删除任务；C1 的 status/current-evidence 查询不再因重复 row 放大 coverage。
 - **成本与时延**：纯 SQLite schema/查询修复，不调用模型；enqueue 只增加索引命中或常数次查找。
 
+### 3.4 活动任务包：V2-C2
+
+- **目标**：建立不依赖旧 Wiki/KC/DMAP 的 fragment-first 检索与答案证据契约。精确标题/原文召回与 Qdrant 只产生候选；所有最终 hit 必须由 C1 的 current-ready SQLite boundary 重新水合，`EvidenceRef`、文件名和 locator 一律从该 canonical fragment 组装。
+- **依赖与范围**：依赖 `881b2d4`；允许修改 V2 retrieval/answer schema、`backend/app/services/retrieval.py`、`vectorstore.py`、必要的 query tool 与对应 tests。不得接入或重写 `agent.py`、`chat.py`、SSE、聊天持久化、前端、legacy `search_wiki_layer()` 或 legacy term 索引。
+- **验收**：exact 命中不依赖 embedding；vector payload 的跨课程、错误 type、历史 revision、错误 material/revision 对、未知 fragment 都会被丢弃；同文本的不同材料保留为不同证据；CRAG 三阈值、partial coverage、vector 故障可见；`out_of_scope` 不带材料 citation。Qdrant filter 必须按成对 material/revision scope 过滤，不能用两个独立 `MatchAny` 造成交叉泄漏。
+- **成本与时延**：检索阶段不调用 DeepSeek/Qwen；向量只在已有 embedding 上查询并 over-fetch 后验证。模型正文生成、SSE 和聊天写库留给后续任务；失败不得被伪装为课程未覆盖。
+
 ## 4. 成本、等待和“自然生长”的调度门槛
 
 1. **先确定性，后模型**：解析、标题树、fragment、内容 hash、失效范围和基础索引先完成；不能为了“看起来聪明”对整门课无差别烧 token。
@@ -121,6 +128,9 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-00 | `active → complete` | 统一调度规则、任务台账、实际 job 名称与交接协议已落盘。 | this commit |
 | 2026-07-11 | V2-C / V2-C1 | `ready → active` | 领取只读证据状态与当前 revision fragment preview；范围、非目标、验收和成本限制见 §3.2。 | pending |
 | 2026-07-11 | V2-A / V2-A1 | `complete → reopened / proposed → active` | C1 审查发现 `idempotency_key` 唯一不足以阻止同一 logical job 重复；按 §3.3 先补数据库级约束。 | pending |
+| 2026-07-11 | V2-A / V2-A1 | `reopened / active → complete` | `881b2d4`；partial unique indexes、可见迁移错误与 enqueue 回归覆盖完成。 | `881b2d4` |
+| 2026-07-11 | V2-C1 | `active → complete` | `881b2d4`；当前证据状态、current-ready source preview、legacy/hash/revision/course isolation 测试完成。 | `881b2d4` |
+| 2026-07-11 | V2-C2 | `ready → active` | 领取纯 fragment-first 检索与 AnswerEnvelope 契约；范围、非目标、验收和成本限制见 §3.4。 | pending |
 
 ## 6. 交接检查
 
