@@ -2,19 +2,23 @@ import { RefreshCw } from "lucide-react";
 import MaterialUpload from "./MaterialUpload";
 import MaterialList from "./MaterialList";
 import { useMaterials, useRetryMaterial } from "./useMaterials";
+import type { KnowledgeStatus } from "../../shared/types";
 
 interface MaterialsTabProps {
   courseId: string;
+  /** Refreshes the course-scoped V2 evidence snapshot after a material mutation. */
+  onKnowledgeChanged: () => Promise<KnowledgeStatus | null>;
 }
 
-export default function MaterialsTab({ courseId }: MaterialsTabProps) {
+export default function MaterialsTab({ courseId, onKnowledgeChanged }: MaterialsTabProps) {
   const { materials, loading, error, refetch } = useMaterials(courseId);
   const { retry } = useRetryMaterial(courseId);
 
   const handleRetry = async (materialId: string) => {
     try {
       await retry(materialId);
-      refetch();
+      void refetch();
+      void onKnowledgeChanged();
     } catch {
       // retry request failed, will show current state
     }
@@ -45,7 +49,13 @@ export default function MaterialsTab({ courseId }: MaterialsTabProps) {
 
   return (
     <div>
-      <MaterialUpload courseId={courseId} onUploaded={refetch} />
+      <MaterialUpload
+        courseId={courseId}
+        onUploaded={() => {
+          void refetch();
+          void onKnowledgeChanged();
+        }}
+      />
       <MaterialList courseId={courseId} materials={materials} onRetry={handleRetry} />
     </div>
   );

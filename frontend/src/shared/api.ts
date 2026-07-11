@@ -1,3 +1,5 @@
+import type { KnowledgeStatus, SourceFragmentPreview } from "../types/foxsay";
+
 export const API_BASE = "/api";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -9,6 +11,26 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(`API error: ${res.status}`);
   }
   return res.json();
+}
+
+/**
+ * Read the durable V2 knowledge snapshot.  This API response, rather than
+ * SSE or local material guesses, is the source of truth for evidence state.
+ */
+export function getKnowledgeStatus(courseId: string): Promise<KnowledgeStatus> {
+  return request<KnowledgeStatus>(
+    `/courses/${encodeURIComponent(courseId)}/knowledge-status`,
+  );
+}
+
+/** Open a V2 citation by its opaque current source-fragment identifier. */
+export function getCurrentSourceFragmentPreview(
+  courseId: string,
+  fragmentId: string,
+): Promise<SourceFragmentPreview> {
+  return request<SourceFragmentPreview>(
+    `/courses/${encodeURIComponent(courseId)}/source-fragments/${encodeURIComponent(fragmentId)}`,
+  );
 }
 
 /**
