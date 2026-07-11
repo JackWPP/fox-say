@@ -74,6 +74,7 @@ active / review → blocked → active; complete → reopened → active
 | V2-C3 | `complete` | V2-C1, V2-C2 | 前端 V2 public types、可复用的 evidence-aware CitationCard、SourcesPanel 的真实证据状态 | `da2a0b3`、`5355ece`；`npm run typecheck`、`npm run build` 通过。隔离浏览器创建/刷新合成线性代数课程后，`KnowledgeStatus` 以 200 响应驱动“尚无证据”和“课程地图尚未编译”。没有生产 AnswerEnvelope/chat citation，因此 V2 citation 点击仍由 C1/C2 endpoint 测试覆盖。不得把 legacy chat citation/CRAG 映射成 V2。 |
 | V2-D | `active` | V2-C | 课程级 `compile_course`、Outline、SemanticAtom、Term、KC、关系及 revision 依赖 | 先由 D0 把 source-pinned、零模型的 CourseOutline snapshot 与状态发布栅栏做成可运行垂直切片；模型 Atom/Term/KC/关系随后拆分，不得跳过身份和审计边界。 |
 | V2-D0 | `complete` | V2-C | 将占位 `compile_course` 变成 source-pinned、确定性的 CourseOutline 编译与读取边界；只写 V2 projection tables | `33b3869`；D0 course job target/identity、compiler handler、immutable header/payload、current-outline API 与 `KnowledgeStatus` ready/stale/processing 已验证；56 个 V2 聚焦回归、270 个 backend tests 与相关 Ruff 通过。零 LLM/VLM/embedding 调用。 |
+| V2-D1a | `active` | V2-D0 | V2 job-scoped model-call audit、course/job budget reservation、retry ceiling 与 audited DeepSeek/embedding wrappers；不生成知识投影 | 每次调用有 job/course/revision/purpose/model/request fingerprint/token reservation/实际 usage/elapsed/error；course+job 超预算在网络请求前可见失败；测试不访问外部模型。 |
 | V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
 | V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
@@ -135,6 +136,15 @@ active / review → blocked → active; complete → reopened → active
 - **验收**：两份合成线性代数材料可得到稳定的 Outline 和可打开的 current `EvidenceRef`；相同 fragment 在两门课中绝不跨 course snapshot；未完全 ready 的 source 不创建/不运行 compilation；入队后或发布前材料 revision 改变时 job 可见 stale failure 且无 snapshot；同 source 重试不重复写；current source 与 succeeded header 相等才 `projection_status=ready`，不等时 `stale`，current target queued/running 时 `processing`。course-outline endpoint 拒绝 old/stale/跨课程 snapshot。D0 compiler tests 不调用 LLM/VLM/embedding。
 - **成本与时延**：只读 SQLite fragments + 确定性分组 + SQLite payload/header 写入；不调用模型、embedding、Qdrant 或网络服务。每次编译对当前 fragment 数线性，header/status 查询不得读取 outline JSON 或原始 Markdown；source-ready 后由持久 job 异步完成，UI 可先继续使用 fragment 问答。
 
+### 3.8 活动任务包：V2-D1a
+
+- **目标**：在任何 D1 语义抽取前建立模型调用的可恢复审计和双层硬预算门。新的 `model_call_audits` 记录必须把 `call_id`、`course_id`、`job_id`、job attempt、target source/knowledge revision、`call_kind`、purpose、provider/model、无原文的 request fingerprint、输入 token 上界、输出 token 上限、reservation、provider reported usage、reasoning usage、elapsed、状态、错误及时间戳显式持久化；`course_model_budgets` 按 `(course_id, source_revision)` 持久化课程上限和已占用/结算额度。二者是调用审计，不替代 `knowledge_jobs` 的课程工作流状态。
+- **依赖与范围**：依赖 D0；允许修改 V2 job/schema/store、配置、`embedding.py` 的 V2 job-scoped调用路径、增加 audited text/embedding model service、`KnowledgeStatus` 与其前端公开类型/展示、对应 backend/frontend tests 和实际架构/台账文档。允许复用已声明的 OpenAI-compatible client，但不得改 legacy Wiki/quiz/review/terminology 调用、`agent.py`、chat/SSE、Qdrant 或 VLM。不得在本任务调用真实 DeepSeek、SiliconFlow 或任何外部模型。
+- **预算与错误契约**：reservation 必须在 SQLite `BEGIN IMMEDIATE` 中同时检查同一 `(course_id, source_revision)` 的 course budget 与 job budget；请求只允许由 audited wrapper 发出，并以保守、可解释的输入 token 上界加显式 `max_output_tokens` 保留额度。SDK 必须显式 `max_retries=0`，避免未审计的内部重试。额度不足时持久化 `rejected/token_budget_exhausted`，在网络调用前返回稳定错误；客户端/超时/429/5xx/invalid response/usage 缺失分别持久化可见状态，不能吞掉。reported usage 可为空但须标为 `unavailable`，绝不能伪造为零；失败且账单未知时 reservation 不得静默释放。job 增加显式 `max_attempts`，重试超过上限必须停止。
+- **非目标**：本任务不生成 `SemanticAtom`、Term、KC 或 Relation，不修改 D0 的 current compiler identity，不把 token 估算冒充账单，也不声称已有全局/用户级成本统计。后续 D1b 应使用新的 course-scoped extraction job type，而不是重用已成功的 D0 job；模型 audit 表的 status 仅辅助课程 job 失败诊断，真正 compile/extraction job 的 `retryable/failed` 仍由 worker 统一写回。
+- **验收**：合成 running compile/index job 能 reserve→success，记录 course/revision/purpose/model、request fingerprint、reported input/output/reasoning/total tokens 和 elapsed；并发/重复 reservation 不能超过 course 或 job cap，拒绝时 fake provider 未被调用；客户端异常、timeout、429、invalid response、usage 缺失均有确定 audit status/error，且不会泄漏跨 course/job record；`KnowledgeStatus`/SourcesPanel 可见当前 projection 的预算或模型错误；旧 SQLite 数据库会迁移且不丢 queue/projection 数据。全部测试使用 fake client，网络调用计数为零。
+- **成本与时延**：SQLite reservation/finish 为常数次读写；没有 D1b handler 前不触发网络。生产调用时单次请求的输入上界与输出上限之和先占用 course 与 job budget，预算耗尽立即返回，不排队无限重试。
+
 ## 4. 成本、等待和“自然生长”的调度门槛
 
 1. **先确定性，后模型**：解析、标题树、fragment、内容 hash、失效范围和基础索引先完成；不能为了“看起来聪明”对整门课无差别烧 token。
@@ -170,6 +180,7 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-D / V2-D0 | `ready → active` | 领取 zero-model course compilation snapshot；范围、source identity、发布栅栏、非目标、验收和成本上限见 §3.7。当前 `compile_course` 尚无 handler，不能宣称已可运行。 | pending |
 | 2026-07-11 | V2-D0 | `active → review` | `compile_course` 现在以 explicit source/knowledge target 入队，实际 worker handler 生成 deterministic CourseOutline；状态、API、stale fence、automatic enqueue 和跨课程隔离由合成线性代数回归覆盖。 | `33b3869` |
 | 2026-07-11 | V2-D0 | `review → complete` | 56 个 D0/C1/C2 聚焦 backend tests、270 个完整 backend pytest 和相关 Ruff 通过；targeted mypy 没有 D0 新增错误，剩余 12 项为 `foxsay.py`、legacy `sqlite_store.py`、worker 的既有 strict baseline。未调用 DeepSeek、Qwen、embedding 或 Qdrant。 | this commit |
+| 2026-07-11 | V2-D1a | `ready → active` | 领取持久 model-call audit 与 budget reservation；范围、非目标、验收和成本门见 §3.8。D1a 不得发起真实外部模型调用或写入语义知识投影。 | pending |
 
 ## 6. 交接检查
 
