@@ -49,6 +49,12 @@
 - `course_compilations` is the small immutable header used by status reads; its matching
   `course_projection_snapshots` payload currently stores only the deterministic `CourseOutline`.
   Both are course/source/knowledge revision scoped and are never sourced from legacy Wiki/DMAP.
+- D1b1 adds immutable `semantic_atom_compilations` and `semantic_atoms`. An atom is accepted only
+  after its section and fragment IDs are rehydrated through the current D0 outline and canonical
+  fragments, and its `model_call_id` is a succeeded audit for the same course job/revisions.
+  Publication repeats source, attempt, owner and unexpired-lease checks in one SQLite transaction;
+  stale, cross-section, ungrounded or wrongly-audited candidates leave no atom/header. No D1b
+  worker or real model call exists yet.
 - `GET /courses/{course_id}/course-outline` returns only the current succeeded D0 outline. It
   rejects uncompiled, stale and cross-course snapshots rather than falling back to legacy course
   structure.

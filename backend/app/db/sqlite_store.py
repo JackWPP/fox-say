@@ -24,8 +24,13 @@ from app.schemas.model_calls import (
     ModelCallReservationRequest,
     ModelCallUsage,
 )
+from app.schemas.semantic_atoms import SemanticAtom
+from app.services.semantic_atom_compiler import (
+    SEMANTIC_ATOM_COMPILER_VERSION,
+    build_semantic_atom_id,
+)
 from app.schemas.course_projection import CourseCompilation, CourseOutline
-from app.schemas.evidence import SourceFragment
+from app.schemas.evidence import EvidenceRef, SourceFragment
 from app.services.source_revision import build_source_revision
 
 _DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "foxsay.db"
@@ -382,6 +387,49 @@ CREATE TABLE IF NOT EXISTS course_projection_snapshots (
         REFERENCES course_compilations(course_id, knowledge_revision),
     CHECK (projection_kind IN ('course_outline'))
 );
+
+CREATE TABLE IF NOT EXISTS semantic_atom_compilations (
+    course_id TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    knowledge_revision TEXT NOT NULL,
+    compiler_version TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    atom_count INTEGER NOT NULL,
+    rejected_candidate_count INTEGER NOT NULL DEFAULT 0,
+    model_call_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (course_id, knowledge_revision),
+    UNIQUE (course_id, source_revision, compiler_version),
+    UNIQUE (job_id),
+    FOREIGN KEY (course_id) REFERENCES courses(id),
+    FOREIGN KEY (job_id) REFERENCES knowledge_jobs(job_id),
+    CHECK (atom_count >= 0),
+    CHECK (rejected_candidate_count >= 0),
+    CHECK (model_call_count >= 0)
+);
+CREATE INDEX IF NOT EXISTS idx_semantic_atom_compilations_current
+    ON semantic_atom_compilations(course_id, source_revision, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS semantic_atoms (
+    atom_id TEXT PRIMARY KEY,
+    course_id TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    knowledge_revision TEXT NOT NULL,
+    section_id TEXT NOT NULL,
+    atom_type TEXT NOT NULL,
+    statement TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    model_call_id TEXT NOT NULL,
+    generation_method TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id, knowledge_revision)
+        REFERENCES semantic_atom_compilations(course_id, knowledge_revision),
+    FOREIGN KEY (model_call_id) REFERENCES model_call_audits(call_id),
+    CHECK (atom_type IN ('concept', 'definition', 'formula', 'condition', 'theorem', 'procedure', 'example', 'pitfall')),
+    CHECK (generation_method = 'model')
+);
+CREATE INDEX IF NOT EXISTS idx_semantic_atoms_current
+    ON semantic_atoms(course_id, source_revision, knowledge_revision, section_id);
 """
 
 
@@ -878,6 +926,217 @@ class SqliteStore:
         ):
             raise RuntimeError("Course outline snapshot identity does not match compilation header")
         return outline
+
+    def publish_semantic_atoms_if_current(
+        self,
+        *,
+        course_id: str,
+        job_id: str,
+        job_attempt: int,
+        lease_owner: str,
+        source_revision: str,
+        knowledge_revision: str,
+        atoms: list[SemanticAtom],
+        rejected_candidate_count: int,
+    ) -> bool:
+        """Atomically publish only a current, leased, evidence-verified atom set."""
+        if job_attempt < 1 or not lease_owner.strip() or rejected_candidate_count < 0:
+            raise ValueError("Semantic atom publication requires a claimed lease and valid counts")
+        if any(
+            atom.course_id != course_id
+            or atom.source_revision != source_revision
+            or atom.knowledge_revision != knowledge_revision
+            for atom in atoms
+        ):
+            raise ValueError("Semantic atom identity does not match its publication target")
+
+        with self._knowledge_job_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                job = self._conn.execute(
+                    """
+                    SELECT status, attempt, lease_owner, lease_expires_at,
+                           target_source_revision, target_knowledge_revision
+                    FROM knowledge_jobs
+                    WHERE job_id = ? AND course_id = ? AND job_type = 'extract_semantic_atoms'
+                    """,
+                    (job_id, course_id),
+                ).fetchone()
+                if (
+                    job is None
+                    or job["status"] != "running"
+                    or job["attempt"] != job_attempt
+                    or job["lease_owner"] != lease_owner
+                    or job["lease_expires_at"] is None
+                    or job["lease_expires_at"] <= self._conn.execute("SELECT datetime('now')").fetchone()[0]
+                    or job["target_source_revision"] != source_revision
+                    or job["target_knowledge_revision"] != knowledge_revision
+                ):
+                    self._conn.rollback()
+                    return False
+                current_manifest = self.get_compilable_source_manifest(course_id)
+                if current_manifest is None or current_manifest[0] != source_revision:
+                    self._conn.rollback()
+                    return False
+                outline = self.get_current_course_outline(course_id, source_revision)
+                if outline is None or outline.knowledge_revision != knowledge_revision:
+                    self._conn.rollback()
+                    return False
+                self._validate_semantic_atoms_for_publication(
+                    course_id=course_id,
+                    job_id=job_id,
+                    source_revision=source_revision,
+                    knowledge_revision=knowledge_revision,
+                    atoms=atoms,
+                    outline=outline,
+                )
+                model_call_count = len({atom.model_call_id for atom in atoms})
+                self._conn.execute(
+                    """
+                    INSERT INTO semantic_atom_compilations (
+                        course_id, source_revision, knowledge_revision, compiler_version, job_id,
+                        atom_count, rejected_candidate_count, model_call_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(course_id, source_revision, compiler_version) DO NOTHING
+                    """,
+                    (
+                        course_id,
+                        source_revision,
+                        knowledge_revision,
+                        SEMANTIC_ATOM_COMPILER_VERSION,
+                        job_id,
+                        len(atoms),
+                        rejected_candidate_count,
+                        model_call_count,
+                    ),
+                )
+                header = self._conn.execute(
+                    """
+                    SELECT knowledge_revision, job_id, atom_count, rejected_candidate_count, model_call_count
+                    FROM semantic_atom_compilations
+                    WHERE course_id = ? AND source_revision = ? AND compiler_version = ?
+                    """,
+                    (course_id, source_revision, SEMANTIC_ATOM_COMPILER_VERSION),
+                ).fetchone()
+                if (
+                    header is None
+                    or header["knowledge_revision"] != knowledge_revision
+                    or header["job_id"] != job_id
+                    or int(header["atom_count"]) != len(atoms)
+                    or int(header["rejected_candidate_count"]) != rejected_candidate_count
+                    or int(header["model_call_count"]) != model_call_count
+                ):
+                    raise RuntimeError("Semantic atom target is already bound to another projection")
+                for atom in atoms:
+                    self._conn.execute(
+                        """
+                        INSERT INTO semantic_atoms (
+                            atom_id, course_id, source_revision, knowledge_revision, section_id,
+                            atom_type, statement, evidence_json, model_call_id, generation_method
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(atom_id) DO NOTHING
+                        """,
+                        (
+                            atom.atom_id,
+                            atom.course_id,
+                            atom.source_revision,
+                            atom.knowledge_revision,
+                            atom.section_id,
+                            atom.atom_type,
+                            atom.statement,
+                            json.dumps(
+                                [evidence.model_dump() for evidence in atom.evidence],
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                                sort_keys=True,
+                            ),
+                            atom.model_call_id,
+                            atom.generation_method,
+                        ),
+                    )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return True
+
+    def _validate_semantic_atoms_for_publication(
+        self,
+        *,
+        course_id: str,
+        job_id: str,
+        source_revision: str,
+        knowledge_revision: str,
+        atoms: list[SemanticAtom],
+        outline: CourseOutline,
+    ) -> None:
+        fragments = self.list_current_ready_source_fragments(course_id)
+        fragment_by_id = {fragment.fragment_id: fragment for fragment in fragments}
+        section_fragment_ids = {
+            section.section_id: {evidence.fragment_id for evidence in section.evidence}
+            for section in outline.sections
+        }
+        for atom in atoms:
+            allowed_fragment_ids = section_fragment_ids.get(atom.section_id)
+            if allowed_fragment_ids is None:
+                raise ValueError("Semantic atom section is absent from the current course outline")
+            evidence_ids = [evidence.fragment_id for evidence in atom.evidence]
+            if len(set(evidence_ids)) != len(evidence_ids) or not evidence_ids or any(
+                fragment_id not in allowed_fragment_ids or fragment_id not in fragment_by_id
+                for fragment_id in evidence_ids
+            ):
+                raise ValueError("Semantic atom evidence is not current evidence for its outline section")
+            expected_evidence = [
+                fragment_by_id[fragment_id] for fragment_id in evidence_ids
+            ]
+            if [evidence.model_dump() for evidence in atom.evidence] != [
+                EvidenceRef.from_source_fragment(fragment).model_dump()
+                for fragment in expected_evidence
+            ]:
+                raise ValueError("Semantic atom evidence was not rehydrated from canonical fragments")
+            expected_atom_id = build_semantic_atom_id(
+                course_id=course_id,
+                source_revision=source_revision,
+                knowledge_revision=knowledge_revision,
+                section_id=atom.section_id,
+                atom_type=atom.atom_type,
+                statement=atom.statement,
+                evidence_fragment_ids=evidence_ids,
+            )
+            if atom.atom_id != expected_atom_id:
+                raise ValueError("Semantic atom ID is not the stable evidence-derived identity")
+            audit = self._conn.execute(
+                """
+                SELECT status FROM model_call_audits
+                WHERE call_id = ? AND course_id = ? AND job_id = ?
+                  AND source_revision = ? AND knowledge_revision = ?
+                """,
+                (atom.model_call_id, course_id, job_id, source_revision, knowledge_revision),
+            ).fetchone()
+            if audit is None or audit["status"] != "succeeded":
+                raise ValueError("Semantic atom model-call audit is not a succeeded current job call")
+
+    def get_current_semantic_atoms(
+        self, course_id: str, source_revision: str
+    ) -> list[SemanticAtom]:
+        """Read only atoms paired with a succeeded current semantic job."""
+        current_manifest = self.get_compilable_source_manifest(course_id)
+        if current_manifest is None or current_manifest[0] != source_revision:
+            return []
+        rows = self._conn.execute(
+            """
+            SELECT atom.* FROM semantic_atoms AS atom
+            INNER JOIN semantic_atom_compilations AS compilation
+                ON compilation.course_id = atom.course_id
+               AND compilation.knowledge_revision = atom.knowledge_revision
+            INNER JOIN knowledge_jobs AS job
+                ON job.job_id = compilation.job_id AND job.status = 'succeeded'
+            WHERE atom.course_id = ? AND atom.source_revision = ?
+            ORDER BY atom.section_id, atom.atom_id
+            """,
+            (course_id, source_revision),
+        ).fetchall()
+        return [self._row_to_semantic_atom(row) for row in rows]
 
     def publish_course_compilation_if_current(
         self,
@@ -2444,6 +2703,22 @@ class SqliteStore:
             error_detail=row["error_detail"],
             started_at=row["started_at"],
             finished_at=row["finished_at"],
+        )
+
+    @staticmethod
+    def _row_to_semantic_atom(row: sqlite3.Row) -> SemanticAtom:
+        return SemanticAtom(
+            atom_id=row["atom_id"],
+            course_id=row["course_id"],
+            source_revision=row["source_revision"],
+            knowledge_revision=row["knowledge_revision"],
+            section_id=row["section_id"],
+            atom_type=row["atom_type"],
+            statement=row["statement"],
+            evidence=[EvidenceRef.model_validate(item) for item in json.loads(row["evidence_json"])],
+            model_call_id=row["model_call_id"],
+            generation_method=row["generation_method"],
+            created_at=row["created_at"],
         )
 
     @staticmethod
