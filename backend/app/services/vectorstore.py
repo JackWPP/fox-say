@@ -236,6 +236,85 @@ class QdrantStore:
             for point in response.points
         ]
 
+    def build_source_fragment_filter(
+        self,
+        course_id: str,
+        material_scopes: list[tuple[str, int]],
+    ) -> Filter:
+        """Build the course- and revision-safe filter for source evidence.
+
+        A material ID is only meaningful together with its revision.  Keeping
+        each pair in its own nested ``Filter`` under ``should`` is deliberate:
+        two independent ``MatchAny`` conditions would also match a material
+        from one pair with the revision from another pair.
+        """
+        if not course_id or not course_id.strip():
+            raise ValueError("course_id is required")
+        if not material_scopes:
+            raise ValueError("material_scopes is required")
+
+        scope_filters: list[Filter] = []
+        for material_id, material_revision in material_scopes:
+            if not isinstance(material_id, str) or not material_id.strip():
+                raise ValueError("material_id is required")
+            if (
+                isinstance(material_revision, bool)
+                or not isinstance(material_revision, int)
+                or material_revision < 0
+            ):
+                raise ValueError("material_revision must be a non-negative integer")
+            scope_filters.append(
+                Filter(
+                    must=[
+                        FieldCondition(
+                            key="material_id",
+                            match=MatchValue(value=material_id),
+                        ),
+                        FieldCondition(
+                            key="material_revision",
+                            match=MatchValue(value=material_revision),
+                        ),
+                    ]
+                )
+            )
+
+        return Filter(
+            must=[
+                FieldCondition(
+                    key="type",
+                    match=MatchValue(value="source_fragment"),
+                ),
+                FieldCondition(
+                    key="course_id",
+                    match=MatchValue(value=course_id),
+                ),
+            ],
+            should=scope_filters,
+        )
+
+    def search_source_fragments(
+        self,
+        course_id: str,
+        query_embedding: list[float],
+        material_scopes: list[tuple[str, int]],
+        limit: int = 5,
+    ) -> list[dict]:
+        """Search only current, explicitly scoped source-fragment evidence.
+
+        An empty scope is intentionally an empty result, rather than an
+        unfiltered search.  This lets callers safely derive scopes from the
+        current-ready SQLite boundary without risking historical or unrelated
+        material vectors when that boundary has no ready material.
+        """
+        if not material_scopes:
+            return []
+        return self.search(
+            course_id,
+            query_embedding,
+            limit=limit,
+            query_filter=self.build_source_fragment_filter(course_id, material_scopes),
+        )
+
     def upsert_note(
         self,
         course_id: str,

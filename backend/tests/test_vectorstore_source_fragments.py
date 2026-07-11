@@ -6,7 +6,10 @@ contracts without creating a local collection or making a network connection.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
+from qdrant_client.models import Filter, MatchAny
 
 from app.schemas.evidence import SourceFragment
 from app.services import vectorstore
@@ -19,6 +22,8 @@ class MockQdrantClient:
         self.create_calls: list[dict] = []
         self.upsert_calls: list[dict] = []
         self.delete_calls: list[dict] = []
+        self.query_calls: list[dict] = []
+        self.query_response_points: list[SimpleNamespace] = []
 
     def collection_exists(self, collection_name: str) -> bool:
         return collection_name in self.collections
@@ -32,6 +37,10 @@ class MockQdrantClient:
 
     def delete(self, **kwargs) -> None:
         self.delete_calls.append(kwargs)
+
+    def query_points(self, **kwargs) -> SimpleNamespace:
+        self.query_calls.append(kwargs)
+        return SimpleNamespace(points=self.query_response_points)
 
 
 @pytest.fixture
@@ -196,3 +205,74 @@ def test_delete_source_fragments_by_material_skips_missing_collection(
     QdrantStore().delete_source_fragments_by_material("linear-algebra", "lecture-01")
 
     assert not qdrant_client.delete_calls
+
+
+def test_source_fragment_search_keeps_material_revision_scope_pairs(
+    qdrant_client: MockQdrantClient,
+):
+    qdrant_client.collections.add("course_linear-algebra")
+    payload = {
+        "type": "source_fragment",
+        "course_id": "linear-algebra",
+        "fragment_id": "sf-linear-algebra-1",
+        "material_id": "lecture-01",
+        "material_revision": 3,
+        "text": "向量空间对加法和数乘封闭。",
+    }
+    qdrant_client.query_response_points = [SimpleNamespace(score=0.91, payload=payload)]
+
+    results = QdrantStore().search_source_fragments(
+        "linear-algebra",
+        [0.1, 0.2],
+        [("lecture-01", 3), ("lecture-02", 5)],
+        limit=7,
+    )
+
+    assert results == [{"score": 0.91, "payload": payload}]
+    assert len(qdrant_client.query_calls) == 1
+    query_call = qdrant_client.query_calls[0]
+    assert query_call["collection_name"] == "course_linear-algebra"
+    assert query_call["query"] == [0.1, 0.2]
+    assert query_call["limit"] == 7
+
+    source_filter = query_call["query_filter"]
+    assert isinstance(source_filter, Filter)
+    assert {
+        condition.key: condition.match.value
+        for condition in source_filter.must
+    } == {
+        "type": "source_fragment",
+        "course_id": "linear-algebra",
+    }
+    assert source_filter.should is not None
+    assert all(isinstance(scope_filter, Filter) for scope_filter in source_filter.should)
+    assert [
+        {
+            condition.key: condition.match.value
+            for condition in scope_filter.must
+        }
+        for scope_filter in source_filter.should
+    ] == [
+        {"material_id": "lecture-01", "material_revision": 3},
+        {"material_id": "lecture-02", "material_revision": 5},
+    ]
+    assert all(
+        not isinstance(condition.match, MatchAny)
+        for scope_filter in source_filter.should
+        for condition in scope_filter.must
+    )
+
+
+def test_source_fragment_search_skips_qdrant_for_empty_scope(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fail_if_called():
+        pytest.fail("empty source-fragment scope must not initialize or query Qdrant")
+
+    monkeypatch.setattr(vectorstore, "_get_client", fail_if_called)
+
+    assert QdrantStore().search_source_fragments(
+        "linear-algebra",
+        [0.1, 0.2],
+        [],
+    ) == []
