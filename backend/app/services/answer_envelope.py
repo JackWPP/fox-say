@@ -38,7 +38,10 @@ def assemble_answer_envelope(
     """
 
     resolved_source = answer_source or _default_answer_source(outcome)
-    if outcome.confidence == "out_of_scope":
+    if (
+        outcome.retrieval_availability == "unavailable"
+        or outcome.confidence == "out_of_scope"
+    ):
         resolved_source = "supplementary"
 
     if resolved_source == "supplementary":
@@ -118,7 +121,9 @@ def assemble_answer_envelope(
 
 
 def _default_answer_source(outcome: RetrievalOutcome) -> AnswerSource:
-    return "supplementary" if outcome.confidence == "out_of_scope" else "material"
+    if outcome.retrieval_availability == "unavailable" or outcome.confidence == "out_of_scope":
+        return "supplementary"
+    return "material"
 
 
 def _iter_citation_selections(
@@ -162,6 +167,7 @@ def _build_envelope(
         source_revision=outcome.source_revision,
         knowledge_revision=outcome.knowledge_revision,
         answer=answer,
+        retrieval_availability=outcome.retrieval_availability,
         confidence_status=outcome.confidence,
         answer_source=answer_source,
         citations=citations,

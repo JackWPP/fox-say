@@ -18,6 +18,7 @@ from app.schemas.foxsay import AnswerSource, ConfidenceStatus
 
 
 RetrievalChannel = Literal["exact", "vector", "heading_neighborhood"]
+RetrievalAvailability = Literal["available", "unavailable"]
 
 
 class RetrievalError(BaseModel):
@@ -68,7 +69,11 @@ class RetrievalOutcome(BaseModel):
     course_id: str = Field(min_length=1)
     source_revision: str | None = None
     knowledge_revision: str | None = None
-    confidence: ConfidenceStatus
+    # ``out_of_scope`` means retrieval completed and found no material
+    # coverage.  ``None`` is reserved for a failed/unavailable retriever, so
+    # clients never confuse an operational failure with a course boundary.
+    retrieval_availability: RetrievalAvailability = "available"
+    confidence: ConfidenceStatus | None = None
     relevance: float = Field(ge=0.0, le=1.0)
     coverage: float = Field(ge=0.0, le=1.0)
     hits: list[RetrievalHit] = Field(default_factory=list)
@@ -77,6 +82,20 @@ class RetrievalOutcome(BaseModel):
 
     @model_validator(mode="after")
     def validate_canonical_hit_scope(self) -> "RetrievalOutcome":
+        if self.retrieval_availability == "available":
+            if self.confidence is None:
+                raise ValueError("available RetrievalOutcome requires a confidence value")
+            if self.error is not None:
+                raise ValueError("available RetrievalOutcome must not contain a retrieval error")
+        else:
+            if self.confidence is not None:
+                raise ValueError("unavailable RetrievalOutcome must set confidence to None")
+            if self.error is None:
+                raise ValueError("unavailable RetrievalOutcome requires a retrieval error")
+            if self.hits:
+                raise ValueError("unavailable RetrievalOutcome must not expose material hits")
+            return self
+
         keys: set[tuple[str, str, str, int]] = set()
         fragment_ids: set[str] = set()
         for hit in self.hits:
@@ -150,7 +169,8 @@ class AnswerEnvelope(BaseModel):
     source_revision: str | None = None
     knowledge_revision: str | None = None
     answer: str
-    confidence_status: ConfidenceStatus
+    retrieval_availability: RetrievalAvailability = "available"
+    confidence_status: ConfidenceStatus | None = None
     answer_source: AnswerSource
     citations: list[AnswerCitation] = Field(default_factory=list)
     relevance: float = Field(ge=0.0, le=1.0)
@@ -165,6 +185,22 @@ class AnswerEnvelope(BaseModel):
 
     @model_validator(mode="after")
     def validate_answer_boundary(self) -> "AnswerEnvelope":
+        if self.retrieval_availability == "available":
+            if self.confidence_status is None:
+                raise ValueError("available AnswerEnvelope requires a confidence_status")
+            if self.error is not None:
+                raise ValueError("available AnswerEnvelope must not contain a retrieval error")
+        else:
+            if self.confidence_status is not None:
+                raise ValueError("unavailable AnswerEnvelope must set confidence_status to None")
+            if self.error is None:
+                raise ValueError("unavailable AnswerEnvelope requires a retrieval error")
+            if self.answer_source != "supplementary":
+                raise ValueError("unavailable AnswerEnvelope must use answer_source='supplementary'")
+            if self.citations:
+                raise ValueError("unavailable AnswerEnvelope must not contain material citations")
+            return self
+
         if self.confidence_status == "out_of_scope" and self.answer_source != "supplementary":
             raise ValueError("out_of_scope answers must use answer_source='supplementary'")
         if self.confidence_status == "out_of_scope" and self.citations:

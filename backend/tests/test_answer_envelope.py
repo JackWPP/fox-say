@@ -14,6 +14,7 @@ from app.schemas.retrieval_answer import (
     AnswerCitation,
     AnswerEnvelope,
     RetrievalHit,
+    RetrievalError,
     RetrievalOutcome,
     RetrievalWarning,
 )
@@ -263,4 +264,110 @@ def test_out_of_scope_outcome_cannot_expose_material_hits():
             relevance=0.1,
             coverage=0.0,
             hits=[_hit()],
+        )
+
+
+def test_unavailable_retrieval_has_no_crag_confidence_or_material_citations():
+    retrieval_error = RetrievalError(
+        error_code="vector_unavailable",
+        error_detail="Vector store timed out before a query could complete",
+        retriable=True,
+    )
+    outcome = RetrievalOutcome(
+        course_id="linear-algebra",
+        source_revision="source-r2",
+        knowledge_revision=None,
+        retrieval_availability="unavailable",
+        confidence=None,
+        relevance=0.0,
+        coverage=0.0,
+        error=retrieval_error,
+    )
+
+    envelope = assemble_answer_envelope(
+        outcome,
+        answer="当前无法检索课程材料，以下仅为补充说明。",
+        citation_fragment_ids=["la-r2-eigenvalue-definition"],
+        answer_source="material",
+    )
+
+    assert envelope.retrieval_availability == "unavailable"
+    assert envelope.confidence_status is None
+    assert envelope.answer_source == "supplementary"
+    assert envelope.citations == []
+    assert envelope.error == retrieval_error
+
+
+def test_availability_contract_rejects_mixed_failure_and_crag_states():
+    with pytest.raises(ValidationError, match="available RetrievalOutcome requires a confidence"):
+        RetrievalOutcome(
+            course_id="linear-algebra",
+            source_revision="source-r2",
+            knowledge_revision=None,
+            confidence=None,
+            relevance=0.0,
+            coverage=0.0,
+        )
+
+    with pytest.raises(ValidationError, match="unavailable RetrievalOutcome requires a retrieval error"):
+        RetrievalOutcome(
+            course_id="linear-algebra",
+            source_revision="source-r2",
+            knowledge_revision=None,
+            retrieval_availability="unavailable",
+            confidence=None,
+            relevance=0.0,
+            coverage=0.0,
+        )
+
+    with pytest.raises(ValidationError, match="unavailable AnswerEnvelope must use"):
+        AnswerEnvelope(
+            course_id="linear-algebra",
+            source_revision="source-r2",
+            knowledge_revision=None,
+            answer="错误情况下不能假装是材料答案。",
+            retrieval_availability="unavailable",
+            confidence_status=None,
+            answer_source="material",
+            citations=[],
+            relevance=0.0,
+            coverage=0.0,
+            error=RetrievalError(
+                error_code="vector_unavailable",
+                error_detail="Vector store timed out",
+                retriable=True,
+            ),
+        )
+
+    retrieval_error = RetrievalError(
+        error_code="vector_unavailable",
+        error_detail="Vector store timed out",
+        retriable=True,
+    )
+    with pytest.raises(ValidationError, match="unavailable RetrievalOutcome must not expose"):
+        RetrievalOutcome(
+            course_id="linear-algebra",
+            source_revision="source-r2",
+            knowledge_revision=None,
+            retrieval_availability="unavailable",
+            confidence=None,
+            relevance=0.0,
+            coverage=0.0,
+            error=retrieval_error,
+            hits=[_hit()],
+        )
+
+    with pytest.raises(ValidationError, match="unavailable AnswerEnvelope must not contain"):
+        AnswerEnvelope(
+            course_id="linear-algebra",
+            source_revision="source-r2",
+            knowledge_revision=None,
+            answer="不可用检索不能带材料引用。",
+            retrieval_availability="unavailable",
+            confidence_status=None,
+            answer_source="supplementary",
+            citations=[AnswerCitation.from_retrieval_hit(_hit())],
+            relevance=0.0,
+            coverage=0.0,
+            error=retrieval_error,
         )
