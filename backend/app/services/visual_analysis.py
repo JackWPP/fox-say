@@ -69,7 +69,7 @@ class VisualAnalysis:
                 code="visual_analysis_disabled",
                 retryable=False,
             )
-        if not settings.vlm_api_key.strip():
+        if not settings.resolved_vlm_api_key.strip():
             raise KnowledgeJobExecutionError(
                 "VLM_API_KEY is not configured for visual analysis",
                 code="visual_model_not_configured",
@@ -209,8 +209,8 @@ class VisualAnalysis:
     def _client_or_create(self) -> Any:
         if self._client is None:
             self._client = OpenAI(
-                api_key=settings.vlm_api_key,
-                base_url=settings.vlm_api_base,
+                api_key=settings.resolved_vlm_api_key,
+                base_url=settings.resolved_vlm_api_base,
                 timeout=settings.knowledge_model_timeout_seconds,
                 max_retries=0,
             )

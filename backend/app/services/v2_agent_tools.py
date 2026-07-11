@@ -14,6 +14,7 @@ from app.db.sqlite_store import SqliteStore
 from app.schemas.course_projection import CourseOutline
 from app.schemas.evidence import EvidenceRef, SourceFragmentPreview
 from app.schemas.knowledge_components import KnowledgeComponent
+from app.schemas.kc_relations import KCRelation
 from app.schemas.knowledge_status import KnowledgeStatus
 from app.schemas.retrieval_answer import RetrievalOutcome
 from app.schemas.terms import Term
@@ -139,6 +140,25 @@ class V2AgentTools:
                 component.course_id == course_id
                 and component.source_revision == status.source_revision
                 and component.knowledge_revision == status.knowledge_revision
+            )
+        ]
+
+    def get_current_kc_relations(self, course_id: str) -> list[KCRelation]:
+        """Return only current, evidence-backed relations for this course."""
+        status = self.get_knowledge_status(course_id)
+        if (
+            status.projection_status != "ready"
+            or status.source_revision is None
+            or status.knowledge_revision is None
+        ):
+            return []
+        return [
+            relation
+            for relation in self._store.get_current_kc_relations(course_id, status.source_revision)
+            if (
+                relation.course_id == course_id
+                and relation.source_revision == status.source_revision
+                and relation.knowledge_revision == status.knowledge_revision
             )
         ]
 

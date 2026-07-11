@@ -84,9 +84,18 @@ active / review → blocked → active; complete → reopened → active
 | V2-D2a | `complete` | V2-D1d | Atom → Term seed 的零模型、证据可追溯投影 | `c32fc54`；Term 只能从 current Atom 的 literal/evidence 生成；header/term/link 发布受 source/semantic/lease fence 保护，禁止 legacy term/Qdrant 写路径。 |
 | V2-D3a | `complete` | V2-D2a | Term → KC 的零模型、可复习知识组件投影 | `b42cd2b`；一 Term 一 KC，复用定义、章节和证据；KC child 与 parent gate 均持久化，零模型/网络。 |
 | V2-D3b | `complete` | V2-D3a | 基于 current fragment literal 共现的受审计 KC 关系抽取 | `bc880d9`、`df34c77`；默认关闭自动付费调用，单 job 单模型请求、候选/证据/lease/source/audit 栅栏与合法/伪证据候选回归已完成。 |
-| V2-E | `review` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | `86d358c`；显式 asset selection、持久 job、SiliconFlow VLM 审计/预算/lease 与默认关闭 guard 已实现；尚未做真实 VLM 验证。 |
-| V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
-| V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
+| V2-E | `complete` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | `86d358c`；显式 asset selection、持久 job、SiliconFlow VLM 审计/预算/lease 与默认关闭 guard 已实现；E1 合成真实验证成功。 |
+| V2-F | `active` | V2-C, V2-D, V2-E | 全面重构通用 Course Agent、Chat/Review/Artifact runtime 与电脑端 Course Workspace，改读 V2 EvidenceRef/revision/AnswerEnvelope，并移除旧并列事实写路径 | F0 方案已冻结；线性代数是主验收工具而非产品边界；F1～F8 全部完成后才能关闭。 |
+| V2-F0 | `complete` | V2-C, V2-D, V2-E | Course Agent V2 系统方案、前端重构范围、子任务、成本、线性代数主验收与文字型 smoke 冻结；只修改计划/台账/交接文档 | [`course-agent-v2-plan.md`](course-agent-v2-plan.md)；相对链接与状态措辞核验；零模型/网络调用。 |
+| V2-F1 | `ready` | V2-F0 | `AgentRun`/`AgentStep`、course-scoped session mutation、model-call owner 泛化与 interactive/review budget 底座 | 旧 SQLite 安全迁移；knowledge-job lease 无回归；跨课程 mutation、预算拒绝、usage/error/elapsed 有聚焦测试。 |
+| V2-F2 | `proposed` | V2-F1 | V2 quick answer service：TurnScope、EvidencePack、audited writer、AnswerEnvelope 与发布前 revision fence；不接 HTTP/UI | grounded/ambiguous/out-of-scope/unavailable、伪引用、跨课程、stale 和 provider failure 回归。 |
+| V2-F3 | `proposed` | V2-F2 | Chat API/SSE/history/run snapshot 全面迁移；所有新 Course Agent 请求走 V2，不合并 legacy 事实 | API→SSE→DB→history round trip；失败不保存空成功消息；断线、取消、迟到事件与显式空 scope 可验证。 |
+| V2-F4 | `proposed` | V2-F3 | 电脑端 Course Workspace/Agent run/AnswerEnvelope/Sources/Knowledge Studio/Review Conversation 系统重构，移除重复 Chat 与 prompt-hack 入口 | typecheck/build；线性代数主浏览器验收 + 文字型 smoke；四状态、fragment preview、current V2 投影和模式切换可见。 |
+| V2-F5 | `proposed` | V2-F2, V2-F4 | course-agnostic bounded deep-dive 多 Agent：Scout/Mapper/Tutor/Verifier 与友好 phase events | 线性代数跨章节主验收、文字型课程降级、current revision 工具、调用/结果上限和最终 AnswerEnvelope 回归。 |
+| V2-F6 | `proposed` | V2-F3, V2-F5 | revision-bound 对话式备考、结构化 question/rubric/grading、`/btw` child turn 和最小 LearnerObservation | 无伪薄弱点；teach→attempt→feedback→recap、return anchor、刷新恢复与 plan stale 回归。 |
+| V2-F7 | `proposed` | V2-F4, V2-F5 | current V2 课程简报、至少一个 evidence-bound Studio artifact 与演示阶段打磨 | 产物引用可打开、旧 revision stale、失败无空产物；不读取 legacy Skill/Wiki 事实。 |
+| V2-F8 | `proposed` | V2-F3, V2-F4, V2-F5, V2-F6, V2-F7 | 删除全部 Course Agent production consumers 的 legacy Wiki/DMAP/KC/regex citation 路径；建立通用 harness、线性代数主套件、文字型 smoke 与脱敏报告 | 完成系统计划 P0、相关全量检查和真实成本/时延记录后，将 V2-F 交给 V2-G。 |
+| V2-G | `proposed` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | V2-F 尚未完成，当前只有 G0/G1/E1 子链证据；F8 交接后再进入完整验收并记录 p50/p95、每 workflow token 与失败/重试。 |
 | V2-M1 | `complete` | — | 隔离修复 legacy raw-text fallback 的 `_text_overlap_score` 未定义 lint 缺陷；仅修改该 helper 与其回归测试 | `5b29a0d`；恢复历史 Jaccard 评分语义；`ruff check app/services/retrieval.py` 通过，未改 V2-C2 行为或 legacy 检索排序策略。 |
 
 ### 3.1 当前契约差异必须显式关闭
@@ -208,6 +217,65 @@ active / review → blocked → active; complete → reopened → active
 - **验收**：相同 Atom 集合不同顺序得到相同 term ID/排序；同名跨 course/revision ID 不同；orphan/old/cross-course/failed semantic job、失租、source change 均零写；零个可提取 Term 也可成功且 rejected count 可见；semantic 成功后自动出现唯一 term job；没有模型、embedding、Qdrant 或网络调用。
 - **成本与时延**：按当前 Atom/evidence 数本地线性计算；不消耗 token，不能阻塞已就绪 Atom 的读取。
 
+### 3.16 V2-F Course Agent V2 系统重构任务包
+
+V2-F 的通用产品流程、运行时契约、电脑端前端重构、线性代数主验收、文字型通用性 smoke、演示脚本和完整门槛见
+[`course-agent-v2-plan.md`](course-agent-v2-plan.md)。本台账仍是任务状态、领取范围、依赖、验证证据和 commit 的唯一事实源；计划文档不能自行把任何 runtime 能力标为完成。
+
+#### V2-F0：方案与任务冻结
+
+- **目标与范围**：只允许修改 `docs/course-agent-v2-plan.md`、本台账和 `docs/knowledge-v2-agent-handoff.md`，把通用 Course Agent workflow、前端重构、数据边界、P0/P1/P2、线性代数主验收和第二课程 smoke 固化。不得修改业务代码、schema 或配置。
+- **非目标**：不创建 AgentRun 表、不接 Chat、不执行真实模型/VLM/embedding，不把旧比赛文案更新成已完成。
+- **验收与成本**：相对链接可解析；`rg` 可定位 F0～F8 和 P0 门槛；`git diff --check` 通过；零网络、零 token。
+
+#### V2-F1：AgentRun、隔离与审计底座
+
+- **允许范围**：`backend/app/schemas/agent_runs.py`（新增）、`backend/app/schemas/model_calls.py`、`backend/app/db/sqlite_store.py`、模型审计 gateway、course-scoped chat-session store/API 的最小隔离修复、配置、对应 backend tests，以及同一提交中的实际架构/台账文档。共享 SQLite/schema 由协调者串行修改。
+- **非目标**：不切生产 Chat 回答、不加多 Agent/Review/UI，不改变 `knowledge_jobs` 的事实源角色。
+- **验收与成本**：fresh/legacy DB migration、owner-type audit、per-run/course budget、idempotency、跨课程 session/run mutation、provider 零调用拒绝和 knowledge lease 回归；测试用 fake provider，零真实网络。
+
+#### V2-F2：V2 quick-answer service
+
+- **允许范围**：新增 TurnScope/EvidencePack/Chat answer schema 与 service、必要的 `V2AgentTools` bounded adapter、AnswerEnvelope 集成和聚焦 tests；不得修改 HTTP/SSE/frontend/Review 或 legacy 工具行为。
+- **非目标**：不实现通用 ReAct、course brief、artifact 或长期 memory；不允许模型直接写 citation。
+- **验收与成本**：线性代数主问题四状态、文字型课程 smoke、selected scope、citation allow-list、旧 revision/cross-course/provider failure；默认一次 audited writer call，query embedding 只有在已审计且 exact-first 不足时触发。
+
+#### V2-F3：Chat transport、历史与恢复
+
+- **允许范围**：`backend/app/api/chat.py`、chat/session/run persistence、SSE DTO、history/run snapshot API、对应 tests 和实际架构文档；只消费已完成 F2 service。
+- **非目标**：不在 transport 中另写检索/CRAG，不接 legacy/V2 混合 fallback，不改前端视觉或 Review。
+- **验收与成本**：V2 API→SSE→DB→history round trip、完整 AnswerEnvelope、取消/断线/迟到事件/session fence；transport 不新增模型调用。
+
+#### V2-F4：V2 知识与回答体验
+
+- **允许范围**：必要的 current-only 课程地图/KC trace read DTO/API/tests；`frontend/src/types/foxsay.ts`、统一 Agent run 数据层、实际挂载的 CourseWorkspace、Sources、Conversation、AnswerEnvelope、Agent timeline、Knowledge Studio、Review Conversation、Citation 和相关样式。未接入的第二套 Chat 与 prompt-hack 组件只可合并、退役或删除，不并行迁移。
+- **非目标**：不生成新知识，不从 legacy Wiki/CourseIndex 补 UI 空白，不实现 Review Agent。
+- **验收与成本**：typecheck/build；隔离浏览器覆盖四状态、source scope、知识计数、KC→Term→Atom→Evidence、citation、stale 和错误；read path 零模型调用。
+
+#### V2-F5：bounded deep-dive 多 Agent
+
+- **允许范围**：Run Director、bounded Scout/Mapper/Tutor/Verifier nodes、query/ID/limit 约束的 V2 tools、phase event 和聚焦 backend/frontend tests；不得改 F1/F3 已冻结的公共 schema，差异先回台账。
+- **非目标**：不做无限自主 Agent、多个 Agent 自由互聊、隐藏思维链持久化或 dynamic Skill 直接终结回答。
+- **验收与成本**：“线性无关、满秩、可逆”作为跨章节主验收，文字型课程在零关系时正确降级；普通问题仍走 quick path；2～3 次 text-call 硬上限、重复/循环防护、current relation evidence 和最终 AnswerEnvelope。
+
+#### V2-F6：对话式备考与 `/btw`
+
+- **允许范围**：新的 revision-bound ReviewPlan/Session/Attempt/LearnerObservation schema/store/service/API/tests，以及实际 Review UI 和 `/btw` child run；不得读取 legacy Skeleton/wiki_kcs。
+- **非目标**：不做诊断 15 题、整卷生成、完整 SRS 或跨课程画像；最小 observation 不能写回课程 KC。
+- **验收与成本**：无历史时不伪造个人弱项；teach→attempt→feedback→recap、Question/Rubric/Grader、return anchor、刷新恢复、plan stale；每 step 独立预算，只有真实缺口才补讲。
+
+#### V2-F7：课程简报与核心 Artifact
+
+- **允许范围**：course brief/单一核心 artifact 的 revision/evidence schema、audited generation service、Studio 渲染、tests 和演示 copy；产物类型超出一项须先说明具体演示价值。
+- **非目标**：不一次实现讲义、闪卡、播客、长视频等全部产物，不通过普通 Chat prompt hack 生成结构化对象。
+- **验收与成本**：current V2 input、引用可打开、失败无空产物、revision 更新 stale；每个产物独立硬预算和可见 elapsed/error。
+
+#### V2-F8：legacy 切除、通用性 smoke 与主验收
+
+- **允许范围**：删除全部 Course Agent production 路径中的 legacy Chat/Review/Studio consumers；新增合成 fixture、`backend/scripts/course_agent_benchmark.py`、线性代数主套件、文字型 smoke、浏览器流程、脱敏 postmortem，并同步实际架构/交接/台账。
+- **非目标**：不提交真实课程材料、数据库、prompt、模型原文或 key；不以 warm DB 替代 cold-start 证明。
+- **验收与成本**：系统计划 §12 P0 全部通过；backend 聚焦/全量、Ruff、frontend typecheck/build、文字型 smoke、线性代数 cold-start、预热 live demo 和受限真实调用记录齐全；报告每 workflow 请求数/token/elapsed 与失败重试，未通过项不得关闭 V2-F。
+
 ## 4. 成本、等待和“自然生长”的调度门槛
 
 1. **先确定性，后模型**：解析、标题树、fragment、内容 hash、失效范围和基础索引先完成；不能为了“看起来聪明”对整门课无差别烧 token。
@@ -272,7 +340,11 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-D3b | `ready → review` | `bc880d9`；严格候选的 audited KC relation job、持久 header/edges、lease/source/audit fence 与 opt-in 调度已提交。 | `bc880d9` |
 | 2026-07-11 | V2-D3b / V2-D | `review / active → complete` | `df34c77`；最小关系候选证据门回归通过；D0→Atom→Term→KC→Relation 的持久、revision-pinned 投影链关闭。 | `bc880d9` / `df34c77` |
 | 2026-07-11 | V2-E | `ready → review` | `86d358c`；VLM 显式资产任务、默认关闭、审计/预算/lease 与 disabled guard 已提交，未产生外部视觉调用。 | `86d358c` |
+| 2026-07-11 | V2-E | `review → complete` | E1 合成视觉真实调用成功：1 SiliconFlow Qwen 请求，208 tokens，3105 ms，任务/audit/result 成功，临时资源清理；见 postmortem。 | pending docs commit |
 | 2026-07-11 | V2-G1 | `ready → complete` | `79ea30c` 的 `--real` 合成自动链路实际执行：1 DeepSeek 请求，421 tokens，3295 ms，D0/Semantic/Term/KC 全 succeeded，临时库清理。 | `79ea30c` / postmortem |
+| 2026-07-11 | V2-F / V2-F0 | `ready / proposed → active` | 领取 Course Agent V2、电脑端前端和备考全流程重构方案；线性代数作为主要验证工具；仅修改计划、台账与 Agent 交接文档，零业务代码和外部调用。 | pending |
+| 2026-07-11 | V2-F0 / V2-F1 | `active → complete / proposed → ready` | 通用 quick/deep/artifact/review workflow、前端重构、AgentRun/审计边界、线性代数主验收、文字型 smoke、F1～F8 范围、成本和重复验收已冻结；F1 可在 commit 后领取。 | this commit |
+| 2026-07-11 | V2-G | `ready label corrected → proposed` | F0 拆分确认 V2-G 仍依赖未完成的 V2-F；G0/G1/E1 真实 smoke 只保留为子链证据，不能让完整 G 提前处于 ready。 | this commit |
 
 ## 6. 交接检查
 

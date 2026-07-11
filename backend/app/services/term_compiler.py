@@ -29,6 +29,24 @@ _QUOTED_LITERAL = re.compile(r"[“\"「`]([^”\"」`]{1,160})[”\"」`]")
 _LEADING_LITERAL = re.compile(
     r"^\s*([^，。；：:（）()]{1,160}?)(?:是指|称为|叫做|定义为|定义成|表示|满足|具有|是)"
 )
+# Matches "则称A为对合矩阵" / "称为正交矩阵" / "B称为A的逆矩阵"
+# Extracts the term name after "称...为" / "称为" / "叫做" patterns.
+_TERM_AFTER_DEFINITION = re.compile(
+    r"(?:则称|称|称之为|称为|叫做)[^，。；：:（）()]{0,40}?为\s*"
+    r"([^\s，。；：:（）()]{1,80})"
+    r"|称为\s*([^\s，。；：:（）()]{1,80})"
+    r"|叫做\s*([^\s，。；：:（）()]{1,80})"
+)
+
+
+def _strip_possessive(term: str) -> str:
+    """Strip Chinese possessive prefixes like 'A的' from a term candidate."""
+    idx = term.rfind("的")
+    if idx >= 0 and idx + 1 < len(term):
+        stripped = term[idx + 1:]
+        if stripped and len(stripped) <= 80:
+            return stripped
+    return term
 
 
 def build_terms(
@@ -112,10 +130,23 @@ def _literal_term_from_atom(
         if fragment is None:
             return None
         evidence_texts.append(fragment.text)
-    candidates = [match.group(1).strip() for match in _QUOTED_LITERAL.finditer(atom.statement)]
+    candidates: list[str] = []
+    # 1. Quoted literals: "xxx" or 「xxx」
+    candidates.extend(match.group(1).strip() for match in _QUOTED_LITERAL.finditer(atom.statement))
+    # 2. Leading pattern: "xxx 是/称为/叫做 ..."
     leading = _LEADING_LITERAL.match(atom.statement)
     if leading is not None:
         candidates.append(leading.group(1).strip())
+    # 3. Trailing definition pattern: "则称A为xxx" / "称为 xxx" / "叫做 xxx"
+    for match in _TERM_AFTER_DEFINITION.finditer(atom.statement):
+        for group_idx in range(1, 4):
+            val = match.group(group_idx)
+            if val:
+                candidates.append(val.strip())
+                break
+    # Also try stripped versions (e.g. "A的逆矩阵" -> "逆矩阵")
+    stripped_candidates = [_strip_possessive(c) for c in candidates if c]
+    candidates.extend(stripped_candidates)
     for candidate in candidates:
         if not candidate or len(candidate) > 160 or not normalise_term_key(candidate):
             continue

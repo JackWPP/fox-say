@@ -24,11 +24,10 @@
   deletion, so a retry replaces only the affected material evidence rather than notes, terms
   or legacy chunks.
 - Worker-supported V2 job types are `index_material`, `compile_course`,
-  `extract_semantic_atoms` and `compile_terms`. Semantic work is gated behind a succeeded D0
-  parent with the same source/knowledge target; an orphan cannot be claimed.
-  `KNOWLEDGE_SEMANTIC_AUTO_ENQUEUE=true` atomically creates that child while D0 publishes its
-  outline. Semantic publication atomically creates its zero-model Term child, which cannot be
-  claimed until its semantic parent has succeeded. Store operations can atomically enqueue, claim,
+  `extract_semantic_atoms`, `compile_terms`, `compile_kcs`, `extract_kc_relations` and
+  `visual_analysis`. Every child is atomically created with its parent projection but claim-gated
+  until that parent has succeeded. Semantic and KC-relation model work remains explicit opt-in;
+  visual analysis is an explicit asset selection. Store operations can atomically enqueue, claim,
   reclaim an expired lease, complete, fail and requeue a job.
 - SQLite enforces one logical material job per material/revision and one D0 course job per
   course/source revision with partial unique indexes. The store atomically assigns a numeric

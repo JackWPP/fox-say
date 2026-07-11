@@ -1,19 +1,45 @@
 import { useState } from "react";
-import { Check, Copy, RefreshCw, ThumbsDown, ThumbsUp, AlertTriangle, ShieldOff, Sparkles, RotateCcw, BookMarked, ChevronDown } from "lucide-react";
-import type { ConfidenceStatus } from "../../shared/types";
+import {
+  Check,
+  Copy,
+  RefreshCw,
+  ThumbsDown,
+  ThumbsUp,
+  AlertTriangle,
+  ShieldOff,
+  Sparkles,
+  RotateCcw,
+  BookMarked,
+  ChevronDown,
+} from "lucide-react";
+import type {
+  AgentPhase,
+  AnswerCitation,
+  AnswerEnvelope,
+  ConfidenceStatus,
+} from "../../shared/types";
 import type { ChatMessage as ChatMessageType, TermHit } from "./useChat";
+import { deriveAnswerState } from "./useChat";
 import MarkdownRenderer from "./MarkdownRenderer";
 import CitationCard from "./CitationCard";
 import ToolCallIndicator from "./ToolCallIndicator";
 
-const confidenceMeta: Record<ConfidenceStatus, { label: string; cls: string; emoji: string }> = {
-  grounded:    { label: "有据可循", cls: "fox-conf-grounded",   emoji: "✓" },
-  ambiguous:   { label: "可能不准", cls: "fox-conf-ambiguous",  emoji: "?" },
-  out_of_scope:{ label: "超出范围", cls: "fox-conf-outofscope", emoji: "—" },
+interface ConfidenceMeta {
+  label: string;
+  cls: string;
+  emoji: string;
+}
+
+const confidenceMeta: Record<Exclude<ConfidenceStatus, "out_of_scope">, ConfidenceMeta> = {
+  grounded: { label: "基于本课材料", cls: "fox-conf-grounded", emoji: "✓" },
+  ambiguous: { label: "材料有限 · 建议对照原文", cls: "fox-conf-ambiguous", emoji: "?" },
 };
 
 interface ChatMessageProps {
   message: ChatMessageType;
+  courseId?: string;
+  /** Phase timeline already collected by useChat (live streaming). */
+  streamingPhases?: AgentPhase[];
   onRegenerate?: () => void;
   onFeedback?: (kind: "up" | "down") => void;
 }
@@ -93,12 +119,109 @@ function FoxAvatar({ streaming, error }: { streaming?: boolean; error?: boolean 
   );
 }
 
-export default function ChatMessage({ message, onRegenerate, onFeedback }: ChatMessageProps) {
+/**
+ * Maps the four V2 envelope states onto a single badge line so the bubble
+ * keeps the existing visual hierarchy (one badge + content + actions).
+ *
+ * - grounded/ambiguous + material -> "基于本课材料" / "材料有限"
+ * - out_of_scope + supplementary  -> "本课材料未覆盖 · Fox 补充"
+ * - unavailable (error)           -> red "回答异常"
+ */
+function AnswerStateBadge({
+  state,
+  envelope,
+}: {
+  state: ReturnType<typeof deriveAnswerState>;
+  envelope: AnswerEnvelope | null;
+}) {
+  if (state.isUnavailable) {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-red-100 text-red-600 border border-red-200">
+        <AlertTriangle className="w-3 h-3" />
+        回答异常
+      </span>
+    );
+  }
+  if (state.isSupplementary) {
+    // out_of_scope: confidence may be "out_of_scope" or null; either way
+    // we render the explicit "本课材料未覆盖" label because that is what
+    // the user actually needs to know.
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-slate-200/80 text-slate-600 border border-slate-300">
+        <ShieldOff className="w-3 h-3" />
+        本课材料未覆盖 · Fox 补充
+      </span>
+    );
+  }
+  // Material answer — grounded or ambiguous.
+  const confidence = state.confidenceStatus as Exclude<ConfidenceStatus, "out_of_scope"> | null;
+  if (confidence && confidenceMeta[confidence]) {
+    const meta = confidenceMeta[confidence];
+    return (
+      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md ${meta.cls}`}>
+        <span className="font-mono">{meta.emoji}</span>
+        {meta.label}
+      </span>
+    );
+  }
+  // Material answer with no confidence (defensive fallback)
+  return (
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-foxAmber/15 text-amber-700 border border-amber-200">
+      <Sparkles className="w-3 h-3" />
+      基于本课材料
+    </span>
+  );
+}
+
+function CitationsBlock({
+  citations,
+  courseId,
+}: {
+  citations: AnswerCitation[];
+  courseId?: string;
+}) {
+  if (!citations.length) return null;
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-100">
+      <div className="flex items-center gap-1.5 text-[0.68rem] text-slate-500 mb-1.5">
+        <Sparkles className="w-3 h-3 text-foxAmber" />
+        参考了 {citations.length} 处材料
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {citations.map((c, i) => (
+          <CitationCard
+            key={`${c.evidence.fragment_id}-${i}`}
+            citation={c}
+            index={i}
+            courseId={courseId}
+            light
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export default function ChatMessage({
+  message,
+  courseId,
+  streamingPhases,
+  onRegenerate,
+  onFeedback,
+}: ChatMessageProps) {
   const isUser = message.role === "user";
-  const isRefusal = message.role === "assistant" && message.confidenceStatus === "out_of_scope";
-  const isError = message.role === "assistant" && message.isError === true;
-  const isStreaming = !!message.isStreaming;
-  const conf = message.confidenceStatus ? confidenceMeta[message.confidenceStatus] : null;
+  const state = deriveAnswerState(message);
+  const isUnavailable = state.isUnavailable || message.isError === true;
+  const isStreaming = !!message.isStreaming && !isUnavailable;
+  // "refusal-like" means: no material citations and we deliberately render
+  // the answer as plain text (no markdown), to avoid dressing up Fox's
+  // honest fallback in markdown weight.
+  const isRefusalLike = state.isSupplementary && !state.isUnavailable;
+  const envelope = message.envelope ?? null;
+
+  const phasesForRender: AgentPhase[] | undefined = isStreaming
+    ? streamingPhases ?? message.phases
+    : message.phases;
 
   // ---- User bubble ----
   if (isUser) {
@@ -129,45 +252,33 @@ export default function ChatMessage({ message, onRegenerate, onFeedback }: ChatM
   // ---- Assistant bubble ----
   return (
     <div className="flex justify-start gap-2.5 fox-fade-in group">
-      <FoxAvatar streaming={isStreaming} error={isError} />
+      <FoxAvatar streaming={isStreaming} error={isUnavailable} />
       <div className="min-w-0 max-w-[82%]">
         {/* Bubble */}
         <div
           className={`rounded-2xl rounded-bl-sm px-4 py-3 text-sm shadow-soft border ${
-            isError
+            isUnavailable
               ? "bg-red-50 text-red-800 border-red-200"
-              : isRefusal
+              : isRefusalLike
                 ? "bg-slate-50 text-slate-500 border-slate-200"
                 : "bg-white text-midnightCharcoal border-slate-100"
           }`}
         >
           {/* Confidence + status line */}
-          {(conf || isError) && (
-            <div className="flex items-center gap-1.5 mb-2 text-[0.68rem]">
-              {isError ? (
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-red-100 text-red-600 border border-red-200">
-                  <AlertTriangle className="w-3 h-3" />
-                  回答异常
-                </span>
-              ) : isRefusal ? (
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-slate-200/80 text-slate-500 border border-slate-300">
-                  <ShieldOff className="w-3 h-3" />
-                  拒绝回答
-                </span>
-              ) : conf ? (
-                <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md ${message.confidenceStatus === "grounded" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-amber-50 text-amber-700 border border-amber-200"}`}>
-                  <span className="font-mono">{conf.emoji}</span>
-                  {conf.label}
-                </span>
-              ) : null}
-            </div>
-          )}
+          <div className="flex items-center gap-1.5 mb-2 text-[0.68rem] flex-wrap">
+            <AnswerStateBadge state={state} envelope={envelope} />
+          </div>
 
           {/* Body */}
-          {isRefusal || isError ? (
+          {isUnavailable ? (
             <div>
-              <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
-              {isError && onRegenerate && (
+              <p className="whitespace-pre-wrap leading-relaxed">
+                {envelope?.error?.error_detail
+                  || envelope?.error?.error_code
+                  || message.content
+                  || "回答生成失败"}
+              </p>
+              {onRegenerate && (
                 <button
                   onClick={onRegenerate}
                   className="mt-2 inline-flex items-center gap-1 text-xs text-foxAmber hover:text-amber-700 font-medium transition-colors"
@@ -177,36 +288,28 @@ export default function ChatMessage({ message, onRegenerate, onFeedback }: ChatM
                 </button>
               )}
             </div>
+          ) : isRefusalLike ? (
+            <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
           ) : (
             <MarkdownRenderer content={message.content} streaming={isStreaming} variant="ai" />
           )}
 
-          {/* Tool calls timeline */}
-          {message.toolCalls && message.toolCalls.length > 0 && (
-            <ToolCallIndicator toolCalls={message.toolCalls} light />
+          {/* Phase timeline: shown while streaming, hidden once finalised. */}
+          {isStreaming && phasesForRender && phasesForRender.length > 0 && (
+            <ToolCallIndicator phases={phasesForRender} light streaming />
           )}
 
-          {/* Citations */}
-          {message.citations && message.citations.length > 0 && (
-            <div className="mt-3 pt-3 border-t border-slate-100">
-              <div className="flex items-center gap-1.5 text-[0.68rem] text-slate-500 mb-1.5">
-                <Sparkles className="w-3 h-3 text-foxAmber" />
-                参考了 {message.citations.length} 处材料
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {message.citations.map((c, i) => (
-                  <CitationCard key={i} citation={c} index={i} light />
-                ))}
-              </div>
-            </div>
+          {/* Citations — only ever render material citations from the envelope. */}
+          {state.isMaterial && message.citations && message.citations.length > 0 && (
+            <CitationsBlock citations={message.citations} courseId={courseId} />
           )}
 
-          {/* Term hits from Qdrant dictionary */}
+          {/* Legacy compat: term hits from Qdrant dictionary */}
           {message.termHits && <TermHitsPanel terms={message.termHits} />}
         </div>
 
-        {/* Action toolbar (only for completed, non-error assistant messages) */}
-        {!isError && !isRefusal && !isStreaming && (
+        {/* Action toolbar (only for completed, non-error, non-supplementary messages) */}
+        {!isUnavailable && !isRefusalLike && !isStreaming && (
           <div className="flex items-center gap-0.5 mt-1 ml-1 opacity-0 group-hover:opacity-100 transition-opacity">
             <ToolbarCopyButton text={message.content} />
             {onRegenerate && (

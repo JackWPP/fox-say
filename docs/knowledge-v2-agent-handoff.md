@@ -5,6 +5,10 @@
 知识体系 V2 的事实层已经完成；下一阶段才迁移 `/courses/{course_id}/chat` 与 Agent 执行循环。
 在迁移完成前，legacy Wiki/DMAP/KC/chat 仍可运行，但**不得**被声明为 V2 的事实源或引用来源。
 
+下一阶段已确定全面重构**通用 Course Agent V2 与电脑端 Course Workspace**，完成知识体系展示、
+V2 Chat、bounded deep-dive 多 Agent、对话式备考、Artifact 与 `/btw` 闭环。线性代数是主要工程验收和演示工具，不是产品或运行时边界；另有文字型合成课程 smoke 防止学科硬编码。详细产品流程、任务边界和验收见
+[`course-agent-v2-plan.md`](course-agent-v2-plan.md)；实际状态和领取范围仍只以任务台账的 `V2-F0`～`V2-F8` 为准。
+
 ## Current evidence chain
 
 ```text
@@ -27,7 +31,7 @@ Use `app.services.v2_agent_tools.V2AgentTools` only within a supplied `course_id
 - `get_current_outline`：D0 current outline。
 - `get_knowledge_status`：持久任务、revision、预算状态。
 - `get_current_terms` / `get_current_knowledge_components`：只返回当前 source + knowledge revision 的投影。
-- 关系工具接入前必须同样按 current revision 过滤 `get_current_kc_relations`。
+- `get_current_kc_relations`：只返回当前 source + knowledge revision 的有证据关系。
 
 所有工具必须显式接收 `course_id`；不能从 filename、chapter 字符串、session 或模型上下文反推范围。
 
@@ -48,10 +52,11 @@ Use `app.services.v2_agent_tools.V2AgentTools` only within a supplied `course_id
 
 ## Migration order
 
-1. 为 Agent 增加 V2 工具适配层和 AnswerEnvelope-only 输出测试。
-2. 将 chat stream 的 retrieval/citation 分支迁到 V2，保留会话、SSE 和 UI 事件兼容。
-3. 将复习/诊断读取改为 KC + current relation；不要读取 legacy `wiki_kcs`。
-4. 在 V2 chat、citation、review 回归覆盖后，删除 legacy Wiki/DMAP 作为聊天事实输入的路径。
+1. `V2-F1` 先建立独立 AgentRun、course/session 隔离和可复用的模型审计/预算 owner，不能伪造 knowledge job。
+2. `V2-F2` 建立 V2 quick-answer service 和 AnswerEnvelope-only 输出测试，再由 `V2-F3` 接 chat stream、历史与恢复。
+3. `V2-F4` 展示真实知识构建结果和四种回答状态；`V2-F5` 再增加 bounded deep-dive 多 Agent。
+4. `V2-F6` 将复习、作答、批改和 `/btw` 改读 current KC + Relation；不要读取 legacy `wiki_kcs`。
+5. `V2-F7` 完成 current V2 课程简报和一个核心 Artifact；`V2-F8` 最后删除所有 Course Agent production 路径的 legacy Wiki/DMAP 事实输入，并执行线性代数主验收与文字型通用性 smoke。
 
 ## Evidence already available
 
