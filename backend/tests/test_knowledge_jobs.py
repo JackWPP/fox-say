@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import sqlite3
+import uuid
 from pathlib import Path
 
 import pytest
 
 from app.db.sqlite_store import SqliteStore
 from app.schemas.foxsay import Course, Material
+from app.schemas.knowledge_jobs import KnowledgeJobCreate
 from app.services.knowledge_jobs import (
     enqueue_course_compile_job,
     enqueue_material_index_job,
@@ -50,6 +53,95 @@ def test_enqueue_material_job_is_idempotent_and_revision_scoped(store: SqliteSto
     assert first.token_budget is None
     assert next_revision.job_id != first.job_id
     assert len(store.list_knowledge_jobs("course-a")) == 2
+
+
+def test_enqueue_rejects_different_idempotency_key_for_same_logical_job(
+    store: SqliteStore,
+):
+    material_job = enqueue_material_index_job(
+        store, course_id="course-a", material_id="material-a", revision=1
+    )
+    duplicate_material = KnowledgeJobCreate(
+        job_id=str(uuid.uuid4()),
+        course_id="course-a",
+        material_id="material-a",
+        job_type="index_material",
+        revision=1,
+        scope="material",
+        idempotency_key="different-material-key",
+    )
+    with pytest.raises(ValueError, match="logical identity"):
+        store.enqueue_knowledge_job(duplicate_material)
+    assert store.get_knowledge_job("course-a", material_job.job_id) is not None
+    assert len(store.list_knowledge_jobs("course-a")) == 1
+
+    course_job = enqueue_course_compile_job(store, course_id="course-a", revision=9)
+    duplicate_course = KnowledgeJobCreate(
+        job_id=str(uuid.uuid4()),
+        course_id="course-a",
+        material_id=None,
+        job_type="compile_course",
+        revision=9,
+        scope="course",
+        idempotency_key="different-course-key",
+    )
+    with pytest.raises(ValueError, match="logical identity"):
+        store.enqueue_knowledge_job(duplicate_course)
+    assert store.get_knowledge_job("course-a", course_job.job_id) is not None
+    assert len(store.list_knowledge_jobs("course-a")) == 2
+
+
+def test_store_refuses_existing_duplicate_logical_identity_on_startup(tmp_path: Path):
+    db_path = tmp_path / "duplicate-knowledge-jobs.db"
+    store = SqliteStore(db_path)
+    try:
+        store.create_course(Course(id="course-a", title="课程 A", status="empty"))
+        store.create_material(
+            Material(
+                id="material-a",
+                course_id="course-a",
+                filename="notes.txt",
+                kind="text_note",
+                status="processing",
+            )
+        )
+        existing = enqueue_material_index_job(
+            store, course_id="course-a", material_id="material-a", revision=1
+        )
+        store._conn.execute("DROP INDEX uq_knowledge_jobs_material_identity")
+        store._conn.execute("DROP INDEX uq_knowledge_jobs_course_identity")
+        store._conn.execute(
+            """
+            INSERT INTO knowledge_jobs
+                (job_id, course_id, material_id, job_type, revision, scope,
+                 status, attempt, idempotency_key)
+            VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?)
+            """,
+            (
+                "forced-duplicate-job",
+                "course-a",
+                "material-a",
+                "index_material",
+                1,
+                "material",
+                "forced-duplicate-key",
+            ),
+        )
+        store._conn.commit()
+        assert existing.job_id
+    finally:
+        store.close()
+
+    with pytest.raises(RuntimeError, match="duplicate logical identities"):
+        SqliteStore(db_path)
+
+    # The persisted duplicate remains untouched for an explicit operator fix.
+    connection = sqlite3.connect(db_path)
+    try:
+        count = connection.execute("SELECT COUNT(*) FROM knowledge_jobs").fetchone()[0]
+        assert count == 2
+    finally:
+        connection.close()
 
 
 def test_enqueue_rejects_material_from_another_course(store: SqliteStore):

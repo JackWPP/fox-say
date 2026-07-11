@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.chat import router as chat_router
 from app.api.courses import router as courses_router
 from app.api.dashboard import router as dashboard_router
+from app.api.evidence import router as evidence_router
 from app.api.events import router as events_router
 from app.api.knowledge_graph import router as knowledge_graph_router
 from app.api.materials import router as materials_router
@@ -66,6 +67,7 @@ def health_check():
 
 def _register_routers() -> None:
     app.include_router(courses_router)
+    app.include_router(evidence_router)
     app.include_router(materials_router)
     app.include_router(notes_router)
     app.include_router(skeleton_router)

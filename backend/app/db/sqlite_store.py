@@ -294,6 +294,7 @@ class SqliteStore:
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
         self._migrate()
+        self._ensure_knowledge_job_logical_identity_indexes()
 
     def _migrate(self) -> None:
         """Add columns/tables that may be missing from older databases."""
@@ -403,6 +404,38 @@ class SqliteStore:
         self._conn.commit()
         return material.model_copy(update={"degraded": degraded})
 
+    def _ensure_knowledge_job_logical_identity_indexes(self) -> None:
+        """Enforce one durable job per explicit material/course scope.
+
+        SQLite treats ``NULL`` values as distinct in a regular unique index,
+        so material and course jobs need separate partial indexes.  We never
+        silently delete old queue rows to make this migration succeed: an
+        existing duplicate is an auditable integrity error that must be
+        resolved deliberately before the service continues.
+        """
+        statements = (
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_knowledge_jobs_material_identity
+            ON knowledge_jobs(course_id, material_id, job_type, revision)
+            WHERE material_id IS NOT NULL
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_knowledge_jobs_course_identity
+            ON knowledge_jobs(course_id, job_type, revision)
+            WHERE material_id IS NULL
+            """,
+        )
+        try:
+            for statement in statements:
+                self._conn.execute(statement)
+            self._conn.commit()
+        except sqlite3.IntegrityError as exc:
+            self._conn.rollback()
+            raise RuntimeError(
+                "knowledge_jobs contains duplicate logical identities; resolve duplicate "
+                "course/material/revision job rows before starting FoxSay"
+            ) from exc
+
     def get_material(self, course_id: str, material_id: str) -> Material | None:
         row = self._conn.execute(
             "SELECT * FROM materials WHERE id = ? AND course_id = ?", (material_id, course_id)
@@ -422,6 +455,50 @@ class SqliteStore:
             (course_id,),
         ).fetchall()
         return [self._material_from_row(row) for row in rows]
+
+    def get_knowledge_status_snapshot(self, course_id: str) -> list[dict[str, Any]]:
+        """Read current material/job/fragment facts in one SQLite statement.
+
+        This is a deliberately narrow status projection: it never loads parsed
+        Markdown or fragment text, and the statement-level SQLite snapshot
+        avoids combining material, job and fragment reads from different
+        moments during a worker update.
+        """
+        if not course_id.strip():
+            raise ValueError("course_id is required for knowledge status")
+        rows = self._conn.execute(
+            """
+            SELECT
+                m.id AS material_id,
+                m.filename AS filename,
+                m.kind AS material_kind,
+                m.status AS material_status,
+                m.revision AS material_revision,
+                m.content_hash AS content_hash,
+                COALESCE(fragment_counts.fragment_count, 0) AS fragment_count,
+                job.status AS job_status,
+                job.error_code AS error_code,
+                job.error_detail AS error_detail
+            FROM materials AS m
+            LEFT JOIN (
+                SELECT sf.material_id, sf.material_revision, COUNT(*) AS fragment_count
+                FROM source_fragments AS sf
+                WHERE sf.course_id = ?
+                GROUP BY sf.material_id, sf.material_revision
+            ) AS fragment_counts
+                ON fragment_counts.material_id = m.id
+               AND fragment_counts.material_revision = m.revision
+            LEFT JOIN knowledge_jobs AS job
+                ON job.course_id = m.course_id
+               AND job.material_id = m.id
+               AND job.revision = m.revision
+               AND job.job_type = 'index_material'
+            WHERE m.course_id = ?
+            ORDER BY m.created_at DESC, m.id
+            """,
+            (course_id, course_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def update_material(self, course_id: str, material_id: str, material: Material) -> Material | None:
         existing = self.get_material(course_id, material_id)
@@ -779,6 +856,110 @@ class SqliteStore:
         ).fetchall()
         return [self._row_to_source_fragment(row) for row in rows]
 
+    def get_current_ready_source_fragment_preview(
+        self,
+        course_id: str,
+        fragment_id: str,
+    ) -> tuple[SourceFragment, str] | None:
+        """Load one previewable fragment and its display filename in one join.
+
+        A V2 citation may only open evidence that belongs to the requested
+        course, still matches its material's current revision, and whose
+        material index is ready.  Old revision rows remain available for
+        future audited-history APIs, but never leak through this current
+        evidence boundary.
+        """
+        if not course_id.strip():
+            raise ValueError("course_id is required for source fragment queries")
+        if not fragment_id.strip():
+            raise ValueError("fragment_id is required for source fragment queries")
+        row = self._conn.execute(
+            """
+            SELECT sf.*, m.filename AS material_filename
+            FROM source_fragments AS sf
+            INNER JOIN materials AS m
+                ON m.id = sf.material_id
+               AND m.course_id = sf.course_id
+               AND m.revision = sf.material_revision
+            INNER JOIN knowledge_jobs AS job
+                ON job.course_id = sf.course_id
+               AND job.material_id = sf.material_id
+               AND job.revision = sf.material_revision
+               AND job.job_type = 'index_material'
+               AND job.status = 'succeeded'
+            WHERE sf.course_id = ?
+              AND sf.fragment_id = ?
+              AND m.status = 'ready'
+              AND m.content_hash <> ''
+            """,
+            (course_id, fragment_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_source_fragment(row), row["material_filename"]
+
+    def list_current_ready_source_fragments(
+        self,
+        course_id: str,
+        *,
+        fragment_ids: Sequence[str] | None = None,
+        material_ids: Sequence[str] | None = None,
+    ) -> list[SourceFragment]:
+        """Return only current, ready evidence for future V2 retrieval.
+
+        This is the canonical store boundary for fragment-first retrieval.
+        It intentionally excludes historical revisions and fragments from
+        failed/processing materials even if they are still physically stored.
+        Optional IDs are explicit filters, not values parsed from display
+        locators or filenames.
+        """
+        if not course_id.strip():
+            raise ValueError("course_id is required for source fragment queries")
+        clauses = ["sf.course_id = ?", "m.status = 'ready'", "m.content_hash <> ''"]
+        params: list[Any] = [course_id]
+
+        if fragment_ids is not None:
+            resolved_fragment_ids = list(dict.fromkeys(fragment_ids))
+            if not resolved_fragment_ids:
+                return []
+            if any(not fragment_id.strip() for fragment_id in resolved_fragment_ids):
+                raise ValueError("fragment_ids must not contain blank values")
+            placeholders = ", ".join("?" for _ in resolved_fragment_ids)
+            clauses.append(f"sf.fragment_id IN ({placeholders})")
+            params.extend(resolved_fragment_ids)
+
+        if material_ids is not None:
+            resolved_material_ids = list(dict.fromkeys(material_ids))
+            if not resolved_material_ids:
+                return []
+            if any(not material_id.strip() for material_id in resolved_material_ids):
+                raise ValueError("material_ids must not contain blank values")
+            placeholders = ", ".join("?" for _ in resolved_material_ids)
+            clauses.append(f"sf.material_id IN ({placeholders})")
+            params.extend(resolved_material_ids)
+
+        where = " AND ".join(clauses)
+        rows = self._conn.execute(
+            f"""
+            SELECT sf.*
+            FROM source_fragments AS sf
+            INNER JOIN materials AS m
+                ON m.id = sf.material_id
+               AND m.course_id = sf.course_id
+               AND m.revision = sf.material_revision
+            INNER JOIN knowledge_jobs AS job
+                ON job.course_id = sf.course_id
+               AND job.material_id = sf.material_id
+               AND job.revision = sf.material_revision
+               AND job.job_type = 'index_material'
+               AND job.status = 'succeeded'
+            WHERE {where}
+            ORDER BY sf.material_id, sf.ordinal, sf.fragment_id
+            """,
+            params,
+        ).fetchall()
+        return [self._row_to_source_fragment(row) for row in rows]
+
     def _assert_source_fragment_scope(
         self, course_id: str, material_id: str, material_revision: int
     ) -> None:
@@ -963,11 +1144,12 @@ class SqliteStore:
     # --- Knowledge jobs (V2 persistent queue; no worker loop here) ---
 
     def enqueue_knowledge_job(self, job: KnowledgeJobCreate) -> KnowledgeJob:
-        """Insert a job once per stable idempotency key.
+        """Insert a job once per stable logical identity and idempotency key.
 
         A reused key is valid only for the exact same course-scoped immutable
-        identity.  This prevents an accidental caller-side key collision from
-        returning another course's job.
+        identity.  A different key cannot create a second job for the same
+        explicit course/material/revision scope either; duplicate job rows
+        would make status and evidence publication nondeterministic.
         """
         if self.get_course(job.course_id) is None:
             raise ValueError(f"Cannot enqueue knowledge job: course {job.course_id!r} not found")
@@ -977,26 +1159,42 @@ class SqliteStore:
             )
 
         with self._knowledge_job_lock:
-            self._conn.execute(
-                """
-                INSERT INTO knowledge_jobs
-                    (job_id, course_id, material_id, job_type, revision, scope,
-                     status, attempt, idempotency_key, token_budget)
-                VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)
-                ON CONFLICT(idempotency_key) DO NOTHING
-                """,
-                (
-                    job.job_id,
-                    job.course_id,
-                    job.material_id,
-                    job.job_type,
-                    job.revision,
-                    job.scope,
-                    job.idempotency_key,
-                    job.token_budget,
-                ),
-            )
-            self._conn.commit()
+            existing_logical = self._get_knowledge_job_by_logical_identity(job)
+            if existing_logical is not None:
+                if existing_logical.idempotency_key == job.idempotency_key:
+                    return existing_logical
+                raise ValueError(
+                    "Knowledge job logical identity is already bound to another idempotency key"
+                )
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO knowledge_jobs
+                        (job_id, course_id, material_id, job_type, revision, scope,
+                         status, attempt, idempotency_key, token_budget)
+                    VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)
+                    ON CONFLICT(idempotency_key) DO NOTHING
+                    """,
+                    (
+                        job.job_id,
+                        job.course_id,
+                        job.material_id,
+                        job.job_type,
+                        job.revision,
+                        job.scope,
+                        job.idempotency_key,
+                        job.token_budget,
+                    ),
+                )
+                self._conn.commit()
+            except sqlite3.IntegrityError as exc:
+                self._conn.rollback()
+                existing_logical = self._get_knowledge_job_by_logical_identity(job)
+                if existing_logical is not None:
+                    raise ValueError(
+                        "Knowledge job logical identity is already bound to another idempotency key"
+                    ) from exc
+                raise
             row = self._conn.execute(
                 "SELECT * FROM knowledge_jobs WHERE idempotency_key = ?",
                 (job.idempotency_key,),
@@ -1022,6 +1220,28 @@ class SqliteStore:
         if immutable_identity != requested_identity:
             raise ValueError("Knowledge job idempotency key is already bound to another job identity")
         return persisted
+
+    def _get_knowledge_job_by_logical_identity(
+        self,
+        job: KnowledgeJobCreate,
+    ) -> KnowledgeJob | None:
+        if job.material_id is None:
+            row = self._conn.execute(
+                """
+                SELECT * FROM knowledge_jobs
+                WHERE course_id = ? AND material_id IS NULL AND job_type = ? AND revision = ?
+                """,
+                (job.course_id, job.job_type, job.revision),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                """
+                SELECT * FROM knowledge_jobs
+                WHERE course_id = ? AND material_id = ? AND job_type = ? AND revision = ?
+                """,
+                (job.course_id, job.material_id, job.job_type, job.revision),
+            ).fetchone()
+        return self._row_to_knowledge_job(row) if row is not None else None
 
     def get_knowledge_job(self, course_id: str, job_id: str) -> KnowledgeJob | None:
         row = self._conn.execute(

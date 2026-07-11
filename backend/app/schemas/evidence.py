@@ -153,3 +153,29 @@ class EvidenceRef(BaseModel):
             source_type="material",
             source_id=fragment.material_id,
         )
+
+
+class SourceFragmentPreview(BaseModel):
+    """Current-revision source text returned when a citation is opened.
+
+    This is intentionally a V2 endpoint contract rather than a variation of
+    the legacy ``SourcePreviewResponse``.  Citation payloads use
+    :class:`EvidenceRef`; opening one returns this flattened, minimal source
+    view without promoting internal parser metadata to a public contract.
+    """
+
+    course_id: str = Field(min_length=1)
+    material_id: str = Field(min_length=1)
+    material_revision: int = Field(ge=0)
+    fragment_id: str = Field(min_length=1)
+    file_name: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    locator: str = Field(min_length=1)
+    heading_path: list[str] = Field(default_factory=list)
+    page_start: int | None = Field(default=None, ge=1)
+    page_end: int | None = Field(default=None, ge=1)
+    slide_start: int | None = Field(default=None, ge=1)
+    slide_end: int | None = Field(default=None, ge=1)
+    char_start: int = Field(ge=0)
+    char_end: int = Field(ge=0)
+    kind: SourceFragmentKind

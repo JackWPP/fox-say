@@ -2,9 +2,9 @@
 
 ## Knowledge System V2 Foundation (2026-07-11)
 
-> The active request path below is still the legacy pipeline. V2 has only established its
-> durable job foundation so far; it does **not** yet replace material upload, parsing,
-> Qdrant writes, Wiki build, or the frontend status UI.
+> V2 now owns public material upload → durable indexing → source-fragment/Qdrant evidence,
+> plus read-only evidence status and current-fragment preview. It does **not** yet replace
+> chat retrieval, course-level compilation, legacy Wiki build, or the frontend status UI.
 
 - `knowledge_jobs` is a separate SQLite-backed, course-scoped queue for V2 work. It has
   explicit revision, idempotency key, attempt, lease, error and token-budget fields.
@@ -18,11 +18,24 @@
   or legacy chunks.
 - The current V2 job types are `index_material` and `compile_course`. Store operations can
   atomically enqueue, claim, reclaim an expired lease, complete, fail and requeue a job.
+- SQLite also enforces one logical job per explicit material/course scope and revision with
+  partial unique indexes. A historical duplicate is a visible startup integrity error rather
+  than a silently selected row that could inflate coverage or authorize stale evidence.
 - `KnowledgeJobWorker` is a controlled, single-worker consumer with injected handlers and a
   managed lease heartbeat. FastAPI starts it in its lifespan; uploads only enqueue the durable
   `index_material` job, and material progress reads the durable job snapshot. SQLite MVP must
   run one API/worker process. The legacy pipeline remains in the repository for later migration,
   but public material uploads no longer launch it with `asyncio.create_task()`.
+- `GET /courses/{course_id}/knowledge-status` is a no-model SQLite snapshot of current
+  material revisions, their `index_material` jobs and fragment counts. Source-ready remains
+  `partial` until V2-D persists a compiler snapshot; it must not be shown as a fully digested
+  course.
+- `GET /courses/{course_id}/source-fragments/{fragment_id}` is the V2 citation preview path.
+  It joins course, material revision, material readiness and succeeded `index_material` job in
+  one current-evidence boundary; it never falls back to legacy DMAP locators or old chunks.
+- `list_current_ready_source_fragments(...)` is the canonical store boundary for V2 retrieval.
+  It filters by `course_id`, current material revision, ready material and succeeded index job;
+  Qdrant may only provide candidates that are rehydrated through this boundary.
 - The target evidence-first model, incremental revision policy and migration sequence are in
   [knowledge-system-v2-implementation-plan.md](knowledge-system-v2-implementation-plan.md).
 
@@ -84,9 +97,10 @@ Course creation
   → course-bound Agent chat (11 工具 ReAct: 7 静态 + 4 动态 Skill) and review plan
 ```
 
-## API Surface (40 endpoints)
+## API Surface
 ```text
-/courses                    课程 CRUD + import-timetable + build-wiki + kcs + chapter-wikis + course-index + summary/regenerate
+/courses                    课程 CRUD + import-timetable + build-wiki + kcs + chapter-wikis + course-index + summary/regenerate + /{id}/knowledge-status
+/courses/{id}/source-fragments/{fragment_id}  V2 当前 revision 的证据原文预览
 /courses/{id}/materials     材料上传(单文件 + /batch 批量最多15个)/列表/状态/重试/进度/source-preview
 /courses/{id}/chat          Agent SSE stream + sessions + history
 /courses/{id}/skeleton      骨架图查询
