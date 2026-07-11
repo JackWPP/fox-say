@@ -72,7 +72,7 @@ active / review → blocked → active; complete → reopened → active
 | V2-C1 | `complete` | V2-B | 后端 `KnowledgeStatus`、当前 revision fragment preview 和公共证据 DTO；仅修改 schema/store/API/tests | `881b2d4`；状态由持久材料/job/fragment 计算；跨课程、旧 revision、未知 fragment 均不能预览；不调用模型。 |
 | V2-C2 | `complete` | V2-C1 | fragment-first 混合检索、CRAG 结果与服务器侧 `AnswerEnvelope`；仅修改 retrieval/service/query tests，不新增 HTTP/SSE/chat/Agent/frontend 接入 | `0f8d592`、`8060137`、`2209b08`、`056d050`、`02940bd`、`2603bf5`、`0c495f1`、`2b1c319`；canonical rehydrate、availability/error、citation 与成本短路回归通过。 |
 | V2-C3 | `complete` | V2-C1, V2-C2 | 前端 V2 public types、可复用的 evidence-aware CitationCard、SourcesPanel 的真实证据状态 | `da2a0b3`、`5355ece`；`npm run typecheck`、`npm run build` 通过。隔离浏览器创建/刷新合成线性代数课程后，`KnowledgeStatus` 以 200 响应驱动“尚无证据”和“课程地图尚未编译”。没有生产 AnswerEnvelope/chat citation，因此 V2 citation 点击仍由 C1/C2 endpoint 测试覆盖。不得把 legacy chat citation/CRAG 映射成 V2。 |
-| V2-D | `active` | V2-C | 课程级 `compile_course`、Outline、SemanticAtom、Term、KC、关系及 revision 依赖 | 先由 D0 把 source-pinned、零模型的 CourseOutline snapshot 与状态发布栅栏做成可运行垂直切片；模型 Atom/Term/KC/关系随后拆分，不得跳过身份和审计边界。 |
+| V2-D | `complete` | V2-C | 课程级 `compile_course`、Outline、SemanticAtom、Term、KC、关系及 revision 依赖 | D0～D3b 已形成 evidence-first 投影链；关系仅限 current fragment literal 共现的 audited 关系，不引入图数据库或 legacy 事实写入。 |
 | V2-D0 | `complete` | V2-C | 将占位 `compile_course` 变成 source-pinned、确定性的 CourseOutline 编译与读取边界；只写 V2 projection tables | `33b3869`；D0 course job target/identity、compiler handler、immutable header/payload、current-outline API 与 `KnowledgeStatus` ready/stale/processing 已验证；56 个 V2 聚焦回归、270 个 backend tests 与相关 Ruff 通过。零 LLM/VLM/embedding 调用。 |
 | V2-D0a | `complete` | V2-D0, V2-D1a | 补齐 D0 projection publication 的 lease-expiry/owner 栅栏；只修复已发现的 worker 写入边界 | `3adfbf4`；原子 attempt/owner/expiry/revision publication guard 与失租回归已提交，零模型/向量/网络调用。 |
 | V2-D1a | `complete` | V2-D0 | course-scoped DeepSeek text-call audit、course/job budget reservation、retry ceiling 与 audited wrapper；不生成知识投影 | `d1ee488`；持久 audit/reservation、预算可见性、retry ceiling 与 fake-provider 回归已提交。没有调用真实外部模型，也未迁移 material embedding 或 legacy 路径。 |
@@ -83,7 +83,7 @@ active / review → blocked → active; complete → reopened → active
 | V2-D1d | `complete` | V2-D1c, V2-G0 | D0 → semantic job 自动调度与可见状态；受配置和 D1a 预算门保护 | `205b1ea`；parent/child atomic scheduling、claim gate、status/UI polling 与测试已提交。显式开关默认关闭，避免本地上传意外成本。 |
 | V2-D2a | `complete` | V2-D1d | Atom → Term seed 的零模型、证据可追溯投影 | `c32fc54`；Term 只能从 current Atom 的 literal/evidence 生成；header/term/link 发布受 source/semantic/lease fence 保护，禁止 legacy term/Qdrant 写路径。 |
 | V2-D3a | `complete` | V2-D2a | Term → KC 的零模型、可复习知识组件投影 | `b42cd2b`；一 Term 一 KC，复用定义、章节和证据；KC child 与 parent gate 均持久化，零模型/网络。 |
-| V2-D3b | `review` | V2-D3a | 基于 current fragment literal 共现的受审计 KC 关系抽取 | `bc880d9`；默认关闭自动付费调用，单 job 单模型请求、候选/证据/lease/source/audit 栅栏已实现；等待最小 fake relation publication 回归。 |
+| V2-D3b | `complete` | V2-D3a | 基于 current fragment literal 共现的受审计 KC 关系抽取 | `bc880d9`、`df34c77`；默认关闭自动付费调用，单 job 单模型请求、候选/证据/lease/source/audit 栅栏与合法/伪证据候选回归已完成。 |
 | V2-E | `review` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | `86d358c`；显式 asset selection、持久 job、SiliconFlow VLM 审计/预算/lease 与默认关闭 guard 已实现；尚未做真实 VLM 验证。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
 | V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
@@ -270,6 +270,7 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-D2a | `review → complete` | `c32fc54`；零模型 Term seed、原子 child 调度、lease/source/semantic/evidence 栅栏和旧 SQLite job-type 迁移已提交；40 个聚焦 backend 回归与 Ruff 通过。 | `c32fc54` |
 | 2026-07-11 | V2-D3a | `ready → complete` | `b42cd2b`；Term→KC 零模型投影、atomic child、parent gate 和成功读取回归完成。 | `b42cd2b` |
 | 2026-07-11 | V2-D3b | `ready → review` | `bc880d9`；严格候选的 audited KC relation job、持久 header/edges、lease/source/audit fence 与 opt-in 调度已提交。 | `bc880d9` |
+| 2026-07-11 | V2-D3b / V2-D | `review / active → complete` | `df34c77`；最小关系候选证据门回归通过；D0→Atom→Term→KC→Relation 的持久、revision-pinned 投影链关闭。 | `bc880d9` / `df34c77` |
 | 2026-07-11 | V2-E | `ready → review` | `86d358c`；VLM 显式资产任务、默认关闭、审计/预算/lease 与 disabled guard 已提交，未产生外部视觉调用。 | `86d358c` |
 | 2026-07-11 | V2-G1 | `ready → complete` | `79ea30c` 的 `--real` 合成自动链路实际执行：1 DeepSeek 请求，421 tokens，3295 ms，D0/Semantic/Term/KC 全 succeeded，临时库清理。 | `79ea30c` / postmortem |
 
