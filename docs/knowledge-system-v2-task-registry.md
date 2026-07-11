@@ -76,7 +76,7 @@ active / review → blocked → active; complete → reopened → active
 | V2-D0 | `complete` | V2-C | 将占位 `compile_course` 变成 source-pinned、确定性的 CourseOutline 编译与读取边界；只写 V2 projection tables | `33b3869`；D0 course job target/identity、compiler handler、immutable header/payload、current-outline API 与 `KnowledgeStatus` ready/stale/processing 已验证；56 个 V2 聚焦回归、270 个 backend tests 与相关 Ruff 通过。零 LLM/VLM/embedding 调用。 |
 | V2-D0a | `complete` | V2-D0, V2-D1a | 补齐 D0 projection publication 的 lease-expiry/owner 栅栏；只修复已发现的 worker 写入边界 | `3adfbf4`；原子 attempt/owner/expiry/revision publication guard 与失租回归已提交，零模型/向量/网络调用。 |
 | V2-D1a | `complete` | V2-D0 | course-scoped DeepSeek text-call audit、course/job budget reservation、retry ceiling 与 audited wrapper；不生成知识投影 | `d1ee488`；持久 audit/reservation、预算可见性、retry ceiling 与 fake-provider 回归已提交。没有调用真实外部模型，也未迁移 material embedding 或 legacy 路径。 |
-| V2-D1b0 | `review` | V2-D0, V2-D1a | 为语义原子抽取预留独立的 course job type 与 SQLite enum 迁移；不 enqueue、不调用模型、不写 Atom | 已实现独立 identity、旧 `CHECK` 表重建迁移与 visible unsupported-handler boundary，等待协调者核对并提交。 |
+| V2-D1b0 | `complete` | V2-D0, V2-D1a | 为语义原子抽取预留独立的 course job type 与 SQLite enum 迁移；不 enqueue、不调用模型、不写 Atom | `0304f91`；独立 identity、旧 `CHECK` 表重建迁移和 unsupported-handler boundary 均已提交，零模型/embedding/VLM/网络调用。 |
 | V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
 | V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
@@ -206,6 +206,7 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-D0a | `review → complete` | `3adfbf4`；26 个 compiler/worker/status/indexer 聚焦回归与相关 Ruff 通过。定向 mypy 仅为既有 `foxsay.py`、legacy `sqlite_store.py`、worker strict baseline，无本任务新增项。 | `3adfbf4` |
 | 2026-07-11 | V2-D1b0 | `ready → active` | 领取 semantic-atom 独立 job type 与旧 SQLite enum migration；范围、非目标、验收与零成本限制见 §3.10。 | pending |
 | 2026-07-11 | V2-D1b0 | `active → review` | schema/store 已接受独立 `extract_semantic_atoms`；D0/D1a facts 的合成旧 SQLite migration、course/source identity、未注册 handler 的可见失败均已回归覆盖。等待最终 diff/commit 核对。 | pending |
+| 2026-07-11 | V2-D1b0 | `review → complete` | `0304f91`；38 个 job/worker/indexer/compiler/status 聚焦回归与相关 Ruff 通过。定向 mypy 仅为既有 `foxsay.py`、legacy `sqlite_store.py` strict baseline，无本任务新增项。 | `0304f91` |
 
 ## 6. 交接检查
 
