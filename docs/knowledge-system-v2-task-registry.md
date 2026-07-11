@@ -71,7 +71,7 @@ active / review → blocked → active; complete → reopened → active
 | V2-C | `active` | V2-B | fragment preview、`EvidenceRef`、`KnowledgeStatus`、精确/向量/Outline 邻域检索与前端真实状态 | 两门合成课程不跨 `course_id`；每个 citation 以 fragment ID 打开正确位置；重连后状态来自 API 而非 SSE。由 C1～C3 串行交付。 |
 | V2-C1 | `complete` | V2-B | 后端 `KnowledgeStatus`、当前 revision fragment preview 和公共证据 DTO；仅修改 schema/store/API/tests | `881b2d4`；状态由持久材料/job/fragment 计算；跨课程、旧 revision、未知 fragment 均不能预览；不调用模型。 |
 | V2-C2 | `complete` | V2-C1 | fragment-first 混合检索、CRAG 结果与服务器侧 `AnswerEnvelope`；仅修改 retrieval/service/query tests，不新增 HTTP/SSE/chat/Agent/frontend 接入 | `0f8d592`、`8060137`、`2209b08`、`056d050`、`02940bd`、`2603bf5`、`0c495f1`、`2b1c319`；canonical rehydrate、availability/error、citation 与成本短路回归通过。 |
-| V2-C3 | `ready` | V2-C1, V2-C2 | 前端 public types、CitationCard、SourcesPanel/Chat 状态呈现 | 引用按 `fragment_id` 打开；`supplementary` 不被展示为拒答；状态重连来自 API。 |
+| V2-C3 | `active` | V2-C1, V2-C2 | 前端 V2 public types、可复用的 evidence-aware CitationCard、SourcesPanel 的真实证据状态 | 状态只来自 `KnowledgeStatus` API；带 `fragment_id` 的 V2 citation 走 current-fragment preview；不得把 legacy chat citation/CRAG 映射成 V2。 |
 | V2-D | `ready` | V2-C | 课程级 `compile_course`、Outline、SemanticAtom、Term、KC、关系及 revision 依赖 | 模型输出的 fragment ID 均经代码校验；坏引用只丢弃该候选并留下 warning；增量与全量重建决策可审计。 |
 | V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
@@ -116,6 +116,14 @@ active / review → blocked → active; complete → reopened → active
 - **验收**：空输入返回 `0.0`；已知字符集合样例保持 Jaccard 分数；`uv run ruff check app/services/retrieval.py` 不再有 F821；相关 pytest 通过。全量 mypy 的其他既存 legacy baseline 不得被声称为已修复。
 - **成本与时延**：纯本地私有函数修复，不调用模型、embedding、Qdrant 或 SQLite。
 
+### 3.6 活动任务包：V2-C3
+
+- **目标**：让已存在的 V2 `KnowledgeStatus` 和 current `SourceFragmentPreview` 成为前端可见、可验证的事实边界；为后续 V2 `AnswerEnvelope` 提供严格的 evidence-aware 引用类型与卡片，而不伪造现有 legacy chat 已完成迁移。
+- **依赖与范围**：依赖 C1/C2；允许修改 `frontend/src/types/foxsay.ts`、`frontend/src/shared/types.ts`、`frontend/src/features/course/CitationCard.tsx`、`SourcesPanel.tsx`、必要的 course hook/调用点与相关 CSS。可以新增最小 `useKnowledgeStatus` hook。不得修改 backend API、`agent.py`、`chat.py`、SSE 协议、聊天历史、legacy 引用 DTO 的含义，或以文件名/locator 反推 fragment ID。
+- **实现边界**：`GET /courses/{course_id}/knowledge-status` 是状态唯一事实源；进入/重新挂载与材料上传后必须重新读取，处理中可以有限轮询。带 `EvidenceRef.fragment_id` 的 V2 citation 才允许调用 `GET /courses/{course_id}/source-fragments/{fragment_id}`；legacy citation 保持自己的旧预览路径，绝不可被升级为 V2。当前没有 `RetrievalOutcome`/`AnswerEnvelope` HTTP 或 chat/SSE 生产调用点，因此真实回答中的 `supplementary`、`unavailable` 和 V2 citation 渲染留给 V2-F；C3 只能定义契约/可复用渲染边界，不能声称聊天已迁移。
+- **验收**：source-ready 但 projection-not-started 显示“材料证据已就绪、课程地图尚未编译”，不显示“课程已吃透”；processing/retryable/failed/missing-evidence 覆盖与错误可见；V2 citation 只按 fragment ID 打开 current preview，404/失败清晰可见；无 fragment ID 的 legacy citation 不调用 V2 endpoint；前端 `npm run typecheck` 与 `npm run build` 通过。测试/人工验证必须记录状态 API 是重连事实源，SSE 最多作为刷新提示。
+- **成本与时延**：不调用模型、embedding 或 Qdrant；状态在挂载/材料上传后读取，只有 source processing 时以有限频率轮询；原文预览仅在用户点击单个 V2 citation 时请求。
+
 ## 4. 成本、等待和“自然生长”的调度门槛
 
 1. **先确定性，后模型**：解析、标题树、fragment、内容 hash、失效范围和基础索引先完成；不能为了“看起来聪明”对整门课无差别烧 token。
@@ -144,6 +152,7 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-M1 | `ready → active` | 按 §3.5 领取历史 `_text_overlap_score` 复原，文件范围与 C2 隔离。 | `c6e0880` |
 | 2026-07-11 | V2-M1 | `active → complete` | `5b29a0d`；4 个 Jaccard/空输入回归通过，`ruff check app/services/retrieval.py tests/test_legacy_raw_text_retrieval.py` 通过。全量 mypy 既存 strict baseline 未在此任务修复。 | `5b29a0d` |
 | 2026-07-11 | V2-C2 | `review → complete` | 50 个 C1/C2/M1 聚焦回归通过，相关 Ruff 通过，完整 backend pytest 已完成；定向 mypy 的新增 C2 行已清零。剩余 mypy 仅为 legacy/imported baseline，未宣称已修复。纯 service/schema/test，未接 chat/Agent/frontend。 | `2b1c319` |
+| 2026-07-11 | V2-C3 | `ready → active` | 根据 C1/C2 API 审查领取前端真实证据状态和 evidence-aware citation 边界；范围、非目标、验收和成本限制见 §3.6。 | this commit |
 
 ## 6. 交接检查
 
