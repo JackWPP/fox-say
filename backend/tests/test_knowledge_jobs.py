@@ -14,6 +14,7 @@ from app.schemas.knowledge_jobs import KnowledgeJobCreate
 from app.services.knowledge_jobs import (
     enqueue_course_compile_job,
     enqueue_material_index_job,
+    enqueue_semantic_atom_extraction_job,
 )
 
 
@@ -93,6 +94,39 @@ def test_enqueue_rejects_different_idempotency_key_for_same_logical_job(
         store.enqueue_knowledge_job(duplicate_course)
     assert store.get_knowledge_job("course-a", course_job.job_id) is not None
     assert len(store.list_knowledge_jobs("course-a")) == 2
+
+
+def test_semantic_atom_job_has_its_own_course_source_identity(store: SqliteStore) -> None:
+    outline = enqueue_course_compile_job(
+        store, course_id="course-a", source_revision="src_semantic_identity"
+    )
+    semantic = enqueue_semantic_atom_extraction_job(
+        store,
+        course_id="course-a",
+        source_revision="src_semantic_identity",
+        knowledge_revision=outline.target_knowledge_revision or "kn_missing",
+    )
+    duplicate = enqueue_semantic_atom_extraction_job(
+        store,
+        course_id="course-a",
+        source_revision="src_semantic_identity",
+        knowledge_revision=outline.target_knowledge_revision or "kn_missing",
+    )
+    other_course = enqueue_semantic_atom_extraction_job(
+        store,
+        course_id="course-b",
+        source_revision="src_semantic_identity",
+        knowledge_revision=outline.target_knowledge_revision or "kn_missing",
+    )
+
+    assert semantic.job_id != outline.job_id
+    assert semantic.job_type == "extract_semantic_atoms"
+    assert semantic.scope == "course"
+    assert semantic.target_source_revision == outline.target_source_revision
+    assert duplicate.job_id == semantic.job_id
+    assert other_course.job_id != semantic.job_id
+    assert len(store.list_knowledge_jobs("course-a")) == 2
+    assert [job.job_id for job in store.list_knowledge_jobs("course-b")] == [other_course.job_id]
 
 
 def test_store_refuses_existing_duplicate_logical_identity_on_startup(tmp_path: Path):
@@ -205,6 +239,130 @@ def test_store_migrates_pre_d0_course_job_schema_and_uses_source_identity(tmp_pa
         assert second.target_source_revision == "src_pre_d0_b"
     finally:
         store.close()
+
+
+def test_job_type_migration_preserves_d0_and_d1a_facts(tmp_path: Path) -> None:
+    db_path = tmp_path / "old-job-type-check.db"
+    store = SqliteStore(db_path)
+    try:
+        store.create_course(Course(id="course-a", title="课程 A", status="empty"))
+        outline = enqueue_course_compile_job(
+            store, course_id="course-a", source_revision="src_migration"
+        )
+        claimed = store.claim_next_knowledge_job("worker-a", lease_seconds=60)
+        assert claimed is not None and claimed.job_id == outline.job_id
+        store.complete_knowledge_job("course-a", outline.job_id, "worker-a")
+        assert outline.target_knowledge_revision is not None
+        store._conn.execute(
+            """
+            INSERT INTO course_compilations (
+                course_id, source_revision, knowledge_revision, compiler_version, job_id,
+                source_manifest_json, source_fragment_count, outline_section_count, warning_count
+            ) VALUES (?, ?, ?, 'course-outline-d0', ?, '{}', 0, 0, 0)
+            """,
+            (
+                "course-a",
+                "src_migration",
+                outline.target_knowledge_revision,
+                outline.job_id,
+            ),
+        )
+        store._conn.execute(
+            """
+            INSERT INTO course_projection_snapshots (
+                course_id, knowledge_revision, projection_kind, payload_json
+            ) VALUES ('course-a', ?, 'course_outline', '{}')
+            """,
+            (outline.target_knowledge_revision,),
+        )
+        store._conn.execute(
+            """
+            INSERT INTO course_model_budgets (course_id, source_revision, token_budget)
+            VALUES ('course-a', 'src_migration', 100)
+            """
+        )
+        store._conn.execute(
+            """
+            INSERT INTO model_call_audits (
+                call_id, course_id, job_id, job_attempt, source_revision, knowledge_revision,
+                call_kind, purpose, provider, model, request_fingerprint, status,
+                input_token_upper_bound, max_output_tokens, reserved_tokens, usage_source,
+                accounted_tokens, course_budget_tokens, job_budget_tokens
+            ) VALUES (
+                'audit-migration', 'course-a', ?, 1, 'src_migration', ?, 'text',
+                'synthetic', 'fake', 'fake-model', ?, 'succeeded', 1, 1, 2,
+                'unavailable', 2, 100, 12000
+            )
+            """,
+            (outline.job_id, outline.target_knowledge_revision, "a" * 64),
+        )
+        store._conn.commit()
+    finally:
+        store.close()
+
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute(
+            """
+            CREATE TABLE knowledge_jobs_old_constraint (
+                job_id TEXT PRIMARY KEY,
+                course_id TEXT NOT NULL,
+                material_id TEXT,
+                job_type TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                attempt INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 3,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                token_budget INTEGER,
+                target_source_revision TEXT,
+                target_knowledge_revision TEXT,
+                lease_owner TEXT,
+                lease_expires_at TEXT,
+                error_code TEXT,
+                error_detail TEXT,
+                error_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                started_at TEXT,
+                finished_at TEXT,
+                CHECK (job_type IN ('index_material', 'compile_course')),
+                CHECK (scope IN ('material', 'course')),
+                CHECK (status IN ('queued', 'running', 'succeeded', 'retryable', 'failed')),
+                CHECK (revision >= 0),
+                CHECK (attempt >= 0),
+                CHECK (max_attempts > 0),
+                CHECK (token_budget IS NULL OR token_budget > 0)
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO knowledge_jobs_old_constraint SELECT * FROM knowledge_jobs"
+        )
+        connection.execute("DROP TABLE knowledge_jobs")
+        connection.execute("ALTER TABLE knowledge_jobs_old_constraint RENAME TO knowledge_jobs")
+        connection.commit()
+    finally:
+        connection.close()
+
+    migrated = SqliteStore(db_path)
+    try:
+        assert migrated._conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert migrated.get_knowledge_job("course-a", outline.job_id) is not None
+        assert migrated._conn.execute("SELECT COUNT(*) FROM course_compilations").fetchone()[0] == 1
+        assert migrated._conn.execute("SELECT COUNT(*) FROM model_call_audits").fetchone()[0] == 1
+        semantic = enqueue_semantic_atom_extraction_job(
+            migrated,
+            course_id="course-a",
+            source_revision="src_migration",
+            knowledge_revision=outline.target_knowledge_revision or "kn_missing",
+        )
+        assert semantic.job_type == "extract_semantic_atoms"
+        assert semantic.status == "queued"
+    finally:
+        migrated.close()
 
 
 def test_enqueue_rejects_material_from_another_course(store: SqliteStore):

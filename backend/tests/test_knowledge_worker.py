@@ -12,6 +12,7 @@ from app.schemas.foxsay import Course, Material
 from app.services.knowledge_jobs import (
     enqueue_course_compile_job,
     enqueue_material_index_job,
+    enqueue_semantic_atom_extraction_job,
 )
 from app.services.knowledge_worker import (
     KnowledgeJobExecutionError,
@@ -111,6 +112,25 @@ async def test_worker_retries_unexpected_failure(store: SqliteStore) -> None:
 async def test_worker_marks_unknown_job_type_failed(store: SqliteStore) -> None:
     enqueued = enqueue_course_compile_job(
         store, course_id="course-a", source_revision="src_unknown_handler"
+    )
+    worker = KnowledgeJobWorker(store, worker_id="worker-a", handlers={})
+
+    await worker.run_once()
+    persisted = store.get_knowledge_job("course-a", enqueued.job_id)
+
+    assert persisted is not None
+    assert persisted.status == "failed"
+    assert persisted.error_code == "unsupported_knowledge_job_type"
+
+
+async def test_semantic_atom_job_is_not_scheduled_before_a_d1b_handler_exists(
+    store: SqliteStore,
+) -> None:
+    enqueued = enqueue_semantic_atom_extraction_job(
+        store,
+        course_id="course-a",
+        source_revision="src_semantic_handler_boundary",
+        knowledge_revision="kn_semantic_handler_boundary",
     )
     worker = KnowledgeJobWorker(store, worker_id="worker-a", handlers={})
 

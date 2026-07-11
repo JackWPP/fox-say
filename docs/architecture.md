@@ -23,8 +23,11 @@
 - The V2 Qdrant source-fragment index uses deterministic UUID5 point IDs and type-scoped
   deletion, so a retry replaces only the affected material evidence rather than notes, terms
   or legacy chunks.
-- The current V2 job types are `index_material` and `compile_course`. Store operations can
-  atomically enqueue, claim, reclaim an expired lease, complete, fail and requeue a job.
+- Worker-supported V2 job types are `index_material` and `compile_course`. The durable schema
+  also accepts the source-pinned course type `extract_semantic_atoms`, but D1b has not registered
+  a handler or automatic enqueue path yet; an accidental enqueue therefore remains a visible
+  `unsupported_knowledge_job_type` failure rather than silently invoking a model. Store operations
+  can atomically enqueue, claim, reclaim an expired lease, complete, fail and requeue a job.
 - SQLite enforces one logical material job per material/revision and one D0 course job per
   course/source revision with partial unique indexes. The store atomically assigns a numeric
   course queue revision only after resolving that source identity. A historical duplicate is a

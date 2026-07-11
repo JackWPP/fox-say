@@ -76,6 +76,7 @@ active / review → blocked → active; complete → reopened → active
 | V2-D0 | `complete` | V2-C | 将占位 `compile_course` 变成 source-pinned、确定性的 CourseOutline 编译与读取边界；只写 V2 projection tables | `33b3869`；D0 course job target/identity、compiler handler、immutable header/payload、current-outline API 与 `KnowledgeStatus` ready/stale/processing 已验证；56 个 V2 聚焦回归、270 个 backend tests 与相关 Ruff 通过。零 LLM/VLM/embedding 调用。 |
 | V2-D0a | `complete` | V2-D0, V2-D1a | 补齐 D0 projection publication 的 lease-expiry/owner 栅栏；只修复已发现的 worker 写入边界 | `3adfbf4`；原子 attempt/owner/expiry/revision publication guard 与失租回归已提交，零模型/向量/网络调用。 |
 | V2-D1a | `complete` | V2-D0 | course-scoped DeepSeek text-call audit、course/job budget reservation、retry ceiling 与 audited wrapper；不生成知识投影 | `d1ee488`；持久 audit/reservation、预算可见性、retry ceiling 与 fake-provider 回归已提交。没有调用真实外部模型，也未迁移 material embedding 或 legacy 路径。 |
+| V2-D1b0 | `review` | V2-D0, V2-D1a | 为语义原子抽取预留独立的 course job type 与 SQLite enum 迁移；不 enqueue、不调用模型、不写 Atom | 已实现独立 identity、旧 `CHECK` 表重建迁移与 visible unsupported-handler boundary，等待协调者核对并提交。 |
 | V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
 | V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
@@ -153,6 +154,14 @@ active / review → blocked → active; complete → reopened → active
 - **验收**：合成过期 lease、owner 不匹配和 attempt 已被回收的 compiler 均返回可见 lease-lost/stale 结果且数据库无 header/payload；正常 worker 保持 D0 的 source fence/outline 回归。单 worker SQLite 行为不变。
 - **成本与时延**：只有已有 SQLite transaction 中的常数次 job-row 校验；零模型、零向量、零网络调用。
 
+### 3.10 活动任务包：V2-D1b0
+
+- **目标**：在写入任何 `SemanticAtom` 或调用 DeepSeek 前，为它建立独立的 `extract_semantic_atoms` course job type。不能复用 D0 已成功的 `compile_course` job，也不能用文件名或当前内存状态推导它的 source/knowledge target。
+- **依赖与范围**：依赖 D0、D1a；允许修改 V2 job schema、SQLite `_SCHEMA`/安全枚举迁移、job store/enqueue contract、相关 tests 与实际架构/台账文档。不得注册 worker handler、自动 enqueue、调用 audited model、写 Atom/Term/KC/Relation、修改 D0 compilation identity、legacy pipeline 或前端。
+- **迁移与身份契约**：新 job 是 `scope=course`，显式带 target source/knowledge revision；逻辑 identity 仍为 `(course_id, job_type, target_source_revision)`，因此它与同一 source 的 D0 job 不冲突。SQLite 既存 `knowledge_jobs` 若 job-type `CHECK` 不允许该值，必须以可重复的表重建迁移扩展约束，完整保留 job rows、course compilation、model audit 和 partial identity indexes；迁移后运行 `foreign_key_check`，不能静默删除或重写历史任务。
+- **验收**：fresh DB 的 schema/type 都接受新 job；含 D0 header 和 D1a audit 的合成旧 DB 重开后保留数据并可 enqueue 新 job；相同 course/source 的 D0 和 semantic job 各自只一条、跨 course 隔离；D1b0 不会被 material indexer 自动入队，worker 未注册 handler 时的失败仍可见；零模型/embedding/VLM/网络调用。
+- **成本与时延**：一次性本地 SQLite migration；运行时仅复用现有 identity-index 查询。没有 handler，不产生 token、Qdrant 或用户等待。
+
 ## 4. 成本、等待和“自然生长”的调度门槛
 
 1. **先确定性，后模型**：解析、标题树、fragment、内容 hash、失效范围和基础索引先完成；不能为了“看起来聪明”对整门课无差别烧 token。
@@ -195,6 +204,8 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-D0a | `ready → active` | 领取 publication lease/attempt fence；文件范围、非目标、验收和零成本限制见 §3.9。 | pending |
 | 2026-07-11 | V2-D0a | `active → review` | `publish_course_compilation_if_current` 现在校验 attempt、lease owner、未过期 lease 与 revision；失租/owner 不匹配/attempt 被回收均无 snapshot 写入。34 个 D0/D1a 聚焦回归和相关 Ruff 通过。 | pending |
 | 2026-07-11 | V2-D0a | `review → complete` | `3adfbf4`；26 个 compiler/worker/status/indexer 聚焦回归与相关 Ruff 通过。定向 mypy 仅为既有 `foxsay.py`、legacy `sqlite_store.py`、worker strict baseline，无本任务新增项。 | `3adfbf4` |
+| 2026-07-11 | V2-D1b0 | `ready → active` | 领取 semantic-atom 独立 job type 与旧 SQLite enum migration；范围、非目标、验收与零成本限制见 §3.10。 | pending |
+| 2026-07-11 | V2-D1b0 | `active → review` | schema/store 已接受独立 `extract_semantic_atoms`；D0/D1a facts 的合成旧 SQLite migration、course/source identity、未注册 handler 的可见失败均已回归覆盖。等待最终 diff/commit 核对。 | pending |
 
 ## 6. 交接检查
 

@@ -97,6 +97,43 @@ def enqueue_course_compile_job(
     )
 
 
+def enqueue_semantic_atom_extraction_job(
+    store: SqliteStore,
+    *,
+    course_id: str,
+    source_revision: str,
+    knowledge_revision: str,
+    token_budget: int | None = None,
+    max_attempts: int | None = None,
+) -> KnowledgeJob:
+    """Persist, but do not schedule, one D1 semantic-atom extraction job.
+
+    D1b0 deliberately exposes only the durable identity. A later handler is
+    responsible for validating D0's current outline and calling the audited
+    model wrapper; material indexing never enqueues this job automatically.
+    """
+    return _enqueue(
+        store,
+        course_id=course_id,
+        material_id=None,
+        job_type="extract_semantic_atoms",
+        revision=None,
+        scope="course",
+        target_source_revision=source_revision,
+        target_knowledge_revision=knowledge_revision,
+        token_budget=(
+            settings.knowledge_job_default_token_budget
+            if token_budget is None
+            else token_budget
+        ),
+        max_attempts=(
+            settings.knowledge_job_default_max_attempts
+            if max_attempts is None
+            else max_attempts
+        ),
+    )
+
+
 def _enqueue(
     store: SqliteStore,
     *,

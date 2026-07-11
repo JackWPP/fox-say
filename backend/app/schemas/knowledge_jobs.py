@@ -9,7 +9,11 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 
-KnowledgeJobType = Literal["index_material", "compile_course"]
+KnowledgeJobType = Literal[
+    "index_material",
+    "compile_course",
+    "extract_semantic_atoms",
+]
 KnowledgeJobScope = Literal["material", "course"]
 KnowledgeJobStatus = Literal[
     "queued",

@@ -266,7 +266,7 @@ CREATE TABLE IF NOT EXISTS knowledge_jobs (
     finished_at TEXT,
     FOREIGN KEY (course_id) REFERENCES courses(id),
     FOREIGN KEY (material_id) REFERENCES materials(id),
-    CHECK (job_type IN ('index_material', 'compile_course')),
+    CHECK (job_type IN ('index_material', 'compile_course', 'extract_semantic_atoms')),
     CHECK (scope IN ('material', 'course')),
     CHECK (status IN ('queued', 'running', 'succeeded', 'retryable', 'failed')),
     CHECK (revision >= 0),
@@ -427,11 +427,121 @@ class SqliteStore:
                 self._conn.execute(sql)
             except sqlite3.OperationalError:
                 pass  # column already exists
+        self._migrate_knowledge_job_type_constraint()
         self._conn.execute(
             "UPDATE chat_sessions SET title = ? WHERE title = ?",
             ("新对话", "New Chat"),
         )
         self._conn.commit()
+
+    def _migrate_knowledge_job_type_constraint(self) -> None:
+        """Extend the old SQLite job-type CHECK without losing durable facts.
+
+        SQLite cannot alter a CHECK in place. The replacement retains every
+        stable queue column and leaves foreign-key child tables pointing at
+        the same ``knowledge_jobs`` table name; a post-migration integrity
+        check makes any unexpected reference break visible at startup.
+        """
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_jobs'"
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("knowledge_jobs table is missing during migration")
+        table_sql = str(row["sql"] or "")
+        if "extract_semantic_atoms" in table_sql:
+            return
+
+        # PRAGMA foreign_keys cannot change inside an active transaction. The
+        # store has just completed its small column migrations, so this is a
+        # controlled startup-only rebuild before any worker can claim a job.
+        self._conn.commit()
+        self._conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            self._conn.execute(
+                """
+                CREATE TABLE knowledge_jobs_rebuilt (
+                    job_id TEXT PRIMARY KEY,
+                    course_id TEXT NOT NULL,
+                    material_id TEXT,
+                    job_type TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    scope TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    attempt INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 3,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    token_budget INTEGER,
+                    target_source_revision TEXT,
+                    target_knowledge_revision TEXT,
+                    lease_owner TEXT,
+                    lease_expires_at TEXT,
+                    error_code TEXT,
+                    error_detail TEXT,
+                    error_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    started_at TEXT,
+                    finished_at TEXT,
+                    FOREIGN KEY (course_id) REFERENCES courses(id),
+                    FOREIGN KEY (material_id) REFERENCES materials(id),
+                    CHECK (job_type IN ('index_material', 'compile_course', 'extract_semantic_atoms')),
+                    CHECK (scope IN ('material', 'course')),
+                    CHECK (status IN ('queued', 'running', 'succeeded', 'retryable', 'failed')),
+                    CHECK (revision >= 0),
+                    CHECK (attempt >= 0),
+                    CHECK (max_attempts > 0),
+                    CHECK (token_budget IS NULL OR token_budget > 0),
+                    CHECK (
+                        (scope = 'material' AND material_id IS NOT NULL)
+                        OR (scope = 'course' AND material_id IS NULL)
+                    )
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                INSERT INTO knowledge_jobs_rebuilt (
+                    job_id, course_id, material_id, job_type, revision, scope, status,
+                    attempt, max_attempts, idempotency_key, token_budget,
+                    target_source_revision, target_knowledge_revision, lease_owner,
+                    lease_expires_at, error_code, error_detail, error_at, created_at,
+                    updated_at, started_at, finished_at
+                )
+                SELECT job_id, course_id, material_id, job_type, revision, scope, status,
+                       attempt, max_attempts, idempotency_key, token_budget,
+                       target_source_revision, target_knowledge_revision, lease_owner,
+                       lease_expires_at, error_code, error_detail, error_at, created_at,
+                       updated_at, started_at, finished_at
+                FROM knowledge_jobs
+                """
+            )
+            self._conn.execute("DROP TABLE knowledge_jobs")
+            self._conn.execute("ALTER TABLE knowledge_jobs_rebuilt RENAME TO knowledge_jobs")
+            self._conn.execute(
+                """
+                CREATE INDEX idx_knowledge_jobs_claim
+                ON knowledge_jobs(status, lease_expires_at, created_at)
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX idx_knowledge_jobs_course
+                ON knowledge_jobs(course_id, revision, created_at)
+                """
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        finally:
+            self._conn.execute("PRAGMA foreign_keys=ON")
+        violations = self._conn.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise RuntimeError(
+                "knowledge_jobs type migration broke foreign-key references; restore the database "
+                "and inspect the reported rows before starting FoxSay"
+            )
 
     def close(self) -> None:
         self._conn.close()
@@ -1542,9 +1652,9 @@ class SqliteStore:
                     """
                     SELECT COALESCE(MAX(revision), -1) + 1 AS next_revision
                     FROM knowledge_jobs
-                    WHERE course_id = ? AND material_id IS NULL AND job_type = 'compile_course'
+                    WHERE course_id = ? AND material_id IS NULL AND job_type = ?
                     """,
-                    (job.course_id,),
+                    (job.course_id, job.job_type),
                 ).fetchone()
                 if next_revision_row is None:
                     raise RuntimeError("Could not allocate course compile revision")
