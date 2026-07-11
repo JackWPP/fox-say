@@ -20,6 +20,7 @@ from app.services.knowledge_jobs import (
 from app.services.knowledge_worker import KnowledgeJobWorker
 from app.services.semantic_atom_compiler import build_semantic_atoms
 from app.services.term_compiler import TermCompiler, build_terms
+from app.services.kc_compiler import KnowledgeComponentCompiler
 
 
 @pytest.fixture
@@ -137,6 +138,7 @@ async def test_term_child_waits_for_semantic_success_then_publishes_current_term
     assert term is not None and term.job_type == "compile_terms"
     await TermCompiler(store)(term)
     assert store.get_current_terms("linear", source_revision) == []
+    assert store.claim_next_knowledge_job("kc-worker", 60) is None
     store.complete_knowledge_job("linear", term.job_id, "term-worker")
 
     terms = store.get_current_terms("linear", source_revision)
@@ -147,6 +149,16 @@ async def test_term_child_waits_for_semantic_success_then_publishes_current_term
     assert terms[0].evidence[0].fragment_id == "linear-vectors-0"
     assert store.get_current_term_compilation("linear", source_revision) is not None
     assert store._conn.execute("SELECT COUNT(*) FROM term_atom_links").fetchone()[0] == 1
+
+    kc_job = store.claim_next_knowledge_job("kc-worker", 60)
+    assert kc_job is not None and kc_job.job_type == "compile_kcs"
+    await KnowledgeComponentCompiler(store)(kc_job)
+    assert store.get_current_knowledge_components("linear", source_revision) == []
+    store.complete_knowledge_job("linear", kc_job.job_id, "kc-worker")
+    components = store.get_current_knowledge_components("linear", source_revision)
+    assert len(components) == 1
+    assert components[0].term_id == terms[0].term_id
+    assert components[0].definition == terms[0].definition
 
 
 async def test_terms_are_deterministic_and_require_literal_current_evidence(store: SqliteStore) -> None:

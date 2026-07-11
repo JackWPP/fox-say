@@ -14,6 +14,7 @@ KnowledgeJobType = Literal[
     "compile_course",
     "extract_semantic_atoms",
     "compile_terms",
+    "compile_kcs",
     "visual_analysis",
 ]
 KnowledgeJobScope = Literal["material", "course"]

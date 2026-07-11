@@ -161,6 +161,33 @@ def enqueue_term_compile_job(
     )
 
 
+def enqueue_kc_compile_job(
+    store: SqliteStore,
+    *,
+    course_id: str,
+    source_revision: str,
+    knowledge_revision: str,
+    max_attempts: int | None = None,
+) -> KnowledgeJob:
+    """Persist one zero-model KC compilation job for a Term revision."""
+    return _enqueue(
+        store,
+        course_id=course_id,
+        material_id=None,
+        job_type="compile_kcs",
+        revision=None,
+        scope="course",
+        target_source_revision=source_revision,
+        target_knowledge_revision=knowledge_revision,
+        token_budget=None,
+        max_attempts=(
+            settings.knowledge_job_default_max_attempts
+            if max_attempts is None
+            else max_attempts
+        ),
+    )
+
+
 def _enqueue(
     store: SqliteStore,
     *,

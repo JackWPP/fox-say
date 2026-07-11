@@ -33,6 +33,11 @@ from app.schemas.terms import (
     build_term_id,
     normalise_term_key,
 )
+from app.schemas.knowledge_components import (
+    KC_COMPILER_VERSION,
+    KnowledgeComponent,
+    build_knowledge_component_id,
+)
 from app.services.semantic_atom_compiler import (
     SEMANTIC_ATOM_COMPILER_VERSION,
     build_semantic_atom_id,
@@ -279,7 +284,7 @@ CREATE TABLE IF NOT EXISTS knowledge_jobs (
     finished_at TEXT,
     FOREIGN KEY (course_id) REFERENCES courses(id),
     FOREIGN KEY (material_id) REFERENCES materials(id),
-    CHECK (job_type IN ('index_material', 'compile_course', 'extract_semantic_atoms', 'compile_terms', 'visual_analysis')),
+    CHECK (job_type IN ('index_material', 'compile_course', 'extract_semantic_atoms', 'compile_terms', 'compile_kcs', 'visual_analysis')),
     CHECK (scope IN ('material', 'course')),
     CHECK (status IN ('queued', 'running', 'succeeded', 'retryable', 'failed')),
     CHECK (revision >= 0),
@@ -531,6 +536,51 @@ CREATE TABLE IF NOT EXISTS term_atom_links (
 );
 CREATE INDEX IF NOT EXISTS idx_term_atom_links_atom
     ON term_atom_links(course_id, source_revision, knowledge_revision, atom_id);
+
+-- ===== Knowledge System V2: rule-derived Term to KC projection =====
+
+CREATE TABLE IF NOT EXISTS knowledge_component_compilations (
+    course_id TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    knowledge_revision TEXT NOT NULL,
+    compiler_version TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    kc_count INTEGER NOT NULL,
+    rejected_term_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (course_id, knowledge_revision),
+    UNIQUE (course_id, source_revision, compiler_version),
+    UNIQUE (job_id),
+    FOREIGN KEY (course_id) REFERENCES courses(id),
+    FOREIGN KEY (job_id) REFERENCES knowledge_jobs(job_id),
+    CHECK (kc_count >= 0),
+    CHECK (rejected_term_count >= 0)
+);
+CREATE INDEX IF NOT EXISTS idx_kc_compilations_current
+    ON knowledge_component_compilations(course_id, source_revision, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS knowledge_components (
+    kc_id TEXT PRIMARY KEY,
+    course_id TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    knowledge_revision TEXT NOT NULL,
+    term_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    definition TEXT NOT NULL,
+    section_id TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    generation_method TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id, knowledge_revision)
+        REFERENCES knowledge_component_compilations(course_id, knowledge_revision),
+    FOREIGN KEY (term_id) REFERENCES terms(term_id),
+    CHECK (kind IN ('concept', 'definition', 'formula', 'theorem', 'procedure')),
+    CHECK (generation_method = 'rule'),
+    UNIQUE (course_id, source_revision, knowledge_revision, term_id)
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_components_current
+    ON knowledge_components(course_id, source_revision, knowledge_revision, section_id);
 """
 
 
@@ -597,7 +647,7 @@ class SqliteStore:
         if row is None:
             raise RuntimeError("knowledge_jobs table is missing during migration")
         table_sql = str(row["sql"] or "")
-        if "visual_analysis" in table_sql:
+        if "compile_kcs" in table_sql:
             return
 
         # PRAGMA foreign_keys cannot change inside an active transaction. The
@@ -634,7 +684,7 @@ class SqliteStore:
                     finished_at TEXT,
                     FOREIGN KEY (course_id) REFERENCES courses(id),
                     FOREIGN KEY (material_id) REFERENCES materials(id),
-                    CHECK (job_type IN ('index_material', 'compile_course', 'extract_semantic_atoms', 'compile_terms', 'visual_analysis')),
+                    CHECK (job_type IN ('index_material', 'compile_course', 'extract_semantic_atoms', 'compile_terms', 'compile_kcs', 'visual_analysis')),
                     CHECK (scope IN ('material', 'course')),
                     CHECK (status IN ('queued', 'running', 'succeeded', 'retryable', 'failed')),
                     CHECK (revision >= 0),
@@ -1481,11 +1531,62 @@ class SqliteStore:
                             """,
                             (term.term_id, atom_id, course_id, source_revision, knowledge_revision),
                         )
+                self._enqueue_kc_job_if_absent(
+                    course_id=course_id,
+                    source_revision=source_revision,
+                    knowledge_revision=knowledge_revision,
+                )
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
                 raise
         return True
+
+    def _enqueue_kc_job_if_absent(
+        self,
+        *,
+        course_id: str,
+        source_revision: str,
+        knowledge_revision: str,
+    ) -> None:
+        """Create the zero-model KC child in its Term publication transaction."""
+        existing = self._conn.execute(
+            """
+            SELECT job_id FROM knowledge_jobs
+            WHERE course_id = ? AND job_type = 'compile_kcs'
+              AND target_source_revision = ?
+            """,
+            (course_id, source_revision),
+        ).fetchone()
+        if existing is not None:
+            return
+        next_revision = self._conn.execute(
+            """
+            SELECT COALESCE(MAX(revision), -1) + 1 AS next_revision
+            FROM knowledge_jobs
+            WHERE course_id = ? AND material_id IS NULL AND job_type = 'compile_kcs'
+            """,
+            (course_id,),
+        ).fetchone()
+        if next_revision is None:
+            raise RuntimeError("Could not allocate KC compilation job revision")
+        self._conn.execute(
+            """
+            INSERT INTO knowledge_jobs (
+                job_id, course_id, material_id, job_type, revision, scope, status,
+                attempt, max_attempts, idempotency_key, token_budget,
+                target_source_revision, target_knowledge_revision
+            ) VALUES (?, ?, NULL, 'compile_kcs', ?, 'course', 'queued', 0, 3, ?, NULL, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()),
+                course_id,
+                int(next_revision["next_revision"]),
+                f"knowledge:compile_kcs:{course_id}:source:{source_revision}",
+                source_revision,
+                knowledge_revision,
+            ),
+        )
 
     def _validate_terms_for_publication(
         self,
@@ -1643,6 +1744,200 @@ class SqliteStore:
             (course_id, source_revision),
         ).fetchone()
         return self._row_to_term_compilation(row) if row is not None else None
+
+    def publish_knowledge_components_if_current(
+        self,
+        *,
+        course_id: str,
+        job_id: str,
+        job_attempt: int,
+        lease_owner: str,
+        source_revision: str,
+        knowledge_revision: str,
+        components: list[KnowledgeComponent],
+        rejected_term_count: int,
+    ) -> bool:
+        """Atomically publish current, one-Term-per-KC learning projections."""
+        if job_attempt < 1 or not lease_owner.strip() or rejected_term_count < 0:
+            raise ValueError("KC publication requires a claimed lease and valid counts")
+        if any(
+            value.course_id != course_id
+            or value.source_revision != source_revision
+            or value.knowledge_revision != knowledge_revision
+            for value in components
+        ):
+            raise ValueError("KC identity does not match its publication target")
+        with self._knowledge_job_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                job = self._conn.execute(
+                    """
+                    SELECT status, attempt, lease_owner, lease_expires_at,
+                           target_source_revision, target_knowledge_revision
+                    FROM knowledge_jobs
+                    WHERE job_id = ? AND course_id = ? AND job_type = 'compile_kcs'
+                    """,
+                    (job_id, course_id),
+                ).fetchone()
+                if (
+                    job is None or job["status"] != "running" or job["attempt"] != job_attempt
+                    or job["lease_owner"] != lease_owner or job["lease_expires_at"] is None
+                    or job["lease_expires_at"] <= self._conn.execute("SELECT datetime('now')").fetchone()[0]
+                    or job["target_source_revision"] != source_revision
+                    or job["target_knowledge_revision"] != knowledge_revision
+                ):
+                    self._conn.rollback()
+                    return False
+                current_manifest = self.get_compilable_source_manifest(course_id)
+                if current_manifest is None or current_manifest[0] != source_revision:
+                    self._conn.rollback()
+                    return False
+                parent = self._conn.execute(
+                    """
+                    SELECT compilation.job_id FROM term_compilations AS compilation
+                    INNER JOIN knowledge_jobs AS term_job
+                        ON term_job.job_id = compilation.job_id
+                       AND term_job.course_id = compilation.course_id
+                       AND term_job.job_type = 'compile_terms'
+                       AND term_job.status = 'succeeded'
+                       AND term_job.target_source_revision = compilation.source_revision
+                       AND term_job.target_knowledge_revision = compilation.knowledge_revision
+                    WHERE compilation.course_id = ? AND compilation.source_revision = ?
+                      AND compilation.knowledge_revision = ?
+                    """,
+                    (course_id, source_revision, knowledge_revision),
+                ).fetchone()
+                if parent is None:
+                    self._conn.rollback()
+                    return False
+                self._validate_knowledge_components_for_publication(
+                    course_id=course_id,
+                    source_revision=source_revision,
+                    knowledge_revision=knowledge_revision,
+                    components=components,
+                )
+                self._conn.execute(
+                    """
+                    INSERT INTO knowledge_component_compilations (
+                        course_id, source_revision, knowledge_revision, compiler_version, job_id,
+                        kc_count, rejected_term_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(course_id, source_revision, compiler_version) DO NOTHING
+                    """,
+                    (course_id, source_revision, knowledge_revision, KC_COMPILER_VERSION, job_id,
+                     len(components), rejected_term_count),
+                )
+                header = self._conn.execute(
+                    """
+                    SELECT knowledge_revision, job_id, kc_count, rejected_term_count
+                    FROM knowledge_component_compilations
+                    WHERE course_id = ? AND source_revision = ? AND compiler_version = ?
+                    """,
+                    (course_id, source_revision, KC_COMPILER_VERSION),
+                ).fetchone()
+                if (
+                    header is None or header["knowledge_revision"] != knowledge_revision
+                    or header["job_id"] != job_id or int(header["kc_count"]) != len(components)
+                    or int(header["rejected_term_count"]) != rejected_term_count
+                ):
+                    raise RuntimeError("KC target is already bound to another projection")
+                for component in components:
+                    self._conn.execute(
+                        """
+                        INSERT INTO knowledge_components (
+                            kc_id, course_id, source_revision, knowledge_revision, term_id, name,
+                            kind, definition, section_id, evidence_json, generation_method
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(kc_id) DO NOTHING
+                        """,
+                        (
+                            component.kc_id, component.course_id, component.source_revision,
+                            component.knowledge_revision, component.term_id, component.name,
+                            component.kind, component.definition, component.section_id,
+                            json.dumps([item.model_dump() for item in component.evidence], ensure_ascii=False,
+                                       separators=(",", ":"), sort_keys=True),
+                            component.generation_method,
+                        ),
+                    )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return True
+
+    def _validate_knowledge_components_for_publication(
+        self,
+        *,
+        course_id: str,
+        source_revision: str,
+        knowledge_revision: str,
+        components: list[KnowledgeComponent],
+    ) -> None:
+        if len({value.kc_id for value in components}) != len(components) or len({value.term_id for value in components}) != len(components):
+            raise ValueError("KC projection contains duplicate component or Term IDs")
+        terms = {term.term_id: term for term in self.get_current_terms(course_id, source_revision)}
+        atoms = {atom.atom_id: atom for atom in self.get_current_semantic_atoms(course_id, source_revision)}
+        fragments = {value.fragment_id: value for value in self.list_current_ready_source_fragments(course_id)}
+        for component in components:
+            expected_id = build_knowledge_component_id(
+                course_id=course_id, source_revision=source_revision,
+                knowledge_revision=knowledge_revision, term_id=component.term_id,
+            )
+            if component.kc_id != expected_id:
+                raise ValueError("KC ID is not the stable Term-scoped identity")
+            term = terms.get(component.term_id)
+            if term is None or term.knowledge_revision != knowledge_revision:
+                raise ValueError("KC links a Term outside the current projection")
+            atom = atoms.get(term.definition_atom_id)
+            if atom is None or atom.knowledge_revision != knowledge_revision:
+                raise ValueError("KC definition Atom is absent from the current semantic projection")
+            if (
+                component.name != term.canonical_name or component.kind != term.term_kind
+                or component.definition != term.definition or component.definition != atom.statement
+                or component.section_id != atom.section_id
+            ):
+                raise ValueError("KC must reuse its Term and definition Atom fields")
+            expected_evidence = []
+            for evidence in term.evidence:
+                fragment = fragments.get(evidence.fragment_id)
+                if fragment is None:
+                    raise ValueError("KC Term evidence is not current canonical evidence")
+                expected_evidence.append(EvidenceRef.from_source_fragment(fragment))
+            if [item.model_dump() for item in component.evidence] != [item.model_dump() for item in expected_evidence]:
+                raise ValueError("KC evidence must exactly reuse canonical Term evidence")
+
+    def get_current_knowledge_components(
+        self, course_id: str, source_revision: str
+    ) -> list[KnowledgeComponent]:
+        """Read only KCs whose Term and semantic ancestry are still current."""
+        if (manifest := self.get_compilable_source_manifest(course_id)) is None or manifest[0] != source_revision:
+            return []
+        rows = self._conn.execute(
+            """
+            SELECT component.* FROM knowledge_components AS component
+            INNER JOIN knowledge_component_compilations AS compilation
+                ON compilation.course_id = component.course_id
+               AND compilation.knowledge_revision = component.knowledge_revision
+            INNER JOIN knowledge_jobs AS kc_job
+                ON kc_job.job_id = compilation.job_id
+               AND kc_job.course_id = compilation.course_id
+               AND kc_job.job_type = 'compile_kcs' AND kc_job.status = 'succeeded'
+               AND kc_job.target_source_revision = compilation.source_revision
+               AND kc_job.target_knowledge_revision = compilation.knowledge_revision
+            INNER JOIN term_compilations AS term_compilation
+                ON term_compilation.course_id = compilation.course_id
+               AND term_compilation.source_revision = compilation.source_revision
+               AND term_compilation.knowledge_revision = compilation.knowledge_revision
+            INNER JOIN knowledge_jobs AS term_job
+                ON term_job.job_id = term_compilation.job_id
+               AND term_job.course_id = term_compilation.course_id
+               AND term_job.job_type = 'compile_terms' AND term_job.status = 'succeeded'
+            WHERE component.course_id = ? AND component.source_revision = ?
+            ORDER BY component.name, component.kc_id
+            """,
+            (course_id, source_revision),
+        ).fetchall()
+        return [self._row_to_knowledge_component(row) for row in rows]
 
     def publish_course_compilation_if_current(
         self,
@@ -3238,7 +3533,7 @@ class SqliteStore:
                     SELECT job_id FROM knowledge_jobs
                     WHERE attempt < max_attempts
                        AND (
-                            job_type NOT IN ('extract_semantic_atoms', 'compile_terms')
+                            job_type NOT IN ('extract_semantic_atoms', 'compile_terms', 'compile_kcs')
                             OR (
                                 job_type = 'extract_semantic_atoms'
                                 AND EXISTS (
@@ -3258,6 +3553,22 @@ class SqliteStore:
                                         ON parent.job_id = compilation.job_id
                                        AND parent.course_id = compilation.course_id
                                        AND parent.job_type = 'extract_semantic_atoms'
+                                       AND parent.status = 'succeeded'
+                                       AND parent.target_source_revision = compilation.source_revision
+                                       AND parent.target_knowledge_revision = compilation.knowledge_revision
+                                    WHERE compilation.course_id = knowledge_jobs.course_id
+                                      AND compilation.source_revision = knowledge_jobs.target_source_revision
+                                      AND compilation.knowledge_revision = knowledge_jobs.target_knowledge_revision
+                                )
+                            )
+                            OR (
+                                job_type = 'compile_kcs'
+                                AND EXISTS (
+                                    SELECT 1 FROM term_compilations AS compilation
+                                    INNER JOIN knowledge_jobs AS parent
+                                        ON parent.job_id = compilation.job_id
+                                       AND parent.course_id = compilation.course_id
+                                       AND parent.job_type = 'compile_terms'
                                        AND parent.status = 'succeeded'
                                        AND parent.target_source_revision = compilation.source_revision
                                        AND parent.target_knowledge_revision = compilation.knowledge_revision
@@ -3558,6 +3869,23 @@ class SqliteStore:
             job_id=row["job_id"],
             term_count=row["term_count"],
             rejected_atom_count=row["rejected_atom_count"],
+            created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _row_to_knowledge_component(row: sqlite3.Row) -> KnowledgeComponent:
+        return KnowledgeComponent(
+            kc_id=row["kc_id"],
+            course_id=row["course_id"],
+            source_revision=row["source_revision"],
+            knowledge_revision=row["knowledge_revision"],
+            term_id=row["term_id"],
+            name=row["name"],
+            kind=row["kind"],
+            definition=row["definition"],
+            section_id=row["section_id"],
+            evidence=[EvidenceRef.model_validate(value) for value in json.loads(row["evidence_json"])],
+            generation_method=row["generation_method"],
             created_at=row["created_at"],
         )
 
