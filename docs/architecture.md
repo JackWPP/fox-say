@@ -64,6 +64,10 @@
   scoped; its name must occur literally in every linked Atom's canonical current evidence and its
   definition is copied verbatim from one linked Atom. Legacy terminology and Qdrant term paths do
   not participate in this projection.
+- D3a projects every current Term into a zero-model, evidence-preserving `KnowledgeComponent` for
+  review and diagnosis. D3b's optional relation job lets a single audited text call choose only
+  `prerequisite` or `related` edges from KC pairs that literally co-occur in a current fragment;
+  it is not a graph database and cannot invent unsupported edges.
 - `GET /courses/{course_id}/course-outline` returns only the current succeeded D0 outline. It
   rejects uncompiled, stale and cross-course snapshots rather than falling back to legacy course
   structure.

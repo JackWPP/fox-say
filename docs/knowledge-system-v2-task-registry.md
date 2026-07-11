@@ -82,7 +82,9 @@ active / review → blocked → active; complete → reopened → active
 | V2-G0 | `complete` | V2-D1c | 合成线性代数的真实 DeepSeek semantic-atom smoke；只记录脱敏审计证据 | `23424cf`；真实 endpoint/model/usage/elapsed/Atom 的脱敏验证记录已提交，临时材料/DB 未保留。 |
 | V2-D1d | `complete` | V2-D1c, V2-G0 | D0 → semantic job 自动调度与可见状态；受配置和 D1a 预算门保护 | `205b1ea`；parent/child atomic scheduling、claim gate、status/UI polling 与测试已提交。显式开关默认关闭，避免本地上传意外成本。 |
 | V2-D2a | `complete` | V2-D1d | Atom → Term seed 的零模型、证据可追溯投影 | `c32fc54`；Term 只能从 current Atom 的 literal/evidence 生成；header/term/link 发布受 source/semantic/lease fence 保护，禁止 legacy term/Qdrant 写路径。 |
-| V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
+| V2-D3a | `complete` | V2-D2a | Term → KC 的零模型、可复习知识组件投影 | `b42cd2b`；一 Term 一 KC，复用定义、章节和证据；KC child 与 parent gate 均持久化，零模型/网络。 |
+| V2-D3b | `review` | V2-D3a | 基于 current fragment literal 共现的受审计 KC 关系抽取 | `bc880d9`；默认关闭自动付费调用，单 job 单模型请求、候选/证据/lease/source/audit 栅栏已实现；等待最小 fake relation publication 回归。 |
+| V2-E | `review` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | `86d358c`；显式 asset selection、持久 job、SiliconFlow VLM 审计/预算/lease 与默认关闭 guard 已实现；尚未做真实 VLM 验证。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
 | V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
 | V2-M1 | `complete` | — | 隔离修复 legacy raw-text fallback 的 `_text_overlap_score` 未定义 lint 缺陷；仅修改该 helper 与其回归测试 | `5b29a0d`；恢复历史 Jaccard 评分语义；`ruff check app/services/retrieval.py` 通过，未改 V2-C2 行为或 legacy 检索排序策略。 |
@@ -266,6 +268,10 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-D2a | `ready → active` | 领取零模型 Atom→Term seed compiler、受控调度、evidence/link persistence；范围、非目标、验收与零成本限制见 §3.15。 | pending |
 | 2026-07-11 | V2-D2a | `active → review` | `compile_terms`、Term header/link/evidence publication、semantic→Term atomic child 与 claim gate 已实现；40 个 D0/D1/D2 聚焦 backend 回归及 Ruff 通过，零网络。等待 commit。 | pending |
 | 2026-07-11 | V2-D2a | `review → complete` | `c32fc54`；零模型 Term seed、原子 child 调度、lease/source/semantic/evidence 栅栏和旧 SQLite job-type 迁移已提交；40 个聚焦 backend 回归与 Ruff 通过。 | `c32fc54` |
+| 2026-07-11 | V2-D3a | `ready → complete` | `b42cd2b`；Term→KC 零模型投影、atomic child、parent gate 和成功读取回归完成。 | `b42cd2b` |
+| 2026-07-11 | V2-D3b | `ready → review` | `bc880d9`；严格候选的 audited KC relation job、持久 header/edges、lease/source/audit fence 与 opt-in 调度已提交。 | `bc880d9` |
+| 2026-07-11 | V2-E | `ready → review` | `86d358c`；VLM 显式资产任务、默认关闭、审计/预算/lease 与 disabled guard 已提交，未产生外部视觉调用。 | `86d358c` |
+| 2026-07-11 | V2-G1 | `ready → complete` | `79ea30c` 的 `--real` 合成自动链路实际执行：1 DeepSeek 请求，421 tokens，3295 ms，D0/Semantic/Term/KC 全 succeeded，临时库清理。 | `79ea30c` / postmortem |
 
 ## 6. 交接检查
 
