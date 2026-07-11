@@ -6,6 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from app.db.deps import get_store
 from app.db.sqlite_store import SqliteStore
 from app.schemas.foxsay import Course, CreateCourseRequest, UpdateCourseRequest, DMAP, ImportTimetableResponse
+from app.schemas.knowledge_status import KnowledgeStatus
+from app.schemas.course_projection import CourseOutline
+from app.services.knowledge_status import build_knowledge_status
 from app.services.timetable import parse_csv, parse_excel
 
 logger = logging.getLogger(__name__)
@@ -71,6 +74,32 @@ async def update_course(course_id: str, body: UpdateCourseRequest, store: Sqlite
 @router.get("", response_model=list[Course])
 async def list_courses(store: SqliteStore = Depends(get_store)):
     return store.get_all_courses()
+
+
+@router.get("/{course_id}/knowledge-status", response_model=KnowledgeStatus)
+async def get_knowledge_status(
+    course_id: str, store: SqliteStore = Depends(get_store)
+) -> KnowledgeStatus:
+    """Return the durable V2 evidence/projection availability snapshot."""
+    if store.get_course(course_id) is None:
+        raise HTTPException(status_code=404, detail="Course not found")
+    return build_knowledge_status(store, course_id)
+
+
+@router.get("/{course_id}/course-outline", response_model=CourseOutline)
+async def get_current_course_outline(
+    course_id: str, store: SqliteStore = Depends(get_store)
+) -> CourseOutline:
+    """Read only the current V2 outline, never a stale or legacy projection."""
+    if store.get_course(course_id) is None:
+        raise HTTPException(status_code=404, detail="Course not found")
+    source_manifest = store.get_compilable_source_manifest(course_id)
+    if source_manifest is None:
+        raise HTTPException(status_code=404, detail="Current course source is not ready for compilation")
+    outline = store.get_current_course_outline(course_id, source_manifest[0])
+    if outline is None:
+        raise HTTPException(status_code=404, detail="Current course outline is not compiled")
+    return outline
 
 
 @router.post("/{course_id}/quiz")

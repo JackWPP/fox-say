@@ -11,6 +11,7 @@ import QuizView from "./QuizView";
 import ReviewTab from "./ReviewTab";
 import { useSkeleton } from "./useSkeleton";
 import { useMaterials } from "./useMaterials";
+import { useKnowledgeStatus } from "./useKnowledgeStatus";
 import { API_BASE } from "../../shared/api";
 import SourcesPanel from "./SourcesPanel";
 import ChatWorkspace from "./ChatWorkspace";
@@ -53,6 +54,13 @@ export default function CourseDetailPage() {
   const { course } = useCourse(courseId ?? "");
   const { skeleton } = useSkeleton(courseId ?? "");
   const { materials, refetch: refetchMaterials } = useMaterials(courseId ?? "");
+  const {
+    knowledgeStatus,
+    loading: knowledgeStatusLoading,
+    error: knowledgeStatusError,
+    autoRefreshPaused: knowledgeStatusAutoRefreshPaused,
+    refresh: refreshKnowledgeStatus,
+  } = useKnowledgeStatus(courseId ?? "");
   const chapters = skeleton?.chapters ?? [];
 
   useEffect(() => {
@@ -70,6 +78,9 @@ export default function CourseDetailPage() {
     if (!courseId) return;
     const es = new EventSource(`${API_BASE}/courses/${courseId}/events`);
     es.addEventListener("course_ready", (e) => {
+      // SSE is only a refresh hint. The durable KnowledgeStatus API remains
+      // the source of truth for material evidence and projection state.
+      void refreshKnowledgeStatus();
       try {
         const data = JSON.parse(e.data);
         setToast({
@@ -88,7 +99,7 @@ export default function CourseDetailPage() {
       } catch { /* ignore */ }
     });
     return () => es.close();
-  }, [courseId, refetchMaterials]);
+  }, [courseId, refetchMaterials, refreshKnowledgeStatus]);
 
   const handleConceptClick = (concept: string) => {
     setPrefillQuestion(`请解释"${concept}"`);
@@ -157,7 +168,7 @@ export default function CourseDetailPage() {
       case "review":
         return <ReviewTab courseId={courseId} course={course ?? undefined} />;
       case "materials":
-        return <MaterialsTab courseId={courseId} />;
+        return <MaterialsTab courseId={courseId} onKnowledgeChanged={refreshKnowledgeStatus} />;
       default:
         return null;
     }
@@ -299,6 +310,11 @@ export default function CourseDetailPage() {
             selectedSourceIds={selectedSourceIds}
             selectedNoteIds={selectedNoteIds}
             onSelectionChange={handleSelectionChange}
+            knowledgeStatus={knowledgeStatus}
+            knowledgeStatusLoading={knowledgeStatusLoading}
+            knowledgeStatusError={knowledgeStatusError}
+            knowledgeStatusAutoRefreshPaused={knowledgeStatusAutoRefreshPaused}
+            onRefreshKnowledgeStatus={refreshKnowledgeStatus}
           />
         </div>
 

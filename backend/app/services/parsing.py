@@ -31,6 +31,17 @@ def parse_document(file_path: str, kind: str) -> str:
     return output.markdown_content
 
 
+def parse_text(file_path: str) -> str:
+    """Compatibility helper for direct UTF-8/GBK text extraction callers."""
+    return _parse_text(Path(file_path)).markdown_content
+
+
+def parse_with_markitdown(file_path: str) -> str:
+    """Compatibility helper exposing MarkItDown's normalized text result."""
+    path = Path(file_path)
+    return _parse_markitdown(path, path.suffix.lower()).markdown_content
+
+
 def parse_document_full(file_path: str, kind: str) -> UnifiedParserOutput:
     """完整解析接口：返回结构化的 UnifiedParserOutput。
 

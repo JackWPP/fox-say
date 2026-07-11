@@ -14,6 +14,21 @@
 
 - [已验证] `https://api.deepseek.com` — DeepSeek API base URL（OpenAI 兼容），通过 agent.py / wiki_builder.py 等多处实际调用验证 — 2026-06
 
+## VLM 模型与 API Endpoint
+
+- [已验证] `Qwen/Qwen3.6-27B` — SiliconFlow OpenAI 兼容 Chat Completions 接口中的精确模型 ID。2026-07-11 使用仓库公开 README 资产 `assets/readme/logo_foxsay.jpg`（JPEG，1024×1024）以 `image_url` data URI + 文本消息完成最小多模态调用；模型返回非空最终内容，证明可接收当前 `vlm_parser.py` 所使用的图片载荷形态。
+  - 验证凭证：本地已有的 `EMBEDDING_API_KEY`（只用于本次兼容性验证；未记录、未输出或提交凭证）。`/models` 返回 91 个模型，包含该精确 ID。
+  - 成功请求参数与观测：`extra_body={"enable_thinking": false}`、`max_tokens=64`；耗时 1,086 ms，usage 为 prompt 1,051 / completion 7 / total 1,058 tokens。响应未提供货币成本，单价因此为 `[未验证]`。
+  - 行为约束：未显式关闭 thinking 时，两次受控请求（`max_tokens=32`、`256`）均以 `finish_reason=length` 结束，最终 `content` 为空，输出预算被 `reasoning_content` 消耗。因此图片转 Markdown 的生产调用必须显式选择“关闭 thinking”或为推理与最终答案分别设置可审计的 token 预算，不能依赖默认行为。
+- [已验证] `https://api.siliconflow.cn/v1` — 对上述 VLM 模型可用的 OpenAI 兼容 API base URL；除既有 embedding 验证外，已在 2026-07-11 通过真实图片 Chat Completions 调用验证。
+
+### VLM 接入实现（2026-07-11）
+
+- [已实施] `backend/app/core/config.py` 通过独立的 `VLM_API_KEY`、`VLM_API_BASE`、`VLM_MODEL`、`VLM_MAX_TOKENS` 配置 VLM；默认 base/model 为上述已验证的 SiliconFlow / Qwen 组合，默认输出上限为 2,048 tokens。不会再把 embedding 或 DeepSeek 字段作为 VLM 的事实源。
+- [已实施] `backend/app/services/vlm_parser.py` 保留 data-URI 图片载荷，使用独立的 VLM 配置，并传入 `extra_body={"enable_thinking": false}` 和可配置的 `max_tokens`。未配置 `VLM_API_KEY`、空内容和 API 异常都会抛出可见的 `DocumentParsingException`。
+- [已实施] `backend/tests/test_vlm_parser.py` 以 mock 覆盖配置、载荷、模型/endpoint、关闭 thinking、缺少 key、空内容和 API 异常。真实 API 冒烟测试不进入常规 CI。
+- [未实施] 当前 legacy 图片路由仍使用 MinerU；本次没有改动 `parsing.py`、pipeline 或路由，是否将已配置的 VLM parser 纳入图片路由需在后续任务中显式决定。
+
 ## Embedding 模型
 
 - [已验证] `BAAI/bge-m3` — SiliconFlow 托管的 BGE-M3 embedding 模型，通过 embedding.py 实际调用验证 — 2026-06

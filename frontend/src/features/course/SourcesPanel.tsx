@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FileText, FileImage, Presentation, Plus, X, Check, AlertTriangle, ChevronDown, ChevronRight, Loader2, FileText as FileTextIcon } from "lucide-react";
+import { FileText, FileImage, Presentation, Plus, X, Check, AlertTriangle, ChevronDown, ChevronRight, Loader2, RefreshCw, FileText as FileTextIcon } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Checkbox } from "../../components/ui/Checkbox";
 import { Badge } from "../../components/ui/Badge";
@@ -8,7 +8,15 @@ import { Spinner } from "../../components/ui/Spinner";
 import { useMaterials } from "./useMaterials";
 import { useNotes } from "./useNotes";
 import MaterialUpload from "./MaterialUpload";
-import type { Material } from "../../shared/types";
+import type {
+  KnowledgeStatus,
+  Material,
+  MaterialEvidenceState,
+  MaterialEvidenceStatus,
+  PersistedKnowledgeJobStatus,
+  ProjectionStatus,
+  SourceEvidenceStatus,
+} from "../../shared/types";
 
 interface SourcesPanelProps {
   courseId: string;
@@ -16,6 +24,11 @@ interface SourcesPanelProps {
   selectedSourceIds: string[];
   selectedNoteIds: string[];
   onSelectionChange: (sourceIds: string[], noteIds: string[]) => void;
+  knowledgeStatus: KnowledgeStatus | null;
+  knowledgeStatusLoading: boolean;
+  knowledgeStatusError: string | null;
+  knowledgeStatusAutoRefreshPaused: boolean;
+  onRefreshKnowledgeStatus: () => Promise<KnowledgeStatus | null>;
 }
 
 function MaterialIcon({ kind }: { kind: string }) {
@@ -31,19 +44,6 @@ function MaterialIcon({ kind }: { kind: string }) {
     default:
       return <FileText className="w-4 h-4 text-slate-500 shrink-0" />;
   }
-}
-
-function MaterialStatus({ status }: { status: string }) {
-  if (status === "processing") {
-    return <Loader2 className="w-3.5 h-3.5 text-foxAmber animate-spin shrink-0" />;
-  }
-  if (status === "ready") {
-    return <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />;
-  }
-  if (status === "failed") {
-    return <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0" />;
-  }
-  return null;
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(pdf|pptx?|txt|md)$/i;
@@ -63,29 +63,279 @@ function formatMaterialName(filename: string, kind: string, index: number): stri
   return filename;
 }
 
-function ProgressSteps({ materialId, courseId }: { materialId: string; courseId: string }) {
-  const steps = [
-    { key: "parse", label: "解析" },
-    { key: "skeleton", label: "结构图" },
-    { key: "wiki", label: "Wiki" },
-    { key: "chunk", label: "分块" },
-    { key: "embed", label: "向量化" },
-    { key: "completed", label: "就绪" },
-  ];
+const MATERIAL_EVIDENCE_LABEL: Record<MaterialEvidenceState, string> = {
+  processing: "正在建立证据",
+  ready: "证据就绪",
+  retryable: "等待重试",
+  failed: "证据处理失败",
+  missing_evidence: "缺少可用证据",
+};
+
+const MATERIAL_EVIDENCE_VARIANT: Record<
+  MaterialEvidenceState,
+  "success" | "warning" | "error" | "info"
+> = {
+  processing: "info",
+  ready: "success",
+  retryable: "warning",
+  failed: "error",
+  missing_evidence: "error",
+};
+
+const JOB_STATUS_LABEL: Record<PersistedKnowledgeJobStatus, string> = {
+  queued: "已入队",
+  running: "处理中",
+  succeeded: "已完成",
+  retryable: "可重试",
+  failed: "失败",
+};
+
+const SOURCE_STATUS_LABEL: Record<SourceEvidenceStatus, string> = {
+  empty: "尚无证据",
+  processing: "建立证据中",
+  partial: "部分证据就绪",
+  ready: "材料证据就绪",
+  failed: "证据不可用",
+};
+
+const SOURCE_STATUS_VARIANT: Record<
+  SourceEvidenceStatus,
+  "default" | "info" | "warning" | "success" | "error"
+> = {
+  empty: "default",
+  processing: "info",
+  partial: "warning",
+  ready: "success",
+  failed: "error",
+};
+
+const PROJECTION_STATUS_LABEL: Record<ProjectionStatus, string> = {
+  not_started: "课程地图尚未编译",
+  processing: "课程地图编译中",
+  ready: "课程地图已编译",
+  stale: "课程地图需要重编译",
+  failed: "课程地图编译失败",
+};
+
+const SEMANTIC_STATUS_LABEL: Record<ProjectionStatus, string> = {
+  not_started: "深度理解尚未安排",
+  processing: "Fox 正在用受预算保护的模型提炼核心知识",
+  ready: "深度理解已就绪",
+  stale: "深度理解需要重建",
+  failed: "深度理解处理失败",
+};
+
+function MaterialEvidenceIcon({ status }: { status: MaterialEvidenceState | undefined }) {
+  if (status === "processing") {
+    return <Loader2 className="w-3.5 h-3.5 text-foxAmber animate-spin shrink-0" />;
+  }
+  if (status === "ready") {
+    return <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />;
+  }
+  if (status === "retryable") {
+    return <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />;
+  }
+  if (status === "failed" || status === "missing_evidence") {
+    return <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0" />;
+  }
+  return <span className="w-2 h-2 rounded-full bg-slate-300 shrink-0" title="证据状态待读取" />;
+}
+
+function MaterialEvidenceDetails({
+  evidence,
+  statusError,
+}: {
+  evidence: MaterialEvidenceStatus | undefined;
+  statusError: string | null;
+}) {
+  if (statusError) {
+    return (
+      <div className="mt-2 ml-6 rounded-lg border border-red-100 bg-red-50 px-2.5 py-2 text-xs text-red-600" role="alert">
+        无法读取 V2 证据状态：{statusError}
+      </div>
+    );
+  }
+
+  if (!evidence) {
+    return (
+      <div className="mt-2 ml-6 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs text-slate-500">
+        当前材料尚未出现在证据快照中，等待状态刷新。
+      </div>
+    );
+  }
 
   return (
-    <div className="mt-2 pl-6 space-y-1.5">
-      {steps.map((step, i) => (
-        <div key={step.key} className="flex items-center gap-2">
-          <div className={`w-1.5 h-1.5 rounded-full ${i < steps.length - 1 ? "bg-emerald-400" : "bg-slate-300"}`} />
-          <span className={`text-xs ${i < steps.length - 1 ? "text-slate-600" : "text-slate-400"}`}>{step.label}</span>
+    <div className="mt-2 ml-6 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 space-y-1.5 text-xs text-slate-600">
+      <div className="flex items-center justify-between gap-2">
+        <Badge variant={MATERIAL_EVIDENCE_VARIANT[evidence.status]} size="sm">
+          {MATERIAL_EVIDENCE_LABEL[evidence.status]}
+        </Badge>
+        <span>revision {evidence.material_revision}</span>
+      </div>
+      <p>{evidence.fragment_count} 个可定位证据片段</p>
+      {evidence.job_status && <p>持久任务：{JOB_STATUS_LABEL[evidence.job_status]}</p>}
+      {evidence.error_code && (
+        <div className="rounded-md bg-red-50 px-2 py-1.5 text-red-600" role="alert">
+          <p className="font-medium">{evidence.error_code}</p>
+          {evidence.error_detail && <p className="mt-0.5 leading-relaxed">{evidence.error_detail}</p>}
         </div>
-      ))}
+      )}
     </div>
   );
 }
 
-export default function SourcesPanel({ courseId, collapsed, selectedSourceIds, selectedNoteIds, onSelectionChange }: SourcesPanelProps) {
+function sourceSummary(snapshot: KnowledgeStatus): string {
+  const { coverage } = snapshot;
+  switch (snapshot.source_status) {
+    case "empty":
+      return "尚未有材料进入可检索证据库。";
+    case "processing":
+      return "正在将材料转换为可定位的课程证据。";
+    case "partial":
+      return `已有 ${coverage.ready_materials}/${coverage.total_materials} 份材料可作为证据，其余材料仍需处理或重试。`;
+    case "ready":
+      return `${coverage.ready_materials} 份材料已形成可定位证据。`;
+    case "failed":
+      return "当前没有可用于 V2 检索的材料证据，请查看具体材料错误。";
+  }
+}
+
+function KnowledgeEvidenceSummary({
+  snapshot,
+  loading,
+  error,
+  autoRefreshPaused,
+  onRefresh,
+}: {
+  snapshot: KnowledgeStatus | null;
+  loading: boolean;
+  error: string | null;
+  autoRefreshPaused: boolean;
+  onRefresh: () => Promise<KnowledgeStatus | null>;
+}) {
+  if (!snapshot && loading) {
+    return (
+      <div className="mx-3 mt-3 flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
+        <Spinner size="sm" />
+        正在读取材料证据状态…
+      </div>
+    );
+  }
+
+  if (!snapshot && error) {
+    return (
+      <div className="mx-3 mt-3 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-600" role="alert">
+        <div className="flex items-start justify-between gap-2">
+          <span>材料证据状态读取失败：{error}</span>
+          <button
+            type="button"
+            onClick={() => { void onRefresh(); }}
+            className="shrink-0 underline hover:text-red-700"
+          >
+            重试
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!snapshot) return null;
+
+  const { coverage } = snapshot;
+  const sourceReadyWithoutProjection =
+    snapshot.source_status === "ready" &&
+    snapshot.status === "partial" &&
+    snapshot.projection_status === "not_started";
+  const modelBudget = snapshot.model_budget;
+
+  return (
+    <section className="mx-3 mt-3 rounded-lg border border-slate-200 bg-white p-3" aria-label="课程材料证据状态">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-xs font-semibold text-slate-700">材料证据</span>
+          <Badge variant={SOURCE_STATUS_VARIANT[snapshot.source_status]} size="sm" className="shrink-0">
+            {SOURCE_STATUS_LABEL[snapshot.source_status]}
+          </Badge>
+        </div>
+        <button
+          type="button"
+          onClick={() => { void onRefresh(); }}
+          className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+          title="刷新材料证据状态"
+          aria-label="刷新材料证据状态"
+        >
+          {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+        </button>
+      </div>
+      <p className="mt-2 text-xs leading-relaxed text-slate-600">{sourceSummary(snapshot)}</p>
+      <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-500">
+        <span>已就绪 {coverage.ready_materials}/{coverage.total_materials}</span>
+        <span>{coverage.fragment_count} 个片段</span>
+        {coverage.processing_materials > 0 && <span>处理中 {coverage.processing_materials}</span>}
+        {coverage.retryable_materials > 0 && <span>待重试 {coverage.retryable_materials}</span>}
+        {coverage.failed_materials > 0 && <span className="text-red-500">异常 {coverage.failed_materials}</span>}
+      </div>
+      {autoRefreshPaused && (coverage.processing_materials > 0 || snapshot.semantic_status === "processing") && (
+        <p className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs leading-relaxed text-amber-700" role="status">
+          知识处理的自动刷新已暂停，可手动刷新。
+        </p>
+      )}
+      {sourceReadyWithoutProjection ? (
+        <p className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs leading-relaxed text-amber-700">
+          材料证据已就绪，课程地图尚未编译；现在可以按材料证据追溯，课程结构仍在后续阶段生成。
+        </p>
+      ) : (
+        <p className="mt-2 text-xs text-slate-500">{PROJECTION_STATUS_LABEL[snapshot.projection_status]}</p>
+      )}
+      <p className="mt-2 text-xs text-slate-500">
+        {SEMANTIC_STATUS_LABEL[snapshot.semantic_status]}
+        {snapshot.semantic_status === "ready" ? `（${snapshot.semantic_atom_count} 个原子）` : ""}
+      </p>
+      {snapshot.semantic_error_code && (
+        <p className="mt-1 rounded-md bg-red-50 px-2 py-1.5 text-xs text-red-700" role="alert">
+          {snapshot.semantic_error_code}
+          {snapshot.semantic_error_detail ? `：${snapshot.semantic_error_detail}` : ""}
+        </p>
+      )}
+      {modelBudget && (
+        <div className={`mt-2 rounded-md px-2 py-1.5 text-xs leading-relaxed ${
+          modelBudget.status === "exhausted"
+            ? "bg-red-50 text-red-700"
+            : "bg-slate-50 text-slate-600"
+        }`}>
+          <p>
+            V2 模型预算：{modelBudget.accounted_tokens}/{modelBudget.token_budget} tokens
+            （剩余 {modelBudget.available_tokens}）
+          </p>
+          {modelBudget.last_error_code && (
+            <p className="mt-1" role="alert">
+              {modelBudget.last_error_code}
+              {modelBudget.last_error_detail ? `：${modelBudget.last_error_detail}` : ""}
+            </p>
+          )}
+        </div>
+      )}
+      {error && (
+        <p className="mt-2 text-xs text-red-600" role="alert">
+          最近一次状态刷新失败：{error}
+        </p>
+      )}
+    </section>
+  );
+}
+
+export default function SourcesPanel({
+  courseId,
+  collapsed,
+  selectedSourceIds,
+  selectedNoteIds,
+  onSelectionChange,
+  knowledgeStatus,
+  knowledgeStatusLoading,
+  knowledgeStatusError,
+  knowledgeStatusAutoRefreshPaused,
+  onRefreshKnowledgeStatus,
+}: SourcesPanelProps) {
   const { materials, refetch: refetchMaterials } = useMaterials(courseId);
   const { notes, deleteNote } = useNotes(courseId);
   const [showUpload, setShowUpload] = useState(false);
@@ -93,6 +343,9 @@ export default function SourcesPanel({ courseId, collapsed, selectedSourceIds, s
 
   const allSourceIds = materials.map((m) => m.id);
   const allSelected = materials.length > 0 && selectedSourceIds.length === allSourceIds.length;
+  const evidenceByMaterialId = new Map(
+    knowledgeStatus?.materials.map((evidence) => [evidence.material_id, evidence] as const) ?? [],
+  );
 
   const toggleSelectAll = () => {
     if (allSelected) {
@@ -133,7 +386,8 @@ export default function SourcesPanel({ courseId, collapsed, selectedSourceIds, s
   };
 
   const handleUploaded = () => {
-    refetchMaterials();
+    void refetchMaterials();
+    void onRefreshKnowledgeStatus();
     setShowUpload(false);
   };
 
@@ -190,6 +444,14 @@ export default function SourcesPanel({ courseId, collapsed, selectedSourceIds, s
           </div>
         )}
 
+        <KnowledgeEvidenceSummary
+          snapshot={knowledgeStatus}
+          loading={knowledgeStatusLoading}
+          error={knowledgeStatusError}
+          autoRefreshPaused={knowledgeStatusAutoRefreshPaused}
+          onRefresh={onRefreshKnowledgeStatus}
+        />
+
         <div className="p-3">
           {materials.length > 0 && (
             <div className="flex items-center gap-2 mb-2 px-1">
@@ -202,6 +464,7 @@ export default function SourcesPanel({ courseId, collapsed, selectedSourceIds, s
             {materials.map((m: Material, index: number) => {
               const isSelected = selectedSourceIds.includes(m.id);
               const isExpanded = expandedMaterial === m.id;
+              const evidence = evidenceByMaterialId.get(m.id);
               return (
                 <div key={m.id}>
                   <div
@@ -218,7 +481,7 @@ export default function SourcesPanel({ courseId, collapsed, selectedSourceIds, s
                       <span className="text-xs text-slate-700 truncate flex-1 text-left">
                         {formatMaterialName(m.filename, m.kind, index)}
                       </span>
-                      <MaterialStatus status={m.status} />
+                      <MaterialEvidenceIcon status={evidence?.status} />
                       {isExpanded ? (
                         <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
                       ) : (
@@ -232,8 +495,8 @@ export default function SourcesPanel({ courseId, collapsed, selectedSourceIds, s
                       <X className="w-3.5 h-3.5" />
                     </button>
                   </div>
-                  {isExpanded && m.status === "processing" && (
-                    <ProgressSteps materialId={m.id} courseId={courseId} />
+                  {isExpanded && (
+                    <MaterialEvidenceDetails evidence={evidence} statusError={knowledgeStatusError} />
                   )}
                 </div>
               );
