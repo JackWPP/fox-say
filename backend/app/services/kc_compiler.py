@@ -71,8 +71,12 @@ def build_knowledge_components(
 class KnowledgeComponentCompiler:
     """Publish KCs only after the matching Term parent has succeeded."""
 
-    def __init__(self, store: SqliteStore) -> None:
+    def __init__(self, store: SqliteStore, *, auto_enqueue_relations: bool = False,
+                 relation_token_budget: int | None = None, relation_max_attempts: int = 3) -> None:
         self._store = store
+        self._auto_enqueue_relations = auto_enqueue_relations
+        self._relation_token_budget = relation_token_budget
+        self._relation_max_attempts = relation_max_attempts
 
     async def __call__(self, job: KnowledgeJob) -> None:
         if job.job_type != "compile_kcs" or job.material_id is not None:
@@ -97,6 +101,9 @@ class KnowledgeComponentCompiler:
             lease_owner=job.lease_owner, source_revision=source_revision,
             knowledge_revision=knowledge_revision, components=components,
             rejected_term_count=rejected,
+            enqueue_relations=self._auto_enqueue_relations,
+            relation_token_budget=self._relation_token_budget,
+            relation_max_attempts=self._relation_max_attempts,
         ):
             if not self._store.has_current_knowledge_job_lease(
                 course_id=job.course_id, job_id=job.job_id, attempt=job.attempt,

@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     # Explicit opt-in prevents an ordinary local/test upload from unexpectedly
     # spending tokens; production can enable it once G0-like budgets are set.
     knowledge_semantic_auto_enqueue: bool = False
+    # D3b is also opt-in: relation extraction is one audited text request.
+    knowledge_kc_relation_auto_enqueue: bool = False
+    knowledge_kc_relation_max_output_tokens: int = Field(default=1200, gt=0, le=4000)
     # SQLite MVP 只运行一个受控 worker；lease 需要覆盖较慢的文档解析并由 heartbeat 续约。
     knowledge_worker_lease_seconds: int = Field(default=900, gt=0)
     knowledge_worker_poll_interval_seconds: float = Field(default=0.5, gt=0)

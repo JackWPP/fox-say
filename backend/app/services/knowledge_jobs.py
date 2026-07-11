@@ -188,6 +188,21 @@ def enqueue_kc_compile_job(
     )
 
 
+def enqueue_kc_relation_extraction_job(
+    store: SqliteStore, *, course_id: str, source_revision: str,
+    knowledge_revision: str, token_budget: int | None = None,
+    max_attempts: int | None = None,
+) -> KnowledgeJob:
+    """Persist one audited KC-relation extraction job for a KC revision."""
+    return _enqueue(
+        store, course_id=course_id, material_id=None, job_type="extract_kc_relations",
+        revision=None, scope="course", target_source_revision=source_revision,
+        target_knowledge_revision=knowledge_revision,
+        token_budget=(settings.knowledge_job_default_token_budget if token_budget is None else token_budget),
+        max_attempts=(settings.knowledge_job_default_max_attempts if max_attempts is None else max_attempts),
+    )
+
+
 def _enqueue(
     store: SqliteStore,
     *,
