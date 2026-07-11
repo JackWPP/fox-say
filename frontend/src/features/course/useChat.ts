@@ -1,7 +1,20 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { api } from "../../shared/api";
 import { foxCopy } from "../../shared/fox-copy";
-import type { Citation, ConfidenceStatus, ToolCallState, StreamEvent, TermHit } from "../../shared/types";
+import type {
+  AgentPhase,
+  AnswerCitation,
+  AnswerEnvelope,
+  AnswerSource,
+  ConfidenceStatus,
+  SSEEvent,
+  StreamEvent,
+  TermHit,
+  ToolCallState,
+} from "../../shared/types";
+
+export type { AgentPhase } from "../../shared/types";
+export type { AnswerCitation, AnswerEnvelope } from "../../shared/types";
 export type { ConfidenceStatus } from "../../shared/types";
 export type { TermHit } from "../../shared/types";
 
@@ -9,13 +22,23 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
-  citations?: Citation[];
-  termHits?: TermHit[];
-  confidenceStatus?: ConfidenceStatus;
-  refusalReason?: string;
-  toolCalls?: ToolCallState[];
+  /** V2 envelope: server-assembled answer metadata + canonical citations. */
+  envelope?: AnswerEnvelope | null;
+  citations?: AnswerCitation[];
+  /** Convenience mirrors of envelope fields, populated from history or done event. */
+  runId?: string | null;
+  sourceRevision?: string | null;
+  knowledgeRevision?: string | null;
+  confidenceStatus?: ConfidenceStatus | null;
+  answerSource?: AnswerSource;
+  /** Phase timeline recorded while streaming this message. */
+  phases?: AgentPhase[];
   isStreaming?: boolean;
   isError?: boolean;
+  /** Legacy compat (kept so older messages still render). */
+  termHits?: TermHit[];
+  toolCalls?: ToolCallState[];
+  refusalReason?: string;
 }
 
 export interface ChatSession {
@@ -32,15 +55,62 @@ function generateId() {
 
 const API_BASE = "/api";
 
+/**
+ * Parse an SSE payload block of the form
+ *   event: <type>
+ *   data: <json>
+ *
+ *   event: <type>
+ *   data: <json>
+ *
+ * Returns one event per completed `event:` line.  Lines with the same
+ * `event:` are matched against the most recent `data:` line; some servers
+ * emit multiple data lines per event which we treat as discarded fragments.
+ */
+function parseSseChunk(chunk: string): SSEEvent[] {
+  const events: SSEEvent[] = [];
+  let currentType: string | null = null;
+  for (const rawLine of chunk.split(/\r?\n/)) {
+    if (!rawLine) continue;
+    if (rawLine.startsWith(":")) {
+      // SSE comment / heartbeat — ignore
+      continue;
+    }
+    if (rawLine.startsWith("event:")) {
+      currentType = rawLine.slice(6).trim();
+      continue;
+    }
+    if (rawLine.startsWith("data:")) {
+      const payload = rawLine.slice(5).trim();
+      if (!currentType || !payload) continue;
+      try {
+        const data = JSON.parse(payload);
+        events.push({ type: currentType, data } as SSEEvent);
+      } catch {
+        // Skip malformed frames; the next data line will be re-evaluated
+        // against the next event: header on the next pass.
+      }
+      // Reset so a stray data line without an event header is ignored.
+      currentType = null;
+    }
+  }
+  return events;
+}
+
 export function useChat(courseId: string) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [streamingBuffer, setStreamingBuffer] = useState("");
   const [activeToolCalls, setActiveToolCalls] = useState<ToolCallState[]>([]);
+  /** Phases shown during streaming; cleared when streaming finishes. */
+  const [activePhases, setActivePhases] = useState<AgentPhase[]>([]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>("");
   const [historyTotal, setHistoryTotal] = useState(0);
   const [historyOffset, setHistoryOffset] = useState(0);
+
+  /** Ref to track which SSE run the current state belongs to. */
+  const activeRunIdRef = useRef<string | null>(null);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -57,19 +127,46 @@ export function useChat(courseId: string) {
   const loadHistory = useCallback(async (sessionId: string) => {
     try {
       const data = await api.get<{
-        messages: Array<{ id: string; role: string; content: string; citations?: Citation[]; confidence_status?: ConfidenceStatus; refusal_reason?: string }>;
+        messages: Array<{
+          id: string;
+          role: string;
+          content: string;
+          citations?: AnswerCitation[];
+          envelope?: AnswerEnvelope | null;
+          confidence_status?: ConfidenceStatus | null;
+          refusal_reason?: string;
+          run_id?: string | null;
+          source_revision?: string | null;
+          knowledge_revision?: string | null;
+          answer_source?: AnswerSource;
+        }>;
         total: number;
         offset: number;
       }>(`/courses/${courseId}/chat/history?session_id=${sessionId}&limit=50&offset=0`);
       setMessages(
-        data.messages.map((m) => ({
-          id: m.id,
-          role: m.role as "user" | "assistant",
-          content: m.content,
-          citations: m.citations,
-          confidenceStatus: m.confidence_status,
-          refusalReason: m.refusal_reason,
-        })),
+        data.messages.map((m) => {
+          const envelope = m.envelope ?? null;
+          const citations = m.citations ?? envelope?.citations ?? [];
+          const confidence = (m.confidence_status
+            ?? envelope?.confidence_status
+            ?? null) as ConfidenceStatus | null;
+          const answerSource = (m.answer_source
+            ?? envelope?.answer_source
+            ?? "supplementary") as AnswerSource;
+          return {
+            id: m.id,
+            role: m.role as "user" | "assistant",
+            content: m.content,
+            envelope,
+            citations,
+            runId: m.run_id ?? null,
+            sourceRevision: m.source_revision ?? null,
+            knowledgeRevision: m.knowledge_revision ?? null,
+            confidenceStatus: confidence,
+            answerSource,
+            refusalReason: m.refusal_reason,
+          } satisfies ChatMessage;
+        }),
       );
       setHistoryTotal(data.total);
       setHistoryOffset(data.offset);
@@ -86,6 +183,8 @@ export function useChat(courseId: string) {
     setActiveSessionId(sessionId);
     setStreamingBuffer("");
     setActiveToolCalls([]);
+    setActivePhases([]);
+    activeRunIdRef.current = null;
   }, []);
 
   const createSession = useCallback(async (title: string) => {
@@ -116,6 +215,18 @@ export function useChat(courseId: string) {
     } catch { /* ignore */ }
   }, [courseId, activeSessionId, loadSessions, sessions]);
 
+  /**
+   * Discards an incoming SSE event when it doesn't match the run we are
+   * currently waiting on.  Without this fence, a late event from a previous
+   * turn could overwrite the new run's buffer or phase list.
+   */
+  const isEventForActiveRun = useCallback((eventRunId: string | null | undefined) => {
+    const active = activeRunIdRef.current;
+    if (!active) return true;
+    if (!eventRunId) return false;
+    return eventRunId === active;
+  }, []);
+
   const sendQuestion = useCallback(
     async (question: string, selectedSourceIds?: string[], selectedNoteIds?: string[]) => {
       let sessionId = activeSessionId;
@@ -134,7 +245,10 @@ export function useChat(courseId: string) {
       setLoading(true);
       setStreamingBuffer("");
       setActiveToolCalls([]);
+      setActivePhases([]);
+      activeRunIdRef.current = null;
 
+      let aiMsgId: string | null = null;
       try {
         const body: Record<string, unknown> = { question, session_id: sessionId };
         if (selectedSourceIds && selectedSourceIds.length > 0) {
@@ -157,59 +271,218 @@ export function useChat(courseId: string) {
         const decoder = new TextDecoder();
         let buf = "";
         let fullAnswer = "";
-        let allCitations: Citation[] = [];
-        let allTermHits: TermHit[] = [];
+        let pendingEnvelope: AnswerEnvelope | null = null;
+        let pendingCitations: AnswerCitation[] = [];
+        let pendingRunId: string | null = null;
+        let pendingSourceRevision: string | null = null;
+        let pendingKnowledgeRevision: string | null = null;
+        let pendingConfidence: ConfidenceStatus | null = null;
+        let pendingAnswerSource: AnswerSource | undefined;
+        const phases: AgentPhase[] = [];
         let streamError = false;
-        const toolCallMap = new Map<string, ToolCallState>();
+        let streamErrorMessage = "";
+
+        const commitAssistant = () => {
+          if (!aiMsgId) return;
+          const id = aiMsgId;
+          setMessages((prev) => prev.map((m) => (m.id === id
+            ? {
+                ...m,
+                content: fullAnswer,
+                envelope: pendingEnvelope,
+                citations: pendingCitations,
+                runId: pendingRunId,
+                sourceRevision: pendingSourceRevision,
+                knowledgeRevision: pendingKnowledgeRevision,
+                confidenceStatus: pendingConfidence,
+                answerSource: pendingAnswerSource,
+                phases: [...phases],
+                isStreaming: false,
+                isError: streamError,
+              }
+            : m)));
+        };
 
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           buf += decoder.decode(value, { stream: true });
-          const lines = buf.split("\n");
-          buf = lines.pop() || "";
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            try {
-              const event: StreamEvent = JSON.parse(line.slice(6));
-              if (event.type === "tool_call") {
-                const tc: ToolCallState = { id: generateId(), tool: event.tool || "unknown", args: event.args || {}, status: "running" };
-                toolCallMap.set(tc.tool, tc);
-                setActiveToolCalls([...toolCallMap.values()]);
-              } else if (event.type === "token") {
-                fullAnswer += event.token || "";
-                setStreamingBuffer(fullAnswer);
-              } else if (event.type === "done") {
-                fullAnswer = event.answer || fullAnswer;
-                allCitations = event.citations || [];
-                allTermHits = event.term_hits || [];
-                // Mark all tool calls as done
-                for (const tc of toolCallMap.values()) { tc.status = "done"; }
-                setActiveToolCalls([]);
-              } else if (event.type === "error") {
-                fullAnswer = event.message || foxCopy.errors.generic;
-                streamError = true;
+
+          // SSE blocks are terminated by a blank line.
+          let cut = buf.indexOf("\n\n");
+          while (cut >= 0) {
+            const block = buf.slice(0, cut);
+            buf = buf.slice(cut + 2);
+            const events = parseSseChunk(block);
+            for (const ev of events) {
+              if (ev.type === "accepted") {
+                // The very first event announces the run.  All further
+                // events must carry a matching run_id.
+                const incoming = ev.data.run_id;
+                activeRunIdRef.current = incoming;
+                pendingRunId = incoming;
+                pendingSourceRevision = ev.data.source_revision ?? null;
+                pendingKnowledgeRevision = ev.data.knowledge_revision ?? null;
+                aiMsgId = aiMsgId ?? generateId();
+                const provisional: ChatMessage = {
+                  id: aiMsgId,
+                  role: "assistant",
+                  content: fullAnswer,
+                  runId: incoming,
+                  sourceRevision: pendingSourceRevision,
+                  knowledgeRevision: pendingKnowledgeRevision,
+                  phases: [],
+                  isStreaming: true,
+                };
+                setMessages((prev) => (prev.some((m) => m.id === aiMsgId) ? prev : [...prev, provisional]));
+                continue;
               }
-            } catch { /* skip malformed */ }
+              if (!isEventForActiveRun((ev.data as { run_id?: string }).run_id)) {
+                continue;
+              }
+              if (ev.type === "phase") {
+                const phaseEntry: AgentPhase = {
+                  phase: ev.data.phase,
+                  agent_role: ev.data.agent_role,
+                  display_message: ev.data.display_message,
+                };
+                phases.push(phaseEntry);
+                setActivePhases([...phases]);
+                if (aiMsgId) {
+                  const id = aiMsgId;
+                  setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, phases: [...phases] } : m)));
+                }
+                continue;
+              }
+              if (ev.type === "token") {
+                fullAnswer += ev.data.delta ?? "";
+                setStreamingBuffer(fullAnswer);
+                if (aiMsgId) {
+                  const id = aiMsgId;
+                  setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content: fullAnswer } : m)));
+                }
+                continue;
+              }
+              if (ev.type === "done") {
+                if (ev.data.answer) {
+                  fullAnswer = ev.data.answer;
+                }
+                pendingEnvelope = ev.data.envelope ?? null;
+                pendingCitations = ev.data.citations ?? [];
+                pendingConfidence = (ev.data.confidence_status ?? null) as ConfidenceStatus | null;
+                pendingAnswerSource = ev.data.answer_source;
+                if (pendingEnvelope) {
+                  if (pendingCitations.length === 0) {
+                    pendingCitations = pendingEnvelope.citations ?? [];
+                  }
+                  if (pendingConfidence == null) {
+                    pendingConfidence = pendingEnvelope.confidence_status;
+                  }
+                  if (!pendingAnswerSource) {
+                    pendingAnswerSource = pendingEnvelope.answer_source;
+                  }
+                  if (pendingSourceRevision === null) {
+                    pendingSourceRevision = pendingEnvelope.source_revision;
+                  }
+                  if (pendingKnowledgeRevision === null) {
+                    pendingKnowledgeRevision = pendingEnvelope.knowledge_revision;
+                  }
+                }
+                continue;
+              }
+              if (ev.type === "error") {
+                fullAnswer = ev.data.message || foxCopy.errors.generic;
+                streamError = true;
+                streamErrorMessage = ev.data.message;
+                continue;
+              }
+              // Unknown event types are intentionally ignored — the SSE
+              // envelope is the source of truth, not the event name set.
+              // Legacy `tool_call` events would also fall through here.
+            }
+            cut = buf.indexOf("\n\n");
           }
         }
 
-        const aiMsg: ChatMessage = { id: generateId(), role: "assistant", content: fullAnswer || foxCopy.errors.generic, citations: allCitations, termHits: allTermHits, toolCalls: [...toolCallMap.values()], isStreaming: false, isError: streamError };
-        setMessages((prev) => [...prev, aiMsg]);
+        if (!aiMsgId) {
+          // Server never emitted `accepted` — synthesise an error message
+          // so the user sees something rather than a silent empty bubble.
+          aiMsgId = generateId();
+          setMessages((prev) => [...prev, {
+            id: aiMsgId as string,
+            role: "assistant",
+            content: streamErrorMessage || foxCopy.errors.generic,
+            isError: !streamErrorMessage,
+            isStreaming: false,
+          }]);
+        } else {
+          commitAssistant();
+        }
         setStreamingBuffer("");
         setActiveToolCalls([]);
+        setActivePhases([]);
+        activeRunIdRef.current = null;
         loadSessions(); // refresh session list (updated_at)
       } catch {
-        const errMsg: ChatMessage = { id: generateId(), role: "assistant", content: foxCopy.errors.generic, isError: true };
+        const errMsg: ChatMessage = {
+          id: generateId(),
+          role: "assistant",
+          content: foxCopy.errors.generic,
+          isError: true,
+        };
         setMessages((prev) => [...prev, errMsg]);
         setStreamingBuffer("");
         setActiveToolCalls([]);
+        setActivePhases([]);
+        activeRunIdRef.current = null;
       } finally {
         setLoading(false);
       }
     },
-    [courseId, activeSessionId, createSession, loadSessions],
+    [courseId, activeSessionId, createSession, loadSessions, isEventForActiveRun],
   );
 
-  return { messages, sendQuestion, loading, streamingBuffer, activeToolCalls, sessions, activeSessionId, switchSession, createSession, deleteSession };
+  return {
+    messages,
+    sendQuestion,
+    loading,
+    streamingBuffer,
+    activeToolCalls,
+    activePhases,
+    sessions,
+    activeSessionId,
+    switchSession,
+    createSession,
+    deleteSession,
+  };
+}
+
+/**
+ * Helper used by other components to decide which answer surface to render
+ * from a V2 envelope or fallback message fields.
+ */
+export function deriveAnswerState(message: ChatMessage): {
+  availability: "available" | "unavailable";
+  confidenceStatus: ConfidenceStatus | null;
+  answerSource: AnswerSource;
+  isMaterial: boolean;
+  isSupplementary: boolean;
+  isUnavailable: boolean;
+} {
+  const envelope = message.envelope ?? null;
+  const availability = envelope?.retrieval_availability ?? (message.isError ? "unavailable" : "available");
+  const confidenceStatus = (envelope?.confidence_status
+    ?? message.confidenceStatus
+    ?? null) as ConfidenceStatus | null;
+  const answerSource = (envelope?.answer_source
+    ?? message.answerSource
+    ?? "supplementary") as AnswerSource;
+  return {
+    availability,
+    confidenceStatus,
+    answerSource,
+    isMaterial: availability === "available" && answerSource === "material",
+    isSupplementary: availability === "available" && answerSource === "supplementary",
+    isUnavailable: availability === "unavailable",
+  };
 }

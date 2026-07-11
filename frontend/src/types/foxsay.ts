@@ -381,3 +381,62 @@ export interface UnavailableAnswerEnvelope extends AnswerEnvelopeBase {
 
 export type AnswerEnvelope = AvailableAnswerEnvelope | UnavailableAnswerEnvelope;
 
+// ---------------------------------------------------------------------------
+// V2 SSE events (mirrors backend chat/stream payload shape)
+//
+// Each SSE frame is `event: <type>\ndata: <json>\n\n`.  Stale events are
+// fenced by `run_id` so a previous run can never paint the new run's state.
+// ---------------------------------------------------------------------------
+
+export interface SSEAcceptedData {
+  run_id: string;
+  turn_id: string;
+  session_id: string;
+  source_revision: string | null;
+  knowledge_revision: string | null;
+}
+
+export interface SSEPhaseData {
+  run_id: string;
+  phase: string;
+  agent_role: string;
+  display_message: string;
+}
+
+export interface SSETokenData {
+  run_id: string;
+  delta: string;
+}
+
+export interface SSEDoneData {
+  run_id: string;
+  message_id: string;
+  answer: string;
+  envelope: AnswerEnvelope;
+  citations: AnswerCitation[];
+  confidence_status: ConfidenceStatus | null;
+  answer_source: AnswerSource;
+  run_status: string;
+}
+
+export interface SSEErrorData {
+  run_id: string;
+  error_code: string;
+  message: string;
+  retriable: boolean;
+}
+
+export type SSEEvent =
+  | { type: "accepted"; data: SSEAcceptedData }
+  | { type: "phase"; data: SSEPhaseData }
+  | { type: "token"; data: SSETokenData }
+  | { type: "done"; data: SSEDoneData }
+  | { type: "error"; data: SSEErrorData };
+
+/** A single phase observation shown during streaming; carried on the message. */
+export interface AgentPhase {
+  phase: string;
+  agent_role: string;
+  display_message: string;
+}
+

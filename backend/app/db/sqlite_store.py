@@ -19,6 +19,7 @@ from app.schemas.foxsay import (
     ReviewPlan,
 )
 from app.schemas.knowledge_jobs import KnowledgeJob, KnowledgeJobCreate
+from app.schemas.agent_runs import AGENT_RUN_ACTIVE_STATUSES, AgentRun, AgentStep
 from app.schemas.model_calls import (
     CourseModelBudget,
     ModelCallAudit,
@@ -404,6 +405,67 @@ CREATE INDEX IF NOT EXISTS idx_model_call_audits_course_source
     ON model_call_audits(course_id, source_revision, started_at DESC, call_id DESC);
 CREATE INDEX IF NOT EXISTS idx_model_call_audits_job
     ON model_call_audits(job_id, started_at DESC, call_id DESC);
+-- idx_model_call_audits_owner is created by _migrate_model_call_audit_owner
+-- because the table starts with the legacy schema (no owner_type column).
+
+-- ===== Knowledge System V2-F1: agent runs and steps =====
+-- An agent run is the interactive counterpart to a knowledge_job: a course-
+-- scoped, session-bound owner of an audited model workflow (quick answer,
+-- review session, study artifact, ...).  It does NOT require a knowledge_job
+-- lease and owns its own token budget; agent_steps reference either a
+-- model_call_audits row (for steps that made a provider call) or only an
+-- input_fingerprint (for retrieval/skipped steps).  No chain-of-thought is
+-- persisted here.
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+    run_id TEXT PRIMARY KEY,
+    turn_id TEXT NOT NULL,
+    course_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    workflow_kind TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    knowledge_revision TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'accepted',
+    scope_mode TEXT NOT NULL DEFAULT 'all_ready',
+    selected_material_ids_json TEXT,  -- JSON array, NULL = all_ready
+    selected_note_ids_json TEXT,
+    review_context_json TEXT,
+    token_budget INTEGER NOT NULL,
+    error_code TEXT,
+    error_detail TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id) REFERENCES courses(id),
+    CHECK (workflow_kind IN ('quick_answer', 'deep_dive', 'course_brief', 'study_artifact', 'review_plan', 'review_session', 'btw')),
+    CHECK (status IN ('accepted', 'retrieving', 'planning', 'executing', 'composing', 'verifying', 'completed', 'failed', 'interrupted', 'cancelled', 'stale')),
+    CHECK (scope_mode IN ('all_ready', 'selected')),
+    CHECK (token_budget > 0)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_course_session
+    ON agent_runs(course_id, session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_turn
+    ON agent_runs(turn_id);
+
+CREATE TABLE IF NOT EXISTS agent_steps (
+    step_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    agent_role TEXT NOT NULL,
+    step_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    model_call_id TEXT,  -- references model_call_audits.call_id if set
+    output_type TEXT,
+    input_fingerprint TEXT,
+    elapsed_ms INTEGER,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT,
+    FOREIGN KEY (run_id) REFERENCES agent_runs(run_id),
+    FOREIGN KEY (model_call_id) REFERENCES model_call_audits(call_id),
+    CHECK (status IN ('pending', 'running', 'completed', 'failed', 'skipped')),
+    CHECK (elapsed_ms IS NULL OR elapsed_ms >= 0)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_steps_run
+    ON agent_steps(run_id, created_at);
 
 CREATE TABLE IF NOT EXISTS course_compilations (
     course_id TEXT NOT NULL,
@@ -670,6 +732,12 @@ class SqliteStore:
             "ALTER TABLE knowledge_jobs ADD COLUMN target_source_revision TEXT",
             "ALTER TABLE knowledge_jobs ADD COLUMN target_knowledge_revision TEXT",
             "ALTER TABLE knowledge_jobs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3",
+            # V2-F3: chat messages carry full V2 AnswerEnvelope metadata.
+            "ALTER TABLE chat_messages ADD COLUMN run_id TEXT",
+            "ALTER TABLE chat_messages ADD COLUMN source_revision TEXT",
+            "ALTER TABLE chat_messages ADD COLUMN knowledge_revision TEXT",
+            "ALTER TABLE chat_messages ADD COLUMN answer_source TEXT",
+            "ALTER TABLE chat_messages ADD COLUMN envelope_json TEXT",
         ]
         for sql in migrations:
             try:
@@ -677,6 +745,7 @@ class SqliteStore:
             except sqlite3.OperationalError:
                 pass  # column already exists
         self._migrate_knowledge_job_type_constraint()
+        self._migrate_model_call_audit_owner()
         self._conn.execute(
             "UPDATE chat_sessions SET title = ? WHERE title = ?",
             ("新对话", "New Chat"),
@@ -791,6 +860,156 @@ class SqliteStore:
                 "knowledge_jobs type migration broke foreign-key references; restore the database "
                 "and inspect the reported rows before starting FoxSay"
             )
+
+    def _migrate_model_call_audit_owner(self) -> None:
+        """Generalise ``model_call_audits`` to support agent-run owners.
+
+        The legacy table had ``job_id TEXT NOT NULL`` and ``job_attempt INTEGER
+        NOT NULL`` and no owner identity.  V2-F1 makes ``job_id``/``job_attempt``
+        nullable and adds ``owner_type``, ``owner_id``, ``budget_scope`` and
+        ``run_id`` so that interactive agent runs can own audited calls without
+        a knowledge-job lease.
+
+        SQLite cannot alter NOT NULL or add CHECK constraints in place, so we
+        rebuild the table the same way ``_migrate_knowledge_job_type_constraint``
+        does.  Existing rows are preserved and back-filled with
+        ``owner_type='knowledge_job'``, ``owner_id=job_id``,
+        ``budget_scope='knowledge_build'``.
+        """
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'model_call_audits'"
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("model_call_audits table is missing during migration")
+        table_sql = str(row["sql"] or "")
+        if "owner_type" not in table_sql:
+            # Legacy table: rebuild with the owner-generalised schema.
+            #
+            # PRAGMA foreign_keys cannot change inside an active transaction.
+            # The store has just finished its column migrations, so this is a
+            # controlled startup-only rebuild before any worker can reserve a
+            # call.
+            self._conn.commit()
+            self._conn.execute("PRAGMA foreign_keys=OFF")
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute(
+                    """
+                    CREATE TABLE model_call_audits_rebuilt (
+                        call_id TEXT PRIMARY KEY,
+                        course_id TEXT NOT NULL,
+                        job_id TEXT,
+                        job_attempt INTEGER,
+                        source_revision TEXT NOT NULL,
+                        knowledge_revision TEXT NOT NULL,
+                        call_kind TEXT NOT NULL,
+                        purpose TEXT NOT NULL,
+                        provider TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        request_fingerprint TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        input_token_upper_bound INTEGER NOT NULL,
+                        max_output_tokens INTEGER NOT NULL,
+                        reserved_tokens INTEGER NOT NULL,
+                        input_tokens INTEGER,
+                        output_tokens INTEGER,
+                        reasoning_tokens INTEGER,
+                        total_tokens INTEGER,
+                        usage_source TEXT NOT NULL,
+                        accounted_tokens INTEGER NOT NULL,
+                        course_budget_tokens INTEGER NOT NULL,
+                        job_budget_tokens INTEGER,
+                        elapsed_ms INTEGER,
+                        error_code TEXT,
+                        error_detail TEXT,
+                        started_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        finished_at TEXT,
+                        owner_type TEXT NOT NULL DEFAULT 'knowledge_job',
+                        owner_id TEXT,
+                        budget_scope TEXT NOT NULL DEFAULT 'knowledge_build',
+                        run_id TEXT,
+                        FOREIGN KEY (course_id) REFERENCES courses(id),
+                        FOREIGN KEY (job_id) REFERENCES knowledge_jobs(job_id),
+                        CHECK (call_kind IN ('text', 'embedding', 'vision')),
+                        CHECK (status IN ('reserved', 'succeeded', 'failed', 'rejected')),
+                        CHECK (input_token_upper_bound > 0),
+                        CHECK (max_output_tokens > 0),
+                        CHECK (reserved_tokens >= 0),
+                        CHECK (input_tokens IS NULL OR input_tokens >= 0),
+                        CHECK (output_tokens IS NULL OR output_tokens >= 0),
+                        CHECK (reasoning_tokens IS NULL OR reasoning_tokens >= 0),
+                        CHECK (total_tokens IS NULL OR total_tokens >= 0),
+                        CHECK (usage_source IN ('provider', 'estimated', 'unavailable')),
+                        CHECK (accounted_tokens >= 0),
+                        CHECK (course_budget_tokens > 0),
+                        CHECK (job_budget_tokens IS NULL OR job_budget_tokens > 0),
+                        CHECK (elapsed_ms IS NULL OR elapsed_ms >= 0),
+                        CHECK (owner_type IN ('knowledge_job', 'agent_run')),
+                        CHECK (budget_scope IN ('knowledge_build', 'interactive', 'review', 'artifact')),
+                        CHECK (job_attempt IS NULL OR job_attempt > 0)
+                    )
+                    """
+                )
+                self._conn.execute(
+                    """
+                    INSERT INTO model_call_audits_rebuilt (
+                        call_id, course_id, job_id, job_attempt, source_revision, knowledge_revision,
+                        call_kind, purpose, provider, model, request_fingerprint, status,
+                        input_token_upper_bound, max_output_tokens, reserved_tokens, input_tokens,
+                        output_tokens, reasoning_tokens, total_tokens, usage_source, accounted_tokens,
+                        course_budget_tokens, job_budget_tokens, elapsed_ms, error_code, error_detail,
+                        started_at, finished_at, owner_type, owner_id, budget_scope, run_id
+                    )
+                    SELECT call_id, course_id, job_id, job_attempt, source_revision, knowledge_revision,
+                           call_kind, purpose, provider, model, request_fingerprint, status,
+                           input_token_upper_bound, max_output_tokens, reserved_tokens, input_tokens,
+                           output_tokens, reasoning_tokens, total_tokens, usage_source, accounted_tokens,
+                           course_budget_tokens, job_budget_tokens, elapsed_ms, error_code, error_detail,
+                           started_at, finished_at,
+                           'knowledge_job' AS owner_type,
+                           job_id AS owner_id,
+                           'knowledge_build' AS budget_scope,
+                           NULL AS run_id
+                    FROM model_call_audits
+                    """
+                )
+                self._conn.execute("DROP TABLE model_call_audits")
+                self._conn.execute("ALTER TABLE model_call_audits_rebuilt RENAME TO model_call_audits")
+                self._conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_model_call_audits_course_source
+                        ON model_call_audits(course_id, source_revision, started_at DESC, call_id DESC)
+                    """
+                )
+                self._conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_model_call_audits_job
+                        ON model_call_audits(job_id, started_at DESC, call_id DESC)
+                    """
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            finally:
+                self._conn.execute("PRAGMA foreign_keys=ON")
+            violations = self._conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise RuntimeError(
+                    "model_call_audits owner migration broke foreign-key references; restore the database "
+                    "and inspect the reported rows before starting FoxSay"
+                )
+
+        # Always ensure the owner index exists.  On a freshly rebuilt table the
+        # indexes above already cover it; on an already-migrated database this
+        # is a no-op.  CREATE INDEX IF NOT EXISTS is idempotent.
+        self._conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_model_call_audits_owner
+                ON model_call_audits(owner_type, owner_id, started_at DESC, call_id DESC)
+            """
+        )
+        self._conn.commit()
 
     def close(self) -> None:
         self._conn.close()
@@ -2117,12 +2336,13 @@ class SqliteStore:
         audits = {
             row["call_id"] for row in self._conn.execute(
                 """SELECT call_id FROM model_call_audits WHERE course_id = ? AND job_id = ?
-                   AND source_revision = ? AND knowledge_revision = ? AND status = 'succeeded'""",
+                   AND source_revision = ? AND knowledge_revision = ? AND status = 'succeeded'
+                   ORDER BY started_at DESC""",
                 (course_id, job_id, source_revision, knowledge_revision),
             ).fetchall()
         }
-        if len(audits) != 1:
-            raise ValueError("KC relation projection requires exactly one succeeded model audit")
+        if len(audits) == 0:
+            raise ValueError("KC relation projection requires at least one succeeded model audit")
         for relation in relations:
             expected_id = build_kc_relation_id(course_id=course_id, source_revision=source_revision,
                 knowledge_revision=knowledge_revision, source_kc_id=relation.source_kc_id,
@@ -3329,7 +3549,18 @@ class SqliteStore:
         A reservation is recorded *before* the wrapper may make a network
         request. Both budget scopes aggregate every previous attempt for this
         job/source revision, including unresolved or unknown-billing calls.
+
+        This is the knowledge_job-owner path: it validates a current knowledge-
+        job lease and revision.  agent_run-owned calls must use
+        :meth:`reserve_agent_run_model_call` instead.
         """
+        if request.owner_type != "knowledge_job":
+            raise ValueError(
+                "reserve_model_call only handles knowledge_job owners; "
+                "use reserve_agent_run_model_call for agent runs"
+            )
+        if not request.job_id or request.job_attempt is None:
+            raise ValueError("knowledge_job model calls require job_id and job_attempt")
         with self._knowledge_job_lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
@@ -3468,6 +3699,10 @@ class SqliteStore:
         error_detail: str | None = None,
         finished: bool = False,
     ) -> None:
+        # Resolve owner_id: explicit > job_id (knowledge_job) > run_id (agent_run).
+        owner_id = request.owner_id
+        if owner_id is None:
+            owner_id = request.job_id if request.owner_type == "knowledge_job" else request.run_id
         self._conn.execute(
             """
             INSERT INTO model_call_audits (
@@ -3475,9 +3710,9 @@ class SqliteStore:
                 call_kind, purpose, provider, model, request_fingerprint, status,
                 input_token_upper_bound, max_output_tokens, reserved_tokens, usage_source,
                 accounted_tokens, course_budget_tokens, job_budget_tokens, error_code,
-                error_detail, finished_at
+                error_detail, finished_at, owner_type, owner_id, budget_scope, run_id
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unavailable', ?, ?, ?, ?, ?,
-                      CASE WHEN ? THEN datetime('now') ELSE NULL END)
+                      CASE WHEN ? THEN datetime('now') ELSE NULL END, ?, ?, ?, ?)
             """,
             (
                 request.call_id,
@@ -3501,6 +3736,10 @@ class SqliteStore:
                 error_code,
                 error_detail,
                 finished,
+                request.owner_type,
+                owner_id,
+                request.budget_scope,
+                request.run_id,
             ),
         )
 
@@ -4011,6 +4250,7 @@ class SqliteStore:
 
     @staticmethod
     def _row_to_model_call_audit(row: sqlite3.Row) -> ModelCallAudit:
+        keys = row.keys()
         return ModelCallAudit(
             call_id=row["call_id"],
             course_id=row["course_id"],
@@ -4040,6 +4280,10 @@ class SqliteStore:
             error_detail=row["error_detail"],
             started_at=row["started_at"],
             finished_at=row["finished_at"],
+            owner_type=row["owner_type"] if "owner_type" in keys else "knowledge_job",
+            owner_id=row["owner_id"] if "owner_id" in keys else None,
+            budget_scope=row["budget_scope"] if "budget_scope" in keys else "knowledge_build",
+            run_id=row["run_id"] if "run_id" in keys else None,
         )
 
     @staticmethod
@@ -4170,16 +4414,37 @@ class SqliteStore:
         )
         self._conn.commit()
 
-    def touch_chat_session(self, session_id: str) -> None:
-        self._conn.execute(
-            "UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?",
-            (session_id,),
-        )
+    def touch_chat_session(self, session_id: str, course_id: str = "") -> None:
+        # When course_id is provided, the update is fenced so a cross-course
+        # caller cannot bump another course's session timestamp.  Empty
+        # course_id preserves the legacy unfenced behaviour.
+        if course_id:
+            self._conn.execute(
+                "UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ? AND course_id = ?",
+                (session_id, course_id),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?",
+                (session_id,),
+            )
         self._conn.commit()
 
-    def delete_chat_session(self, session_id: str) -> None:
-        self._conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
-        self._conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
+    def delete_chat_session(self, session_id: str, course_id: str = "") -> None:
+        # Fence session deletion by course_id when provided, so a wrong
+        # course_id leaves both messages and session untouched.
+        if course_id:
+            self._conn.execute(
+                "DELETE FROM chat_messages WHERE session_id = ? AND course_id = ?",
+                (session_id, course_id),
+            )
+            self._conn.execute(
+                "DELETE FROM chat_sessions WHERE id = ? AND course_id = ?",
+                (session_id, course_id),
+            )
+        else:
+            self._conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+            self._conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
         self._conn.commit()
 
     # --- Chat Messages ---
@@ -4194,10 +4459,33 @@ class SqliteStore:
         citations_json: str | None = None,
         confidence_status: str | None = None,
         refusal_reason: str | None = None,
+        *,
+        run_id: str | None = None,
+        source_revision: str | None = None,
+        knowledge_revision: str | None = None,
+        answer_source: str | None = None,
+        envelope_json: str | None = None,
     ) -> None:
+        # When a session_id is supplied, verify it belongs to the same course
+        # before persisting, so a swapped session_id cannot file a message under
+        # the wrong course.  Legacy callers that omit session_id are unfenced.
+        if session_id:
+            owner = self._conn.execute(
+                "SELECT course_id FROM chat_sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if owner is None:
+                raise ValueError("Cannot save a chat message for an unknown chat session")
+            if owner["course_id"] != course_id:
+                raise ValueError("Chat session does not belong to this course")
         self._conn.execute(
-            "INSERT INTO chat_messages (id, course_id, session_id, role, content, citations_json, confidence_status, refusal_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (msg_id, course_id, session_id, role, content, citations_json, confidence_status, refusal_reason),
+            "INSERT INTO chat_messages (id, course_id, session_id, role, content, "
+            "citations_json, confidence_status, refusal_reason, run_id, "
+            "source_revision, knowledge_revision, answer_source, envelope_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (msg_id, course_id, session_id, role, content, citations_json,
+             confidence_status, refusal_reason, run_id, source_revision,
+             knowledge_revision, answer_source, envelope_json),
         )
         self._conn.commit()
 
@@ -4226,6 +4514,333 @@ class SqliteStore:
                 (course_id,),
             ).fetchone()
         return row["cnt"] if row else 0
+
+    # --- Agent Runs ---
+
+    def create_agent_run(self, run: AgentRun) -> None:
+        """Create a new agent run with course/session isolation.
+
+        The chat session must already exist and belong to the same course, so
+        an agent run can never be filed under a session that crosses the
+        course fence.
+        """
+        session = self._conn.execute(
+            "SELECT course_id FROM chat_sessions WHERE id = ?",
+            (run.session_id,),
+        ).fetchone()
+        if session is None:
+            raise ValueError("Cannot create agent run for an unknown chat session")
+        if session["course_id"] != run.course_id:
+            raise ValueError("Chat session does not belong to this course")
+        self._conn.execute(
+            """
+            INSERT INTO agent_runs (
+                run_id, turn_id, course_id, session_id, workflow_kind,
+                source_revision, knowledge_revision, status, scope_mode,
+                selected_material_ids_json, selected_note_ids_json,
+                review_context_json, token_budget, error_code, error_detail
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run.run_id,
+                run.turn_id,
+                run.course_id,
+                run.session_id,
+                run.workflow_kind,
+                run.source_revision,
+                run.knowledge_revision,
+                run.status,
+                run.scope_mode,
+                json.dumps(run.selected_material_ids) if run.selected_material_ids else None,
+                json.dumps(run.selected_note_ids) if run.selected_note_ids else None,
+                json.dumps(run.review_context) if run.review_context is not None else None,
+                run.token_budget,
+                run.error_code,
+                run.error_detail,
+            ),
+        )
+        self._conn.commit()
+
+    def get_agent_run(self, course_id: str, run_id: str) -> AgentRun | None:
+        """Load a single agent run, verifying course ownership."""
+        row = self._conn.execute(
+            "SELECT * FROM agent_runs WHERE run_id = ? AND course_id = ?",
+            (run_id, course_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_agent_run(row)
+
+    def update_agent_run_status(
+        self,
+        course_id: str,
+        run_id: str,
+        status: str,
+        error_code: str | None = None,
+        error_detail: str | None = None,
+    ) -> None:
+        """Update run status with a course fence.
+
+        A wrong ``course_id`` is a silent no-op so callers can stay idempotent
+        without leaking whether a run exists in another course.
+        """
+        with self._knowledge_job_lock:
+            self._conn.execute(
+                """
+                UPDATE agent_runs
+                SET status = ?, error_code = ?, error_detail = ?, updated_at = datetime('now')
+                WHERE run_id = ? AND course_id = ?
+                """,
+                (status, error_code, error_detail, run_id, course_id),
+            )
+            self._conn.commit()
+
+    def create_agent_step(self, step: AgentStep) -> None:
+        """Record one step in an agent run."""
+        self._conn.execute(
+            """
+            INSERT INTO agent_steps (
+                step_id, run_id, agent_role, step_type, status,
+                model_call_id, output_type, input_fingerprint, elapsed_ms,
+                error, completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                step.step_id,
+                step.run_id,
+                step.agent_role,
+                step.step_type,
+                step.status,
+                step.model_call_id,
+                step.output_type,
+                step.input_fingerprint,
+                step.elapsed_ms,
+                step.error,
+                step.completed_at,
+            ),
+        )
+        self._conn.commit()
+
+    def update_agent_step(self, step_id: str, status: str, **kwargs: Any) -> None:
+        """Update a step's status and optional fields (elapsed_ms, error, ...).
+
+        Unknown kwargs are ignored to keep the call site resilient; only the
+        whitelisted columns below are written.
+        """
+        allowed = {
+            "model_call_id",
+            "output_type",
+            "input_fingerprint",
+            "elapsed_ms",
+            "error",
+        }
+        columns: list[str] = ["status = ?"]
+        params: list[Any] = [status]
+        for key, value in kwargs.items():
+            if key in allowed:
+                columns.append(f"{key} = ?")
+                params.append(value)
+        if status in ("completed", "failed", "skipped"):
+            columns.append("completed_at = datetime('now')")
+        params.append(step_id)
+        with self._knowledge_job_lock:
+            self._conn.execute(
+                f"UPDATE agent_steps SET {', '.join(columns)} WHERE step_id = ?",
+                params,
+            )
+            self._conn.commit()
+
+    def get_agent_steps(self, run_id: str) -> list[AgentStep]:
+        """Load all steps for a run, ordered by creation time."""
+        rows = self._conn.execute(
+            "SELECT * FROM agent_steps WHERE run_id = ? ORDER BY created_at, step_id",
+            (run_id,),
+        ).fetchall()
+        return [self._row_to_agent_step(row) for row in rows]
+
+    @staticmethod
+    def _row_to_agent_run(row: sqlite3.Row) -> AgentRun:
+        review_context: dict[str, Any] | None = None
+        if row["review_context_json"] is not None:
+            review_context = json.loads(row["review_context_json"])
+        selected_material_ids: list[str] = []
+        if row["selected_material_ids_json"]:
+            selected_material_ids = list(json.loads(row["selected_material_ids_json"]))
+        selected_note_ids: list[str] = []
+        if row["selected_note_ids_json"]:
+            selected_note_ids = list(json.loads(row["selected_note_ids_json"]))
+        return AgentRun(
+            run_id=row["run_id"],
+            turn_id=row["turn_id"],
+            course_id=row["course_id"],
+            session_id=row["session_id"],
+            workflow_kind=row["workflow_kind"],
+            source_revision=row["source_revision"],
+            knowledge_revision=row["knowledge_revision"],
+            status=row["status"],
+            scope_mode=row["scope_mode"],
+            selected_material_ids=selected_material_ids,
+            selected_note_ids=selected_note_ids,
+            review_context=review_context,
+            token_budget=row["token_budget"],
+            error_code=row["error_code"],
+            error_detail=row["error_detail"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _row_to_agent_step(row: sqlite3.Row) -> AgentStep:
+        return AgentStep(
+            step_id=row["step_id"],
+            run_id=row["run_id"],
+            agent_role=row["agent_role"],
+            step_type=row["step_type"],
+            status=row["status"],
+            model_call_id=row["model_call_id"],
+            output_type=row["output_type"],
+            input_fingerprint=row["input_fingerprint"],
+            elapsed_ms=row["elapsed_ms"],
+            error=row["error"],
+            created_at=row["created_at"],
+            completed_at=row["completed_at"],
+        )
+
+    # --- Agent-run model-call reservations ---
+
+    def reserve_agent_run_model_call(self, request: ModelCallReservationRequest) -> ModelCallAudit:
+        """Reserve budget for an agent-run-owned model call.
+
+        Unlike :meth:`reserve_model_call`, this does NOT require a knowledge-job
+        lease.  It validates that the agent run exists, belongs to the request's
+        course, is in a non-terminal status, and that both the per-run token
+        budget and the course-level interactive budget still have room.
+
+        The reservation is recorded before any provider call, so a rejected
+        reservation makes zero provider requests.  SDK retries must remain 0.
+        """
+        if request.owner_type != "agent_run":
+            raise ValueError(
+                "reserve_agent_run_model_call only handles agent_run owners; "
+                "use reserve_model_call for knowledge jobs"
+            )
+        if not request.run_id:
+            raise ValueError("agent_run model calls require run_id")
+
+        with self._knowledge_job_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                run_row = self._conn.execute(
+                    """
+                    SELECT run_id, course_id, status, token_budget
+                    FROM agent_runs WHERE run_id = ? AND course_id = ?
+                    """,
+                    (request.run_id, request.course_id),
+                ).fetchone()
+                if run_row is None:
+                    raise ValueError("Cannot reserve model call for an unknown agent run")
+                run_status = str(run_row["status"])
+                if run_status not in AGENT_RUN_ACTIVE_STATUSES:
+                    raise ValueError(
+                        f"Cannot reserve model call for an agent run in terminal status {run_status!r}"
+                    )
+                run_budget = int(run_row["token_budget"])
+
+                # Per-run budget: sum accounted_tokens for this owner_id.
+                run_used = int(
+                    self._conn.execute(
+                        """
+                        SELECT COALESCE(SUM(accounted_tokens), 0) AS used_tokens
+                        FROM model_call_audits
+                        WHERE owner_type = 'agent_run' AND owner_id = ?
+                        """,
+                        (request.run_id,),
+                    ).fetchone()["used_tokens"]
+                )
+
+                # Course-level interactive budget: reuse course_model_budgets
+                # with source_revision = '__interactive__' as the budget key.
+                # This keeps a single, audited course budget table without
+                # adding a parallel interactive budget table for the MVP.
+                interactive_budget_key = "__interactive__"
+                self._conn.execute(
+                    """
+                    INSERT INTO course_model_budgets (course_id, source_revision, token_budget)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(course_id, source_revision) DO NOTHING
+                    """,
+                    (request.course_id, interactive_budget_key, request.course_budget_tokens),
+                )
+                interactive_budget_row = self._conn.execute(
+                    """
+                    SELECT token_budget FROM course_model_budgets
+                    WHERE course_id = ? AND source_revision = ?
+                    """,
+                    (request.course_id, interactive_budget_key),
+                ).fetchone()
+                if interactive_budget_row is None:
+                    raise RuntimeError("Interactive course budget was not persisted")
+                interactive_budget = int(interactive_budget_row["token_budget"])
+                interactive_used = int(
+                    self._conn.execute(
+                        """
+                        SELECT COALESCE(SUM(accounted_tokens), 0) AS used_tokens
+                        FROM model_call_audits
+                        WHERE course_id = ? AND budget_scope = 'interactive'
+                        """,
+                        (request.course_id,),
+                    ).fetchone()["used_tokens"]
+                )
+
+                rejection_code: str | None = None
+                rejection_detail: str | None = None
+                if run_used + request.reserved_tokens > run_budget:
+                    rejection_code = "token_budget_exhausted"
+                    rejection_detail = "Agent run token budget would be exceeded before this request"
+                elif interactive_used + request.reserved_tokens > interactive_budget:
+                    rejection_code = "token_budget_exhausted"
+                    rejection_detail = (
+                        "Course interactive token budget would be exceeded before this request"
+                    )
+                elif interactive_budget != request.course_budget_tokens:
+                    rejection_code = "course_budget_configuration_conflict"
+                    rejection_detail = (
+                        "The interactive budget already has a different persisted course token budget"
+                    )
+
+                if rejection_code is None:
+                    self._insert_model_call_audit(
+                        request,
+                        status="reserved",
+                        accounted_tokens=request.reserved_tokens,
+                        job_budget_tokens=None,
+                    )
+                else:
+                    self._insert_model_call_audit(
+                        request,
+                        status="rejected",
+                        accounted_tokens=0,
+                        job_budget_tokens=None,
+                        error_code=rejection_code,
+                        error_detail=rejection_detail,
+                        finished=True,
+                    )
+                self._conn.execute(
+                    """
+                    UPDATE course_model_budgets SET updated_at = datetime('now')
+                    WHERE course_id = ? AND source_revision = ?
+                    """,
+                    (request.course_id, interactive_budget_key),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+        audit = self.get_model_call_audit(request.course_id, request.call_id)
+        if audit is None:
+            raise RuntimeError("Agent-run model-call reservation could not be reloaded")
+        return audit
 
     # --- Review Sessions ---
 

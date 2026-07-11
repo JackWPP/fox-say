@@ -19,7 +19,7 @@ from app.services.knowledge_worker import KnowledgeJobExecutionError
 from app.services.semantic_atom_compiler import build_semantic_atoms
 
 
-SEMANTIC_ATOM_MAX_OUTPUT_TOKENS = 1200
+SEMANTIC_ATOM_MAX_OUTPUT_TOKENS = 8000
 
 
 class AuditedTextCompleter(Protocol):

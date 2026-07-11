@@ -1,9 +1,11 @@
 import { useRef, useEffect, useState, useCallback } from "react";
 import {
   MessageCircle, Plus, Trash2, ChevronDown, History, Sparkles, BookOpen, HelpCircle, ListChecks,
-  Send, RefreshCw, ThumbsDown, ThumbsUp, Check, Copy, AlertTriangle, FileText, Loader2, RotateCcw, Bookmark, Zap
+  Send, RefreshCw, ThumbsDown, ThumbsUp, Check, Copy, AlertTriangle, FileText, Loader2, Bookmark, Zap, RotateCcw
 } from "lucide-react";
 import { useChat } from "./useChat";
+import ChatMessage from "./ChatMessage";
+import ToolCallIndicator from "./ToolCallIndicator";
 import { api } from "../../shared/api";
 import MarkdownRenderer from "./MarkdownRenderer";
 import CitationCard from "./CitationCard";
@@ -274,7 +276,7 @@ export default function ChatWorkspace({
   prefillQuestion, onPrefillConsumed, onSwitchToMaterials
 }: ChatWorkspaceProps) {
   const {
-    messages, sendQuestion, loading, streamingBuffer, activeToolCalls,
+    messages, sendQuestion, loading, streamingBuffer, activeToolCalls, activePhases,
     sessions, activeSessionId, switchSession, createSession, deleteSession,
   } = useChat(courseId);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -294,7 +296,7 @@ export default function ChatWorkspace({
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingBuffer, activeToolCalls]);
+  }, [messages, streamingBuffer, activeToolCalls, activePhases]);
 
   useEffect(() => {
     if (prefillQuestion) {
