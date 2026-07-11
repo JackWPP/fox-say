@@ -79,7 +79,7 @@ active / review → blocked → active; complete → reopened → active
 | V2-D1b0 | `complete` | V2-D0, V2-D1a | 为语义原子抽取预留独立的 course job type 与 SQLite enum 迁移；不 enqueue、不调用模型、不写 Atom | `0304f91`；独立 identity、旧 `CHECK` 表重建迁移和 unsupported-handler boundary 均已提交，零模型/embedding/VLM/网络调用。 |
 | V2-D1b1 | `complete` | V2-D0, V2-D0a, V2-D1a, V2-D1b0 | SemanticAtom schema、候选验证与 source/outline/lease-pinned 原子发布；不调用模型、不注册 handler | `75a77c2`；candidate rehydrate、stable ID、audit/source/outline/lease atomic fence 与 current read boundary 已提交，零外部模型调用。 |
 | V2-D1c | `complete` | V2-D1a, V2-D1b0, V2-D1b1 | audited DeepSeek SemanticAtom handler 与严格 JSON candidate parsing；不自动 enqueue | `c46c9fb`；explicit-job handler、strict JSON parsing 和 fake-model publish/failure 回归已提交；无真实模型调用、无自动 enqueue。 |
-| V2-G0 | `review` | V2-D1c | 合成线性代数的真实 DeepSeek semantic-atom smoke；只记录脱敏审计证据 | 已在临时 SQLite 合成 fragment 上完成一次真实 DeepSeek request，结果待脱敏记录/协调者核对。 |
+| V2-G0 | `complete` | V2-D1c | 合成线性代数的真实 DeepSeek semantic-atom smoke；只记录脱敏审计证据 | `23424cf`；真实 endpoint/model/usage/elapsed/Atom 的脱敏验证记录已提交，临时材料/DB 未保留。 |
 | V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
 | V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
@@ -241,6 +241,7 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-D1c | `review → complete` | `c46c9fb`；13 个 semantic/worker 聚焦测试和相关 Ruff 通过。定向 mypy 仅为既有 `foxsay.py`、legacy `sqlite_store.py`、worker strict baseline，无本任务新增项；未调用真实 DeepSeek。 | `c46c9fb` |
 | 2026-07-11 | V2-G0 | `ready → active` | 领取一次真实 DeepSeek 合成线性代数 smoke；范围、隐私、单次预算与验收记录见 §3.13。 | pending |
 | 2026-07-11 | V2-G0 | `active → review` | 单请求成功：`deepseek-v4-flash`，154 input / 893 output / 1047 total tokens，10,534 ms，2 Atom，audit/job 均 `succeeded`。临时 DB 和合成材料已销毁；脱敏记录见 `docs/postmortem/knowledge-v2-g0-deepseek-smoke-2026-07-11.md`。 | pending |
+| 2026-07-11 | V2-G0 | `review → complete` | `23424cf`；真实 DeepSeek smoke 的脱敏 endpoint/model/usage/elapsed/Atom 证据已提交。一次性调用未触发自动重试或自动调度。 | `23424cf` |
 
 ## 6. 交接检查
 
