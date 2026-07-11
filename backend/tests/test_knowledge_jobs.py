@@ -15,6 +15,7 @@ from app.services.knowledge_jobs import (
     enqueue_course_compile_job,
     enqueue_material_index_job,
     enqueue_semantic_atom_extraction_job,
+    enqueue_term_compile_job,
 )
 
 
@@ -328,7 +329,7 @@ def test_job_type_migration_preserves_d0_and_d1a_facts(tmp_path: Path) -> None:
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 started_at TEXT,
                 finished_at TEXT,
-                CHECK (job_type IN ('index_material', 'compile_course')),
+                CHECK (job_type IN ('index_material', 'compile_course', 'extract_semantic_atoms')),
                 CHECK (scope IN ('material', 'course')),
                 CHECK (status IN ('queued', 'running', 'succeeded', 'retryable', 'failed')),
                 CHECK (revision >= 0),
@@ -361,6 +362,13 @@ def test_job_type_migration_preserves_d0_and_d1a_facts(tmp_path: Path) -> None:
         )
         assert semantic.job_type == "extract_semantic_atoms"
         assert semantic.status == "queued"
+        terms = enqueue_term_compile_job(
+            migrated,
+            course_id="course-a",
+            source_revision="src_terms_migration",
+            knowledge_revision="kn_terms_migration",
+        )
+        assert terms.job_type == "compile_terms" and terms.token_budget is None
     finally:
         migrated.close()
 

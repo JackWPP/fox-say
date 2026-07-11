@@ -81,6 +81,7 @@ active / review → blocked → active; complete → reopened → active
 | V2-D1c | `complete` | V2-D1a, V2-D1b0, V2-D1b1 | audited DeepSeek SemanticAtom handler 与严格 JSON candidate parsing；不自动 enqueue | `c46c9fb`；explicit-job handler、strict JSON parsing 和 fake-model publish/failure 回归已提交；无真实模型调用、无自动 enqueue。 |
 | V2-G0 | `complete` | V2-D1c | 合成线性代数的真实 DeepSeek semantic-atom smoke；只记录脱敏审计证据 | `23424cf`；真实 endpoint/model/usage/elapsed/Atom 的脱敏验证记录已提交，临时材料/DB 未保留。 |
 | V2-D1d | `complete` | V2-D1c, V2-G0 | D0 → semantic job 自动调度与可见状态；受配置和 D1a 预算门保护 | `205b1ea`；parent/child atomic scheduling、claim gate、status/UI polling 与测试已提交。显式开关默认关闭，避免本地上传意外成本。 |
+| V2-D2a | `review` | V2-D1d | Atom → Term seed 的零模型、证据可追溯投影 | 实现已在待提交代码中；Term 只能从 current Atom 的 literal/evidence 生成；header/term/link 发布受 source/semantic/lease fence 保护，禁止 legacy term/Qdrant 写路径。 |
 | V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
 | V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
@@ -197,6 +198,14 @@ active / review → blocked → active; complete → reopened → active
 - **验收**：D0 worker 完成后自动出现唯一 semantic job，re-run 不重复；auto 关闭时不入队；semantic queued/running/succeeded/failed/stale 状态与 Atom count 从 SQLite 得出，跨 course/old source 不显示；SourcesPanel 显示深度理解进度/失败；测试全部使用 fake model/关闭自动请求，零网络。
 - **成本与时延**：D0 后新增一个后台 job，不阻塞材料/outline ready；UI 立即显示等待状态。实测 G0 单请求约 10.5 秒 / 1047 tokens 仅作合成小输入参考，不作为真实课程 SLA。
 
+### 3.15 活动任务包：V2-D2a
+
+- **目标**：从当前、已成功的 SemanticAtom 投影构建零模型的 V2 `Term` seed。每个 Term 显式带 course/source/knowledge revision、canonical name/key、定义、Atom links 与 EvidenceRef；名称必须是 linked Atom 的 canonical evidence fragment 中实际出现的 literal，定义只能复用 chosen Atom 的 statement，不能生成新释义或别名。
+- **依赖与范围**：依赖 D1d；允许新增 term schema/compiler/store/job handler/enqueue、必要状态/UI、tests/架构/台账文档。不得使用 DeepSeek/Qwen/embedding/Qdrant，不改 legacy terminology、Agent/chat/VLM、Term aliases 或 KC/Relation。
+- **身份与发布契约**：新增 `compile_terms` course job，target source/knowledge revision 显式；只可在同 target semantic job/header succeeded 后由受控 worker enqueue。`term_compilations`、`terms`、`term_atom_links` 记录 header、显示 evidence 和反向 Atom 依赖。stable term ID 由 course/source/knowledge/canonical key 计算；发布事务重验 current source、semantic header/job、term job attempt/lease、Atom evidence 与 links。任一不匹配零写。
+- **验收**：相同 Atom 集合不同顺序得到相同 term ID/排序；同名跨 course/revision ID 不同；orphan/old/cross-course/failed semantic job、失租、source change 均零写；零个可提取 Term 也可成功且 rejected count 可见；semantic 成功后自动出现唯一 term job；没有模型、embedding、Qdrant 或网络调用。
+- **成本与时延**：按当前 Atom/evidence 数本地线性计算；不消耗 token，不能阻塞已就绪 Atom 的读取。
+
 ## 4. 成本、等待和“自然生长”的调度门槛
 
 1. **先确定性，后模型**：解析、标题树、fragment、内容 hash、失效范围和基础索引先完成；不能为了“看起来聪明”对整门课无差别烧 token。
@@ -254,6 +263,8 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-D1d | `ready → active` | 领取 D0 后 auto enqueue、semantic projection status 与 SourcesPanel 可见性；范围、成本门和验收见 §3.14。 | pending |
 | 2026-07-11 | V2-D1d | `active → review` | 并行审查发现 parent publish 后 child enqueue 的 P0 状态撕裂，已改为同一 SQLite transaction 创建 child、claim 门禁止 parent 未 succeeded 时执行；补齐 semantic stale/status/UI polling。31 个 backend 聚焦回归、Ruff、前端 typecheck/build 通过。 | pending |
 | 2026-07-11 | V2-D1d | `review → complete` | `205b1ea`；31 个 backend 聚焦回归、相关 Ruff、前端 typecheck/build 通过。并行审查提出的 parent/child race、默认开关、stale status、UI polling 和 header join 均已纳入实现/验证。 | `205b1ea` |
+| 2026-07-11 | V2-D2a | `ready → active` | 领取零模型 Atom→Term seed compiler、受控调度、evidence/link persistence；范围、非目标、验收与零成本限制见 §3.15。 | pending |
+| 2026-07-11 | V2-D2a | `active → review` | `compile_terms`、Term header/link/evidence publication、semantic→Term atomic child 与 claim gate 已实现；40 个 D0/D1/D2 聚焦 backend 回归及 Ruff 通过，零网络。等待 commit。 | pending |
 
 ## 6. 交接检查
 

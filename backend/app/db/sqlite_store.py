@@ -26,6 +26,13 @@ from app.schemas.model_calls import (
     ModelCallUsage,
 )
 from app.schemas.semantic_atoms import SemanticAtom, SemanticAtomCompilation
+from app.schemas.terms import (
+    TERM_COMPILER_VERSION,
+    Term,
+    TermCompilation,
+    build_term_id,
+    normalise_term_key,
+)
 from app.services.semantic_atom_compiler import (
     SEMANTIC_ATOM_COMPILER_VERSION,
     build_semantic_atom_id,
@@ -272,7 +279,7 @@ CREATE TABLE IF NOT EXISTS knowledge_jobs (
     finished_at TEXT,
     FOREIGN KEY (course_id) REFERENCES courses(id),
     FOREIGN KEY (material_id) REFERENCES materials(id),
-    CHECK (job_type IN ('index_material', 'compile_course', 'extract_semantic_atoms')),
+    CHECK (job_type IN ('index_material', 'compile_course', 'extract_semantic_atoms', 'compile_terms')),
     CHECK (scope IN ('material', 'course')),
     CHECK (status IN ('queued', 'running', 'succeeded', 'retryable', 'failed')),
     CHECK (revision >= 0),
@@ -431,6 +438,65 @@ CREATE TABLE IF NOT EXISTS semantic_atoms (
 );
 CREATE INDEX IF NOT EXISTS idx_semantic_atoms_current
     ON semantic_atoms(course_id, source_revision, knowledge_revision, section_id);
+
+-- ===== Knowledge System V2: rule-derived terminology projection =====
+
+CREATE TABLE IF NOT EXISTS term_compilations (
+    course_id TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    knowledge_revision TEXT NOT NULL,
+    compiler_version TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    term_count INTEGER NOT NULL,
+    rejected_atom_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (course_id, knowledge_revision),
+    UNIQUE (course_id, source_revision, compiler_version),
+    UNIQUE (job_id),
+    FOREIGN KEY (course_id) REFERENCES courses(id),
+    FOREIGN KEY (job_id) REFERENCES knowledge_jobs(job_id),
+    CHECK (term_count >= 0),
+    CHECK (rejected_atom_count >= 0)
+);
+CREATE INDEX IF NOT EXISTS idx_term_compilations_current
+    ON term_compilations(course_id, source_revision, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS terms (
+    term_id TEXT PRIMARY KEY,
+    course_id TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    knowledge_revision TEXT NOT NULL,
+    canonical_name TEXT NOT NULL,
+    canonical_key TEXT NOT NULL,
+    term_kind TEXT NOT NULL,
+    definition TEXT NOT NULL,
+    definition_atom_id TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    generation_method TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id, knowledge_revision)
+        REFERENCES term_compilations(course_id, knowledge_revision),
+    CHECK (term_kind IN ('concept', 'definition', 'formula', 'theorem', 'procedure')),
+    CHECK (generation_method = 'rule'),
+    UNIQUE (course_id, source_revision, knowledge_revision, canonical_key)
+);
+CREATE INDEX IF NOT EXISTS idx_terms_current
+    ON terms(course_id, source_revision, knowledge_revision, canonical_key);
+
+CREATE TABLE IF NOT EXISTS term_atom_links (
+    term_id TEXT NOT NULL,
+    atom_id TEXT NOT NULL,
+    course_id TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    knowledge_revision TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (term_id, atom_id),
+    FOREIGN KEY (term_id) REFERENCES terms(term_id),
+    FOREIGN KEY (atom_id) REFERENCES semantic_atoms(atom_id),
+    FOREIGN KEY (course_id) REFERENCES courses(id)
+);
+CREATE INDEX IF NOT EXISTS idx_term_atom_links_atom
+    ON term_atom_links(course_id, source_revision, knowledge_revision, atom_id);
 """
 
 
@@ -497,7 +563,7 @@ class SqliteStore:
         if row is None:
             raise RuntimeError("knowledge_jobs table is missing during migration")
         table_sql = str(row["sql"] or "")
-        if "extract_semantic_atoms" in table_sql:
+        if "compile_terms" in table_sql:
             return
 
         # PRAGMA foreign_keys cannot change inside an active transaction. The
@@ -534,7 +600,7 @@ class SqliteStore:
                     finished_at TEXT,
                     FOREIGN KEY (course_id) REFERENCES courses(id),
                     FOREIGN KEY (material_id) REFERENCES materials(id),
-                    CHECK (job_type IN ('index_material', 'compile_course', 'extract_semantic_atoms')),
+                    CHECK (job_type IN ('index_material', 'compile_course', 'extract_semantic_atoms', 'compile_terms')),
                     CHECK (scope IN ('material', 'course')),
                     CHECK (status IN ('queued', 'running', 'succeeded', 'retryable', 'failed')),
                     CHECK (revision >= 0),
@@ -1055,11 +1121,62 @@ class SqliteStore:
                             atom.generation_method,
                         ),
                     )
+                self._enqueue_term_job_if_absent(
+                    course_id=course_id,
+                    source_revision=source_revision,
+                    knowledge_revision=knowledge_revision,
+                )
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
                 raise
         return True
+
+    def _enqueue_term_job_if_absent(
+        self,
+        *,
+        course_id: str,
+        source_revision: str,
+        knowledge_revision: str,
+    ) -> None:
+        """Create the zero-model child in its semantic publication transaction."""
+        existing = self._conn.execute(
+            """
+            SELECT job_id FROM knowledge_jobs
+            WHERE course_id = ? AND job_type = 'compile_terms'
+              AND target_source_revision = ?
+            """,
+            (course_id, source_revision),
+        ).fetchone()
+        if existing is not None:
+            return
+        next_revision = self._conn.execute(
+            """
+            SELECT COALESCE(MAX(revision), -1) + 1 AS next_revision
+            FROM knowledge_jobs
+            WHERE course_id = ? AND material_id IS NULL AND job_type = 'compile_terms'
+            """,
+            (course_id,),
+        ).fetchone()
+        if next_revision is None:
+            raise RuntimeError("Could not allocate term compilation job revision")
+        self._conn.execute(
+            """
+            INSERT INTO knowledge_jobs (
+                job_id, course_id, material_id, job_type, revision, scope, status,
+                attempt, max_attempts, idempotency_key, token_budget,
+                target_source_revision, target_knowledge_revision
+            ) VALUES (?, ?, NULL, 'compile_terms', ?, 'course', 'queued', 0, 3, ?, NULL, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()),
+                course_id,
+                int(next_revision["next_revision"]),
+                f"knowledge:compile_terms:{course_id}:source:{source_revision}",
+                source_revision,
+                knowledge_revision,
+            ),
+        )
 
     def _validate_semantic_atoms_for_publication(
         self,
@@ -1182,6 +1299,316 @@ class SqliteStore:
             (course_id,),
         ).fetchone()
         return self._row_to_semantic_atom_compilation(row) if row is not None else None
+
+    def publish_terms_if_current(
+        self,
+        *,
+        course_id: str,
+        job_id: str,
+        job_attempt: int,
+        lease_owner: str,
+        source_revision: str,
+        knowledge_revision: str,
+        terms: list[Term],
+        rejected_atom_count: int,
+    ) -> bool:
+        """Atomically publish a full rule-derived term projection for current Atoms."""
+        if job_attempt < 1 or not lease_owner.strip() or rejected_atom_count < 0:
+            raise ValueError("Term publication requires a claimed lease and valid counts")
+        if any(
+            term.course_id != course_id
+            or term.source_revision != source_revision
+            or term.knowledge_revision != knowledge_revision
+            for term in terms
+        ):
+            raise ValueError("Term identity does not match its publication target")
+        with self._knowledge_job_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                job = self._conn.execute(
+                    """
+                    SELECT status, attempt, lease_owner, lease_expires_at,
+                           target_source_revision, target_knowledge_revision
+                    FROM knowledge_jobs
+                    WHERE job_id = ? AND course_id = ? AND job_type = 'compile_terms'
+                    """,
+                    (job_id, course_id),
+                ).fetchone()
+                if (
+                    job is None
+                    or job["status"] != "running"
+                    or job["attempt"] != job_attempt
+                    or job["lease_owner"] != lease_owner
+                    or job["lease_expires_at"] is None
+                    or job["lease_expires_at"] <= self._conn.execute("SELECT datetime('now')").fetchone()[0]
+                    or job["target_source_revision"] != source_revision
+                    or job["target_knowledge_revision"] != knowledge_revision
+                ):
+                    self._conn.rollback()
+                    return False
+                current_manifest = self.get_compilable_source_manifest(course_id)
+                if current_manifest is None or current_manifest[0] != source_revision:
+                    self._conn.rollback()
+                    return False
+                semantic_header = self._conn.execute(
+                    """
+                    SELECT compilation.job_id FROM semantic_atom_compilations AS compilation
+                    INNER JOIN knowledge_jobs AS semantic_job
+                        ON semantic_job.job_id = compilation.job_id
+                       AND semantic_job.course_id = compilation.course_id
+                       AND semantic_job.job_type = 'extract_semantic_atoms'
+                       AND semantic_job.status = 'succeeded'
+                       AND semantic_job.target_source_revision = compilation.source_revision
+                       AND semantic_job.target_knowledge_revision = compilation.knowledge_revision
+                    WHERE compilation.course_id = ? AND compilation.source_revision = ?
+                      AND compilation.knowledge_revision = ?
+                    """,
+                    (course_id, source_revision, knowledge_revision),
+                ).fetchone()
+                if semantic_header is None:
+                    self._conn.rollback()
+                    return False
+                self._validate_terms_for_publication(
+                    course_id=course_id,
+                    source_revision=source_revision,
+                    knowledge_revision=knowledge_revision,
+                    terms=terms,
+                )
+                self._conn.execute(
+                    """
+                    INSERT INTO term_compilations (
+                        course_id, source_revision, knowledge_revision, compiler_version, job_id,
+                        term_count, rejected_atom_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(course_id, source_revision, compiler_version) DO NOTHING
+                    """,
+                    (
+                        course_id,
+                        source_revision,
+                        knowledge_revision,
+                        TERM_COMPILER_VERSION,
+                        job_id,
+                        len(terms),
+                        rejected_atom_count,
+                    ),
+                )
+                header = self._conn.execute(
+                    """
+                    SELECT knowledge_revision, job_id, term_count, rejected_atom_count
+                    FROM term_compilations
+                    WHERE course_id = ? AND source_revision = ? AND compiler_version = ?
+                    """,
+                    (course_id, source_revision, TERM_COMPILER_VERSION),
+                ).fetchone()
+                if (
+                    header is None
+                    or header["knowledge_revision"] != knowledge_revision
+                    or header["job_id"] != job_id
+                    or int(header["term_count"]) != len(terms)
+                    or int(header["rejected_atom_count"]) != rejected_atom_count
+                ):
+                    raise RuntimeError("Term target is already bound to another projection")
+                for term in terms:
+                    self._conn.execute(
+                        """
+                        INSERT INTO terms (
+                            term_id, course_id, source_revision, knowledge_revision, canonical_name,
+                            canonical_key, term_kind, definition, definition_atom_id, evidence_json,
+                            generation_method
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(term_id) DO NOTHING
+                        """,
+                        (
+                            term.term_id,
+                            term.course_id,
+                            term.source_revision,
+                            term.knowledge_revision,
+                            term.canonical_name,
+                            term.canonical_key,
+                            term.term_kind,
+                            term.definition,
+                            term.definition_atom_id,
+                            json.dumps(
+                                [evidence.model_dump() for evidence in term.evidence],
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                                sort_keys=True,
+                            ),
+                            term.generation_method,
+                        ),
+                    )
+                    for atom_id in term.supporting_atom_ids:
+                        self._conn.execute(
+                            """
+                            INSERT INTO term_atom_links (
+                                term_id, atom_id, course_id, source_revision, knowledge_revision
+                            ) VALUES (?, ?, ?, ?, ?)
+                            ON CONFLICT(term_id, atom_id) DO NOTHING
+                            """,
+                            (term.term_id, atom_id, course_id, source_revision, knowledge_revision),
+                        )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return True
+
+    def _validate_terms_for_publication(
+        self,
+        *,
+        course_id: str,
+        source_revision: str,
+        knowledge_revision: str,
+        terms: list[Term],
+    ) -> None:
+        if len({term.term_id for term in terms}) != len(terms):
+            raise ValueError("Term projection contains duplicate term IDs")
+        fragments = {
+            fragment.fragment_id: fragment
+            for fragment in self.list_current_ready_source_fragments(course_id)
+        }
+        rows = self._conn.execute(
+            """
+            SELECT atom.* FROM semantic_atoms AS atom
+            INNER JOIN semantic_atom_compilations AS compilation
+                ON compilation.course_id = atom.course_id
+               AND compilation.knowledge_revision = atom.knowledge_revision
+            INNER JOIN knowledge_jobs AS job
+                ON job.job_id = compilation.job_id
+               AND job.course_id = compilation.course_id
+               AND job.job_type = 'extract_semantic_atoms'
+               AND job.status = 'succeeded'
+               AND job.target_source_revision = compilation.source_revision
+               AND job.target_knowledge_revision = compilation.knowledge_revision
+            WHERE atom.course_id = ? AND atom.source_revision = ? AND atom.knowledge_revision = ?
+            """,
+            (course_id, source_revision, knowledge_revision),
+        ).fetchall()
+        atoms = {row["atom_id"]: self._row_to_semantic_atom(row) for row in rows}
+        for term in terms:
+            if term.canonical_key != normalise_term_key(term.canonical_name):
+                raise ValueError("Term canonical key is not derived from its literal name")
+            expected_term_id = build_term_id(
+                course_id=course_id,
+                source_revision=source_revision,
+                knowledge_revision=knowledge_revision,
+                canonical_key=term.canonical_key,
+            )
+            if term.term_id != expected_term_id:
+                raise ValueError("Term ID is not the stable scope-derived identity")
+            atom_ids = term.supporting_atom_ids
+            if len(set(atom_ids)) != len(atom_ids) or not atom_ids or term.definition_atom_id not in atom_ids:
+                raise ValueError("Term Atom links are missing or duplicated")
+            supporting_atoms = []
+            for atom_id in atom_ids:
+                atom = atoms.get(atom_id)
+                if atom is None:
+                    raise ValueError("Term links an Atom outside the current semantic projection")
+                if atom.atom_type not in {"definition", "concept", "formula", "theorem", "procedure"}:
+                    raise ValueError("Term links an unsupported Atom type")
+                if term.canonical_name not in atom.statement:
+                    raise ValueError("Term name is not a literal in its linked Atom statement")
+                expected_evidence = []
+                for evidence in atom.evidence:
+                    fragment = fragments.get(evidence.fragment_id)
+                    if fragment is None or term.canonical_name not in fragment.text:
+                        raise ValueError("Term name is not a literal in linked current Atom evidence")
+                    expected_evidence.append(EvidenceRef.from_source_fragment(fragment))
+                if [value.model_dump() for value in atom.evidence] != [
+                    value.model_dump() for value in expected_evidence
+                ]:
+                    raise ValueError("Semantic Atom evidence is not canonical current evidence")
+                supporting_atoms.append(atom)
+            definition_atom = atoms[term.definition_atom_id]
+            if term.definition != definition_atom.statement or term.term_kind != definition_atom.atom_type:
+                raise ValueError("Term definition must be copied from its selected Atom")
+            expected_evidence_by_id = {
+                evidence.fragment_id: evidence
+                for atom in supporting_atoms
+                for evidence in atom.evidence
+            }
+            expected_evidence = [
+                expected_evidence_by_id[fragment_id]
+                for fragment_id in sorted(expected_evidence_by_id)
+            ]
+            if [value.model_dump() for value in term.evidence] != [
+                value.model_dump() for value in expected_evidence
+            ]:
+                raise ValueError("Term evidence must be the canonical union of its linked Atoms")
+
+    def get_current_terms(self, course_id: str, source_revision: str) -> list[Term]:
+        """Read only terms whose compilation and semantic parent both succeeded."""
+        current_manifest = self.get_compilable_source_manifest(course_id)
+        if current_manifest is None or current_manifest[0] != source_revision:
+            return []
+        rows = self._conn.execute(
+            """
+            SELECT term.* FROM terms AS term
+            INNER JOIN term_compilations AS compilation
+                ON compilation.course_id = term.course_id
+               AND compilation.knowledge_revision = term.knowledge_revision
+            INNER JOIN knowledge_jobs AS term_job
+                ON term_job.job_id = compilation.job_id
+               AND term_job.course_id = compilation.course_id
+               AND term_job.job_type = 'compile_terms'
+               AND term_job.status = 'succeeded'
+               AND term_job.target_source_revision = compilation.source_revision
+               AND term_job.target_knowledge_revision = compilation.knowledge_revision
+            INNER JOIN semantic_atom_compilations AS semantic
+                ON semantic.course_id = compilation.course_id
+               AND semantic.source_revision = compilation.source_revision
+               AND semantic.knowledge_revision = compilation.knowledge_revision
+            INNER JOIN knowledge_jobs AS semantic_job
+                ON semantic_job.job_id = semantic.job_id
+               AND semantic_job.course_id = semantic.course_id
+               AND semantic_job.job_type = 'extract_semantic_atoms'
+               AND semantic_job.status = 'succeeded'
+            WHERE term.course_id = ? AND term.source_revision = ?
+            ORDER BY term.canonical_key, term.term_id
+            """,
+            (course_id, source_revision),
+        ).fetchall()
+        terms: list[Term] = []
+        for row in rows:
+            links = self._conn.execute(
+                """
+                SELECT atom_id FROM term_atom_links
+                WHERE term_id = ? AND course_id = ? AND source_revision = ?
+                  AND knowledge_revision = ?
+                ORDER BY atom_id
+                """,
+                (row["term_id"], course_id, row["source_revision"], row["knowledge_revision"]),
+            ).fetchall()
+            terms.append(self._row_to_term(row, [link["atom_id"] for link in links]))
+        return terms
+
+    def get_current_term_compilation(
+        self, course_id: str, source_revision: str
+    ) -> TermCompilation | None:
+        row = self._conn.execute(
+            """
+            SELECT compilation.* FROM term_compilations AS compilation
+            INNER JOIN knowledge_jobs AS job
+                ON job.job_id = compilation.job_id
+               AND job.course_id = compilation.course_id
+               AND job.job_type = 'compile_terms'
+               AND job.status = 'succeeded'
+               AND job.target_source_revision = compilation.source_revision
+               AND job.target_knowledge_revision = compilation.knowledge_revision
+            INNER JOIN semantic_atom_compilations AS semantic
+                ON semantic.course_id = compilation.course_id
+               AND semantic.source_revision = compilation.source_revision
+               AND semantic.knowledge_revision = compilation.knowledge_revision
+            INNER JOIN knowledge_jobs AS semantic_job
+                ON semantic_job.job_id = semantic.job_id
+               AND semantic_job.course_id = semantic.course_id
+               AND semantic_job.job_type = 'extract_semantic_atoms'
+               AND semantic_job.status = 'succeeded'
+            WHERE compilation.course_id = ? AND compilation.source_revision = ?
+            """,
+            (course_id, source_revision),
+        ).fetchone()
+        return self._row_to_term_compilation(row) if row is not None else None
 
     def publish_course_compilation_if_current(
         self,
@@ -1992,7 +2419,29 @@ class SqliteStore:
             existing_logical = self._get_knowledge_job_by_logical_identity(job)
             if existing_logical is not None:
                 if existing_logical.idempotency_key == job.idempotency_key:
-                    return existing_logical
+                    requested_identity = (
+                        job.course_id,
+                        job.material_id,
+                        job.job_type,
+                        job.scope,
+                        job.token_budget,
+                        job.max_attempts,
+                        job.target_source_revision,
+                        job.target_knowledge_revision,
+                    )
+                    existing_identity = (
+                        existing_logical.course_id,
+                        existing_logical.material_id,
+                        existing_logical.job_type,
+                        existing_logical.scope,
+                        existing_logical.token_budget,
+                        existing_logical.max_attempts,
+                        existing_logical.target_source_revision,
+                        existing_logical.target_knowledge_revision,
+                    )
+                    if existing_identity == requested_identity:
+                        return existing_logical
+                    raise ValueError("Knowledge job idempotency key is already bound to another job identity")
                 raise ValueError(
                     "Knowledge job logical identity is already bound to another idempotency key"
                 )
@@ -2563,17 +3012,36 @@ class SqliteStore:
                     """
                     SELECT job_id FROM knowledge_jobs
                     WHERE attempt < max_attempts
-                      AND (
-                           job_type != 'extract_semantic_atoms'
-                           OR EXISTS (
-                               SELECT 1 FROM knowledge_jobs AS parent
-                               WHERE parent.course_id = knowledge_jobs.course_id
-                                 AND parent.job_type = 'compile_course'
-                                 AND parent.status = 'succeeded'
-                                 AND parent.target_source_revision = knowledge_jobs.target_source_revision
-                                 AND parent.target_knowledge_revision = knowledge_jobs.target_knowledge_revision
-                           )
-                      )
+                       AND (
+                            job_type NOT IN ('extract_semantic_atoms', 'compile_terms')
+                            OR (
+                                job_type = 'extract_semantic_atoms'
+                                AND EXISTS (
+                                SELECT 1 FROM knowledge_jobs AS parent
+                                WHERE parent.course_id = knowledge_jobs.course_id
+                                  AND parent.job_type = 'compile_course'
+                                  AND parent.status = 'succeeded'
+                                  AND parent.target_source_revision = knowledge_jobs.target_source_revision
+                                  AND parent.target_knowledge_revision = knowledge_jobs.target_knowledge_revision
+                                )
+                            )
+                            OR (
+                                job_type = 'compile_terms'
+                                AND EXISTS (
+                                    SELECT 1 FROM semantic_atom_compilations AS compilation
+                                    INNER JOIN knowledge_jobs AS parent
+                                        ON parent.job_id = compilation.job_id
+                                       AND parent.course_id = compilation.course_id
+                                       AND parent.job_type = 'extract_semantic_atoms'
+                                       AND parent.status = 'succeeded'
+                                       AND parent.target_source_revision = compilation.source_revision
+                                       AND parent.target_knowledge_revision = compilation.knowledge_revision
+                                    WHERE compilation.course_id = knowledge_jobs.course_id
+                                      AND compilation.source_revision = knowledge_jobs.target_source_revision
+                                      AND compilation.knowledge_revision = knowledge_jobs.target_knowledge_revision
+                                )
+                            )
+                       )
                       AND (
                            status = 'queued'
                        OR (status = 'running'
@@ -2834,6 +3302,37 @@ class SqliteStore:
             atom_count=row["atom_count"],
             rejected_candidate_count=row["rejected_candidate_count"],
             model_call_count=row["model_call_count"],
+            created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _row_to_term(row: sqlite3.Row, supporting_atom_ids: list[str]) -> Term:
+        return Term(
+            term_id=row["term_id"],
+            course_id=row["course_id"],
+            source_revision=row["source_revision"],
+            knowledge_revision=row["knowledge_revision"],
+            canonical_name=row["canonical_name"],
+            canonical_key=row["canonical_key"],
+            term_kind=row["term_kind"],
+            definition=row["definition"],
+            definition_atom_id=row["definition_atom_id"],
+            supporting_atom_ids=supporting_atom_ids,
+            evidence=[EvidenceRef.model_validate(value) for value in json.loads(row["evidence_json"])],
+            generation_method=row["generation_method"],
+            created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _row_to_term_compilation(row: sqlite3.Row) -> TermCompilation:
+        return TermCompilation(
+            course_id=row["course_id"],
+            source_revision=row["source_revision"],
+            knowledge_revision=row["knowledge_revision"],
+            compiler_version=row["compiler_version"],
+            job_id=row["job_id"],
+            term_count=row["term_count"],
+            rejected_atom_count=row["rejected_atom_count"],
             created_at=row["created_at"],
         )
 

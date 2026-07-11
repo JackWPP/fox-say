@@ -25,6 +25,7 @@ from app.services.knowledge_worker import KnowledgeJobWorker
 from app.services.course_compiler import CourseCompiler
 from app.services.material_indexer import build_material_index_handlers
 from app.services.semantic_atom_extractor import SemanticAtomExtractor
+from app.services.term_compiler import TermCompiler
 
 
 @asynccontextmanager
@@ -45,6 +46,7 @@ async def lifespan(app: FastAPI):
                 semantic_max_attempts=settings.knowledge_job_default_max_attempts,
             ),
             "extract_semantic_atoms": SemanticAtomExtractor(store),
+            "compile_terms": TermCompiler(store),
         },
         lease_seconds=settings.knowledge_worker_lease_seconds,
         poll_interval_seconds=settings.knowledge_worker_poll_interval_seconds,

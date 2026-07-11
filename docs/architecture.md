@@ -23,12 +23,13 @@
 - The V2 Qdrant source-fragment index uses deterministic UUID5 point IDs and type-scoped
   deletion, so a retry replaces only the affected material evidence rather than notes, terms
   or legacy chunks.
-- Worker-supported V2 job types are `index_material`, `compile_course` and
-  `extract_semantic_atoms`. Semantic work is gated behind a succeeded D0 parent with the same
-  source/knowledge target; an orphan cannot be claimed. `KNOWLEDGE_SEMANTIC_AUTO_ENQUEUE=true`
-  atomically creates that child while D0 publishes its outline, so it cannot run before the parent
-  becomes succeeded. Store operations can atomically enqueue, claim, reclaim an expired lease,
-  complete, fail and requeue a job.
+- Worker-supported V2 job types are `index_material`, `compile_course`,
+  `extract_semantic_atoms` and `compile_terms`. Semantic work is gated behind a succeeded D0
+  parent with the same source/knowledge target; an orphan cannot be claimed.
+  `KNOWLEDGE_SEMANTIC_AUTO_ENQUEUE=true` atomically creates that child while D0 publishes its
+  outline. Semantic publication atomically creates its zero-model Term child, which cannot be
+  claimed until its semantic parent has succeeded. Store operations can atomically enqueue, claim,
+  reclaim an expired lease, complete, fail and requeue a job.
 - SQLite enforces one logical material job per material/revision and one D0 course job per
   course/source revision with partial unique indexes. The store atomically assigns a numeric
   course queue revision only after resolving that source identity. A historical duplicate is a
@@ -58,6 +59,11 @@
   automatic enqueue exists. D1c registers a handler for an explicitly queued semantic job; it
   makes one D1a-audited DeepSeek request, accepts JSON candidates only, then enters the same D1b1
   validation path. Upload/index/D0 completion still never enqueues this paid job by itself.
+- D2a adds the zero-model `term_compilations`, `terms` and `term_atom_links` projection. A Term
+  is a navigation aid, never an independent fact: its stable ID is course/source/knowledge/key
+  scoped; its name must occur literally in every linked Atom's canonical current evidence and its
+  definition is copied verbatim from one linked Atom. Legacy terminology and Qdrant term paths do
+  not participate in this projection.
 - `GET /courses/{course_id}/course-outline` returns only the current succeeded D0 outline. It
   rejects uncompiled, stale and cross-course snapshots rather than falling back to legacy course
   structure.
