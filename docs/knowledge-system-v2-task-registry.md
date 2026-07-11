@@ -75,7 +75,7 @@ active / review → blocked → active; complete → reopened → active
 | V2-D | `active` | V2-C | 课程级 `compile_course`、Outline、SemanticAtom、Term、KC、关系及 revision 依赖 | 先由 D0 把 source-pinned、零模型的 CourseOutline snapshot 与状态发布栅栏做成可运行垂直切片；模型 Atom/Term/KC/关系随后拆分，不得跳过身份和审计边界。 |
 | V2-D0 | `complete` | V2-C | 将占位 `compile_course` 变成 source-pinned、确定性的 CourseOutline 编译与读取边界；只写 V2 projection tables | `33b3869`；D0 course job target/identity、compiler handler、immutable header/payload、current-outline API 与 `KnowledgeStatus` ready/stale/processing 已验证；56 个 V2 聚焦回归、270 个 backend tests 与相关 Ruff 通过。零 LLM/VLM/embedding 调用。 |
 | V2-D0a | `ready` | V2-D0 | 补齐 D0 projection publication 的 lease-expiry/owner 栅栏；只修复已发现的 worker 写入边界 | `publish_course_compilation_if_current` 必须同时验证 running job 的 attempt、lease owner 与未过期 lease；失租时不得写 snapshot，回归覆盖。 |
-| V2-D1a | `review` | V2-D0 | course-scoped DeepSeek text-call audit、course/job budget reservation、retry ceiling 与 audited wrapper；不生成知识投影 | 实现与 fake-provider 回归完成，等待协调者核对迁移、预算/lease/重试边界及 commit；不发起真实模型调用。 |
+| V2-D1a | `complete` | V2-D0 | course-scoped DeepSeek text-call audit、course/job budget reservation、retry ceiling 与 audited wrapper；不生成知识投影 | `d1ee488`；持久 audit/reservation、预算可见性、retry ceiling 与 fake-provider 回归已提交。没有调用真实外部模型，也未迁移 material embedding 或 legacy 路径。 |
 | V2-E | `ready` | V2-C | 条件性 `visual_analysis`、SiliconFlow Qwen VLM 验证、使用审计、预算/等待 UX | 按 HEC-5 留下 endpoint/model/错误路径验证记录；无视觉模型时文本链路仍可用；图像数、视觉 token、重试均受 job 预算限制。 |
 | V2-F | `ready` | V2-C, V2-D | 前端与后续 Agent 改读 V2 EvidenceRef/revision/AnswerEnvelope，移除旧并列事实写路径 | 旧 Wiki/DMAP/KC 不再被当作独立事实源；Agent 不跨课程或 revision 读取；迁移和删除有回归测试。 |
 | V2-G | `ready` | V2-B, V2-C, V2-D, V2-E, V2-F | 合成线性代数验收集、本地实材演示记录与成本/时延基线 | 完成实施蓝图第 10 节全部工程和产品验收；记录 p50/p95 时延、每 job token 与失败/重试结果，不提交真实课程材料。 |
@@ -190,6 +190,7 @@ active / review → blocked → active; complete → reopened → active
 | 2026-07-11 | V2-D0 | `review → complete` | 56 个 D0/C1/C2 聚焦 backend tests、270 个完整 backend pytest 和相关 Ruff 通过；targeted mypy 没有 D0 新增错误，剩余 12 项为 `foxsay.py`、legacy `sqlite_store.py`、worker 的既有 strict baseline。未调用 DeepSeek、Qwen、embedding 或 Qdrant。 | this commit |
 | 2026-07-11 | V2-D1a | `ready → active` | 领取持久 model-call audit 与 budget reservation；范围、非目标、验收和成本门见 §3.8。D1a 不得发起真实外部模型调用或写入语义知识投影。 | pending |
 | 2026-07-11 | V2-D1a | `active → review` | `model_call_audits`/course-budget reservation、retry ceiling、audited DeepSeek wrapper 与 SourcesPanel 预算可见性已实现；fake-provider 覆盖成功、并发拒绝、timeout/429/5xx/4xx、invalid response、usage 缺失、失租、旧库迁移与 SDK retries=0。等待最终 diff/commit 核对。 | pending |
+| 2026-07-11 | V2-D1a | `review → complete` | `d1ee488`；44 个 V2-D0/D1a 聚焦 backend tests、284 个 backend tests、相关 Ruff、前端 `typecheck`/`build` 通过。mypy 定向检查仅剩 `foxsay.py` 与 legacy `sqlite_store.py` 的 9 个既有 strict baseline；D1a 新文件/行无新增报错。Vite 仍报告既有 KaTeX font 和 chunk-size warning。 | `d1ee488` |
 | 2026-07-11 | V2-D0a | `proposed → ready` | D1a lease 审查发现已提交 D0 的 publication guard 尚未验证 lease owner/expiry；按 §3.9 单列最小修复，避免和模型审计实现混写。 | pending |
 
 ## 6. 交接检查
