@@ -774,6 +774,8 @@ class SqliteStore:
         *,
         course_id: str,
         job_id: str,
+        job_attempt: int,
+        lease_owner: str,
         target_source_revision: str,
         target_knowledge_revision: str,
         outline: CourseOutline,
@@ -783,6 +785,8 @@ class SqliteStore:
         """Atomically publish an immutable outline only for the current source set."""
         if outline.course_id != course_id:
             raise ValueError("Course outline course_id does not match compilation scope")
+        if job_attempt < 1 or not lease_owner.strip():
+            raise ValueError("Course compilation publication requires the claimed job attempt and lease owner")
         if outline.source_revision != target_source_revision:
             raise ValueError("Course outline source revision does not match compilation target")
         if outline.knowledge_revision != target_knowledge_revision:
@@ -795,7 +799,8 @@ class SqliteStore:
             try:
                 job = self._conn.execute(
                     """
-                    SELECT status, target_source_revision, target_knowledge_revision
+                    SELECT status, attempt, lease_owner, lease_expires_at,
+                           target_source_revision, target_knowledge_revision
                     FROM knowledge_jobs
                     WHERE job_id = ? AND course_id = ? AND job_type = 'compile_course'
                     """,
@@ -804,6 +809,10 @@ class SqliteStore:
                 if (
                     job is None
                     or job["status"] != "running"
+                    or job["attempt"] != job_attempt
+                    or job["lease_owner"] != lease_owner
+                    or job["lease_expires_at"] is None
+                    or job["lease_expires_at"] <= self._conn.execute("SELECT datetime('now')").fetchone()[0]
                     or job["target_source_revision"] != target_source_revision
                     or job["target_knowledge_revision"] != target_knowledge_revision
                 ):

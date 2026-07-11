@@ -34,7 +34,9 @@
   managed lease heartbeat. FastAPI starts it in its lifespan; uploads enqueue only durable
   `index_material` work. Once an indexer has published the final current evidence for a course,
   it deterministically enqueues a source-pinned `compile_course` job; the controlled worker owns
-  the actual compilation. SQLite MVP must run one API/worker process. The legacy pipeline remains
+  the actual compilation. Its final SQLite publication also rechecks the claimed attempt, owner,
+  unexpired lease and source/knowledge target, so a reclaimed worker cannot publish an old
+  outline. SQLite MVP must run one API/worker process. The legacy pipeline remains
   in the repository for later migration, but public material uploads no longer launch it with
   `asyncio.create_task()`.
 - `GET /courses/{course_id}/knowledge-status` is a no-model SQLite snapshot of current

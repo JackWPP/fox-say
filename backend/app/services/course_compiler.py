@@ -78,6 +78,12 @@ class CourseCompiler:
                 code="invalid_course_compile_target",
                 retryable=False,
             )
+        if job.lease_owner is None:
+            raise KnowledgeJobExecutionError(
+                "Course compiler requires a claimed knowledge-job lease",
+                code="invalid_course_compile_lease",
+                retryable=False,
+            )
 
         current_manifest = self._store.get_compilable_source_manifest(job.course_id)
         if current_manifest is None or current_manifest[0] != job.target_source_revision:
@@ -97,6 +103,8 @@ class CourseCompiler:
         published = self._store.publish_course_compilation_if_current(
             course_id=job.course_id,
             job_id=job.job_id,
+            job_attempt=job.attempt,
+            lease_owner=job.lease_owner,
             target_source_revision=source_revision,
             target_knowledge_revision=job.target_knowledge_revision,
             outline=outline,
@@ -104,6 +112,19 @@ class CourseCompiler:
             compiler_version=COURSE_OUTLINE_COMPILER_VERSION,
         )
         if not published:
+            if not self._store.has_current_knowledge_job_lease(
+                course_id=job.course_id,
+                job_id=job.job_id,
+                attempt=job.attempt,
+                lease_owner=job.lease_owner,
+                source_revision=source_revision,
+                knowledge_revision=job.target_knowledge_revision,
+            ):
+                raise KnowledgeJobExecutionError(
+                    "Course compiler lost its knowledge-job lease before publication",
+                    code="knowledge_job_lease_lost",
+                    retryable=True,
+                )
             raise KnowledgeJobExecutionError(
                 "Course source revision changed before compilation could be published",
                 code="stale_course_source_revision",

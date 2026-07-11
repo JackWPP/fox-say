@@ -14,7 +14,7 @@ from app.schemas.knowledge_jobs import KnowledgeJob
 from app.services.course_compiler import CourseCompiler
 from app.services.knowledge_jobs import enqueue_course_compile_job, enqueue_material_index_job
 from app.services.knowledge_status import build_knowledge_status
-from app.services.knowledge_worker import KnowledgeJobWorker
+from app.services.knowledge_worker import KnowledgeJobExecutionError, KnowledgeJobWorker
 
 
 def _fragment(
@@ -161,6 +161,61 @@ async def test_compiler_publishes_source_pinned_outline_and_ready_status(store: 
     assert status.source_revision == manifest[0]
     assert status.knowledge_revision == outline.knowledge_revision
     assert status.compiled_from_source_revision == manifest[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lease_failure", ["expired", "owner_mismatch", "reclaimed_attempt"])
+async def test_compiler_never_publishes_after_its_lease_is_lost(
+    store: SqliteStore, lease_failure: str
+) -> None:
+    _seed_ready_material(
+        store,
+        course_id="linear",
+        material_id="vectors",
+        fragments=[
+            _fragment(
+                course_id="linear",
+                material_id="vectors",
+                ordinal=0,
+                heading_path=["向量空间"],
+                text="向量空间对加法封闭。",
+            )
+        ],
+    )
+    manifest = store.get_compilable_source_manifest("linear")
+    assert manifest is not None
+    job = enqueue_course_compile_job(
+        store, course_id="linear", source_revision=manifest[0]
+    )
+    claimed = store.claim_next_knowledge_job("compiler-worker", lease_seconds=60)
+    assert claimed is not None and claimed.job_id == job.job_id
+
+    if lease_failure == "expired":
+        store._conn.execute(
+            "UPDATE knowledge_jobs SET lease_expires_at = datetime('now', '-1 second') WHERE job_id = ?",
+            (job.job_id,),
+        )
+        store._conn.commit()
+    elif lease_failure == "owner_mismatch":
+        claimed = claimed.model_copy(update={"lease_owner": "old-compiler-worker"})
+    else:
+        store._conn.execute(
+            "UPDATE knowledge_jobs SET lease_expires_at = datetime('now', '-1 second') WHERE job_id = ?",
+            (job.job_id,),
+        )
+        store._conn.commit()
+        reclaimed = store.claim_next_knowledge_job("replacement-worker", lease_seconds=60)
+        assert reclaimed is not None and reclaimed.job_id == job.job_id and reclaimed.attempt == 2
+
+    with pytest.raises(KnowledgeJobExecutionError) as exc_info:
+        await CourseCompiler(store)(claimed)
+
+    assert exc_info.value.code == "knowledge_job_lease_lost"
+    assert store.get_current_course_compilation("linear", manifest[0]) is None
+    snapshot_count = store._conn.execute(
+        "SELECT COUNT(*) FROM course_projection_snapshots WHERE course_id = 'linear'"
+    ).fetchone()[0]
+    assert snapshot_count == 0
 
 
 def test_ready_sources_show_processing_while_the_current_compile_job_is_queued(
