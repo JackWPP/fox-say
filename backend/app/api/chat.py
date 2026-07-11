@@ -16,7 +16,10 @@ from app.core.config import settings
 from app.db.deps import get_store
 from app.db.sqlite_store import SqliteStore
 from app.services.audited_chat_writer import AuditedChatWriter
+from app.services.deep_dive_router import should_use_deep_dive
+from app.services.deep_dive_service import DeepDiveService
 from app.services.quick_answer_service import QuickAnswerService
+from app.services.v2_agent_tools import V2AgentTools
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +55,26 @@ def _build_service(store: SqliteStore) -> QuickAnswerService:
     return QuickAnswerService(store, writer)
 
 
+def _build_deep_dive_service(store: SqliteStore) -> DeepDiveService:
+    client = OpenAI(
+        api_key=settings.deepseek_api_key or "placeholder",
+        base_url=settings.deepseek_api_base,
+        timeout=settings.knowledge_model_timeout_seconds,
+        max_retries=0,
+    )
+    writer = AuditedChatWriter(
+        store,
+        client=client,
+        model=settings.deepseek_model,
+        course_budget_tokens=settings.knowledge_course_default_token_budget,
+    )
+    tools = V2AgentTools(store)
+    return DeepDiveService(store, writer, tools)
+
+
 _PHASE_MESSAGES = {
     "retrieving": ("scout", "正在检索课程证据..."),
+    "mapping": ("mapper", "正在分析课程结构..."),
     "composing": ("tutor", "正在组织回答..."),
     "verifying": ("verifier", "正在验证引用..."),
 }
@@ -108,7 +129,15 @@ async def chat_stream(course_id: str, body: StreamRequest, store: SqliteStore = 
     )
 
     turn_id = str(uuid.uuid4())
-    service = _build_service(store)
+    use_deep_dive = should_use_deep_dive(
+        body.question, retrieval_outcome=None, workflow_hint=body.workflow_hint
+    )
+    if use_deep_dive:
+        service = _build_deep_dive_service(store)
+        phases = ("retrieving", "mapping", "composing", "verifying")
+    else:
+        service = _build_service(store)
+        phases = ("retrieving", "composing", "verifying")
 
     async def event_generator():
         run_id: str | None = None
@@ -138,7 +167,7 @@ async def chat_stream(course_id: str, body: StreamRequest, store: SqliteStore = 
             })
 
             # phases
-            for phase_key in ("retrieving", "composing", "verifying"):
+            for phase_key in phases:
                 role, msg = _PHASE_MESSAGES[phase_key]
                 yield _sse("phase", {
                     "run_id": run_id,

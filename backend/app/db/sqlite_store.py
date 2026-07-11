@@ -693,6 +693,137 @@ CREATE TABLE IF NOT EXISTS kc_relations (
 );
 CREATE INDEX IF NOT EXISTS idx_kc_relations_current
     ON kc_relations(course_id, source_revision, knowledge_revision, source_kc_id);
+
+-- ===== V2-F7 Course Brief & Study Artifacts =====
+
+CREATE TABLE IF NOT EXISTS course_briefs (
+    brief_id        TEXT PRIMARY KEY,
+    course_id       TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    knowledge_revision TEXT NOT NULL,
+    brief_json      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'active',
+    agent_run_id    TEXT,
+    model_call_id   TEXT,
+    input_token_count  INTEGER,
+    output_token_count INTEGER,
+    elapsed_ms      INTEGER,
+    error_detail    TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id) REFERENCES courses(id),
+    CHECK (status IN ('active', 'stale', 'failed')),
+    CHECK (source_revision <> ''),
+    CHECK (knowledge_revision <> '')
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_course_brief_active
+    ON course_briefs(course_id) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_course_briefs_course_revision
+    ON course_briefs(course_id, source_revision, knowledge_revision, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS study_artifacts (
+    artifact_id        TEXT PRIMARY KEY,
+    course_id          TEXT NOT NULL,
+    source_revision    TEXT NOT NULL,
+    knowledge_revision TEXT NOT NULL,
+    section_id         TEXT NOT NULL,
+    artifact_type      TEXT NOT NULL DEFAULT 'chapter_review_brief',
+    artifact_json      TEXT NOT NULL,
+    status             TEXT NOT NULL DEFAULT 'active',
+    agent_run_id       TEXT,
+    model_call_id      TEXT,
+    input_token_count  INTEGER,
+    output_token_count INTEGER,
+    elapsed_ms         INTEGER,
+    error_detail       TEXT,
+    created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id) REFERENCES courses(id),
+    CHECK (status IN ('active', 'stale', 'failed')),
+    CHECK (source_revision <> ''),
+    CHECK (knowledge_revision <> ''),
+    CHECK (section_id <> ''),
+    CHECK (artifact_type IN ('chapter_review_brief'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_study_artifact_active
+    ON study_artifacts(course_id, section_id, artifact_type) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_study_artifacts_course_revision
+    ON study_artifacts(course_id, source_revision, knowledge_revision, artifact_type);
+
+-- ===== V2-F6 Review Mode =====
+
+CREATE TABLE IF NOT EXISTS review_plans_v2 (
+    id              TEXT PRIMARY KEY,
+    course_id        TEXT NOT NULL,
+    exam_date        TEXT NOT NULL,
+    source_revision  TEXT NOT NULL,
+    knowledge_revision TEXT NOT NULL,
+    plan_json        TEXT NOT NULL,
+    plan_summary     TEXT,
+    status           TEXT NOT NULL DEFAULT 'active',
+    days_count       INTEGER NOT NULL,
+    total_kcs        INTEGER NOT NULL,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id) REFERENCES courses(id),
+    CHECK (status IN ('active', 'stale', 'completed'))
+);
+CREATE INDEX IF NOT EXISTS idx_review_plans_v2_course ON review_plans_v2(course_id, status);
+
+CREATE TABLE IF NOT EXISTS review_sessions_v2 (
+    id              TEXT PRIMARY KEY,
+    plan_id         TEXT NOT NULL,
+    course_id        TEXT NOT NULL,
+    source_revision  TEXT NOT NULL,
+    knowledge_revision TEXT NOT NULL,
+    current_day      INTEGER NOT NULL DEFAULT 1,
+    current_step     TEXT NOT NULL DEFAULT 'briefing',
+    current_item_id  TEXT,
+    status           TEXT NOT NULL DEFAULT 'active',
+    started_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (plan_id) REFERENCES review_plans_v2(id),
+    FOREIGN KEY (course_id) REFERENCES courses(id),
+    CHECK (status IN ('active', 'paused', 'completed', 'stale', 'cancelled'))
+);
+CREATE INDEX IF NOT EXISTS idx_review_sessions_v2_course ON review_sessions_v2(course_id, status);
+
+CREATE TABLE IF NOT EXISTS review_attempts (
+    id              TEXT PRIMARY KEY,
+    session_id      TEXT NOT NULL,
+    course_id        TEXT NOT NULL,
+    day             INTEGER NOT NULL,
+    item_id         TEXT NOT NULL,
+    kc_ids_json     TEXT NOT NULL,
+    question_json   TEXT NOT NULL,
+    user_answer     TEXT,
+    grade_json      TEXT,
+    status          TEXT NOT NULL DEFAULT 'awaiting',
+    is_retry        INTEGER NOT NULL DEFAULT 0,
+    agent_run_id    TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at    TEXT,
+    FOREIGN KEY (session_id) REFERENCES review_sessions_v2(id),
+    FOREIGN KEY (course_id) REFERENCES courses(id),
+    CHECK (status IN ('awaiting', 'submitted', 'graded', 'retrying', 'skipped'))
+);
+CREATE INDEX IF NOT EXISTS idx_review_attempts_session ON review_attempts(session_id, day, item_id);
+
+CREATE TABLE IF NOT EXISTS learner_observations (
+    id              TEXT PRIMARY KEY,
+    course_id        TEXT NOT NULL,
+    session_id       TEXT NOT NULL,
+    kc_id            TEXT NOT NULL,
+    observation_type TEXT NOT NULL,
+    confidence       REAL NOT NULL DEFAULT 1.0,
+    source_attempt_id TEXT NOT NULL,
+    source_run_id    TEXT,
+    detail           TEXT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (course_id) REFERENCES courses(id),
+    FOREIGN KEY (session_id) REFERENCES review_sessions_v2(id),
+    FOREIGN KEY (source_attempt_id) REFERENCES review_attempts(id),
+    CHECK (observation_type IN ('explicit_difficulty', 'correct_attempt', 'incorrect_attempt', 'missing_condition', 'repeated_clarification'))
+);
+CREATE INDEX IF NOT EXISTS idx_learner_obs_course ON learner_observations(course_id, kc_id);
+CREATE INDEX IF NOT EXISTS idx_learner_obs_session ON learner_observations(session_id);
 """
 
 
@@ -5261,3 +5392,261 @@ class SqliteStore:
     def delete_extracted_assets(self, material_id: str) -> None:
         self._conn.execute("DELETE FROM extracted_assets WHERE material_id = ?", (material_id,))
         self._conn.commit()
+
+    # ===== V2-F7 Course Brief CRUD =====
+
+    def insert_course_brief(self, brief_id: str, course_id: str, source_revision: str,
+                            knowledge_revision: str, brief_json: str, *,
+                            agent_run_id: str | None = None,
+                            model_call_id: str | None = None,
+                            input_token_count: int | None = None,
+                            output_token_count: int | None = None,
+                            elapsed_ms: int | None = None) -> None:
+        self._conn.execute(
+            """INSERT INTO course_briefs (brief_id, course_id, source_revision, knowledge_revision,
+               brief_json, agent_run_id, model_call_id, input_token_count, output_token_count, elapsed_ms)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (brief_id, course_id, source_revision, knowledge_revision, brief_json,
+             agent_run_id, model_call_id, input_token_count, output_token_count, elapsed_ms),
+        )
+        self._conn.commit()
+
+    def fail_course_brief(self, brief_id: str, error_detail: str) -> None:
+        self._conn.execute(
+            "UPDATE course_briefs SET status = 'failed', error_detail = ? WHERE brief_id = ?",
+            (error_detail, brief_id),
+        )
+        self._conn.commit()
+
+    def get_active_course_brief(self, course_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM course_briefs WHERE course_id = ? AND status = 'active'",
+            (course_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def stale_course_briefs(self, course_id: str) -> int:
+        cur = self._conn.execute(
+            "UPDATE course_briefs SET status = 'stale' WHERE course_id = ? AND status = 'active'",
+            (course_id,),
+        )
+        self._conn.commit()
+        return cur.rowcount
+
+    def update_course_brief_status(self, brief_id: str, status: str) -> None:
+        self._conn.execute(
+            "UPDATE course_briefs SET status = ? WHERE brief_id = ?",
+            (status, brief_id),
+        )
+        self._conn.commit()
+
+    # ===== V2-F7 Study Artifact CRUD =====
+
+    def insert_study_artifact(self, artifact_id: str, course_id: str, source_revision: str,
+                               knowledge_revision: str, section_id: str, artifact_json: str, *,
+                               artifact_type: str = "chapter_review_brief",
+                               agent_run_id: str | None = None,
+                               model_call_id: str | None = None,
+                               input_token_count: int | None = None,
+                               output_token_count: int | None = None,
+                               elapsed_ms: int | None = None) -> None:
+        self._conn.execute(
+            """INSERT INTO study_artifacts (artifact_id, course_id, source_revision, knowledge_revision,
+               section_id, artifact_type, artifact_json, agent_run_id, model_call_id,
+               input_token_count, output_token_count, elapsed_ms)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (artifact_id, course_id, source_revision, knowledge_revision,
+             section_id, artifact_type, artifact_json,
+             agent_run_id, model_call_id, input_token_count, output_token_count, elapsed_ms),
+        )
+        self._conn.commit()
+
+    def fail_study_artifact(self, artifact_id: str, error_detail: str) -> None:
+        self._conn.execute(
+            "UPDATE study_artifacts SET status = 'failed', error_detail = ? WHERE artifact_id = ?",
+            (error_detail, artifact_id),
+        )
+        self._conn.commit()
+
+    def get_study_artifact(self, course_id: str, artifact_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM study_artifacts WHERE course_id = ? AND artifact_id = ?",
+            (course_id, artifact_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_active_study_artifact_by_section(self, course_id: str, section_id: str,
+                                              artifact_type: str = "chapter_review_brief") -> dict | None:
+        row = self._conn.execute(
+            """SELECT * FROM study_artifacts
+               WHERE course_id = ? AND section_id = ? AND artifact_type = ? AND status = 'active'""",
+            (course_id, section_id, artifact_type),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_study_artifacts(self, course_id: str) -> list[dict]:
+        rows = self._conn.execute(
+            """SELECT * FROM study_artifacts
+               WHERE course_id = ?
+               ORDER BY created_at DESC""",
+            (course_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def stale_study_artifact(self, course_id: str, section_id: str,
+                              artifact_type: str = "chapter_review_brief") -> int:
+        cur = self._conn.execute(
+            """UPDATE study_artifacts SET status = 'stale'
+               WHERE course_id = ? AND section_id = ? AND artifact_type = ? AND status = 'active'""",
+            (course_id, section_id, artifact_type),
+        )
+        self._conn.commit()
+        return cur.rowcount
+
+    # ===== V2-F6 Review Plan CRUD =====
+
+    def insert_review_plan_v2(self, plan_id: str, course_id: str, exam_date: str,
+                               source_revision: str, knowledge_revision: str,
+                               plan_json: str, plan_summary: str | None,
+                               days_count: int, total_kcs: int) -> None:
+        self._conn.execute(
+            """INSERT INTO review_plans_v2 (id, course_id, exam_date, source_revision,
+               knowledge_revision, plan_json, plan_summary, days_count, total_kcs)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (plan_id, course_id, exam_date, source_revision, knowledge_revision,
+             plan_json, plan_summary, days_count, total_kcs),
+        )
+        self._conn.commit()
+
+    def get_active_review_plan_v2(self, course_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM review_plans_v2 WHERE course_id = ? AND status = 'active'",
+            (course_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def stale_review_plan_v2(self, course_id: str) -> int:
+        cur = self._conn.execute(
+            "UPDATE review_plans_v2 SET status = 'stale' WHERE course_id = ? AND status = 'active'",
+            (course_id,),
+        )
+        self._conn.commit()
+        return cur.rowcount
+
+    # ===== V2-F6 Review Session CRUD =====
+
+    def insert_review_session_v2(self, session_id: str, plan_id: str, course_id: str,
+                                  source_revision: str, knowledge_revision: str) -> None:
+        self._conn.execute(
+            """INSERT INTO review_sessions_v2 (id, plan_id, course_id, source_revision, knowledge_revision)
+               VALUES (?, ?, ?, ?, ?)""",
+            (session_id, plan_id, course_id, source_revision, knowledge_revision),
+        )
+        self._conn.commit()
+
+    def get_review_session_v2(self, session_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM review_sessions_v2 WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_active_review_session_v2(self, course_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM review_sessions_v2 WHERE course_id = ? AND status = 'active'",
+            (course_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def update_review_session_v2(self, session_id: str, **fields: Any) -> None:
+        allowed = {"current_day", "current_step", "current_item_id", "status"}
+        updates: dict[str, Any] = {}
+        for k, v in fields.items():
+            if k in allowed:
+                updates[k] = v
+        if not updates:
+            return
+        sets = ", ".join(f"{k} = ?" for k in updates)
+        vals = list(updates.values())
+        vals.append(session_id)
+        self._conn.execute(
+            f"UPDATE review_sessions_v2 SET {sets}, updated_at = datetime('now') WHERE id = ?",
+            vals,
+        )
+        self._conn.commit()
+
+    # ===== V2-F6 Review Attempt CRUD =====
+
+    def insert_review_attempt(self, attempt_id: str, session_id: str, course_id: str,
+                               day: int, item_id: str, kc_ids_json: str,
+                               question_json: str, *, is_retry: int = 0,
+                               agent_run_id: str | None = None) -> None:
+        self._conn.execute(
+            """INSERT INTO review_attempts (id, session_id, course_id, day, item_id,
+               kc_ids_json, question_json, is_retry, agent_run_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (attempt_id, session_id, course_id, day, item_id,
+             kc_ids_json, question_json, is_retry, agent_run_id),
+        )
+        self._conn.commit()
+
+    def get_review_attempt(self, attempt_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM review_attempts WHERE id = ?",
+            (attempt_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_session_review_attempts(self, session_id: str) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM review_attempts WHERE session_id = ? ORDER BY created_at",
+            (session_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_review_attempt(self, attempt_id: str, **fields: Any) -> None:
+        allowed = {"user_answer", "grade_json", "status", "completed_at"}
+        updates: dict[str, Any] = {}
+        for k, v in fields.items():
+            if k in allowed:
+                updates[k] = v
+        if not updates:
+            return
+        sets = ", ".join(f"{k} = ?" for k in updates)
+        vals = list(updates.values())
+        vals.append(attempt_id)
+        self._conn.execute(
+            f"UPDATE review_attempts SET {sets} WHERE id = ?",
+            vals,
+        )
+        self._conn.commit()
+
+    # ===== V2-F6 Learner Observation CRUD =====
+
+    def insert_learner_observation(self, obs_id: str, course_id: str, session_id: str,
+                                    kc_id: str, observation_type: str, confidence: float,
+                                    source_attempt_id: str, *,
+                                    source_run_id: str | None = None,
+                                    detail: str | None = None) -> None:
+        self._conn.execute(
+            """INSERT INTO learner_observations (id, course_id, session_id, kc_id,
+               observation_type, confidence, source_attempt_id, source_run_id, detail)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (obs_id, course_id, session_id, kc_id, observation_type, confidence,
+             source_attempt_id, source_run_id, detail),
+        )
+        self._conn.commit()
+
+    def get_course_learner_observations(self, course_id: str) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM learner_observations WHERE course_id = ? ORDER BY created_at",
+            (course_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_session_learner_observations(self, session_id: str) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM learner_observations WHERE session_id = ? ORDER BY created_at",
+            (session_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]

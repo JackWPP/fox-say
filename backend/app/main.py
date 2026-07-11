@@ -15,8 +15,10 @@ from app.api.events import router as events_router
 from app.api.knowledge_graph import router as knowledge_graph_router
 from app.api.materials import router as materials_router
 from app.api.notes import router as notes_router
+from app.api.artifacts import router as artifacts_router
 from app.api.review import router as review_router
 from app.api.review_session import router as review_session_router
+from app.api.review_v2 import router as review_v2_router
 from app.api.settings import router as settings_router
 from app.api.skeleton import router as skeleton_router
 from app.core.config import settings
@@ -98,6 +100,8 @@ def _register_routers() -> None:
     app.include_router(review_router)
     app.include_router(events_router)
     app.include_router(review_session_router)
+    app.include_router(review_v2_router)
+    app.include_router(artifacts_router)
     app.include_router(settings_router)
     app.include_router(knowledge_graph_router)
     app.include_router(dashboard_router)

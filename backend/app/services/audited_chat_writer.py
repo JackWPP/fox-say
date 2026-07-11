@@ -69,10 +69,13 @@ class AuditedChatWriter:
         messages: Sequence[Mapping[str, Any]],
         max_output_tokens: int,
         temperature: float | None = None,
+        budget_scope: str = "interactive",
     ) -> AuditedTextResult:
         """Make exactly one audited completion for a currently active agent run."""
         if not purpose.strip() or max_output_tokens <= 0:
             raise ValueError("purpose and max_output_tokens are required")
+        if budget_scope not in ("interactive", "review", "artifact"):
+            raise ValueError(f"Unsupported budget_scope: {budget_scope}")
 
         canonical_request = _canonical_request(
             model=self._model,
@@ -85,7 +88,7 @@ class AuditedChatWriter:
             course_id=run.course_id,
             owner_type="agent_run",
             run_id=run.run_id,
-            budget_scope="interactive",
+            budget_scope=budget_scope,
             source_revision=run.source_revision,
             knowledge_revision=run.knowledge_revision,
             call_kind="text",
